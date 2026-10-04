@@ -267,6 +267,17 @@ def test_unsigned_and_complex_tensors_of_a_dense_checkpoint_are_inventoried(
     }
 
 
+@pytest.mark.parametrize("dtype", ["F64", "F32", "F16", "BF16"])
+def test_full_precision_weights_are_not_mistaken_for_low_precision(
+    model_dir: ModelDir, dtype: str
+) -> None:
+    # "float64" starts with "float6": dtype families must not be matched by bare prefixes
+    tensors = {name: (dtype, shape) for name, (_, shape) in TENSORS.items()}
+    inv = _inspect(*model_dir(tensors=tensors))
+    assert inv.quantized_checkpoint_format is None
+    assert [m.name for m in inv.linear_modules] == ["model.layers.0.self_attn.q_proj"]
+
+
 def test_misaligned_sub_byte_tensor_is_a_malformed_header(model_dir: ModelDir) -> None:
     # 3 FP4 elements are 12 bits: safetensors refuses to open such a file at all
     tensors = {**TENSORS, "model.layers.0.mlp.up_proj.weight": ("F4", [3, 1])}

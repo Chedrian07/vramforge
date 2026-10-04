@@ -100,13 +100,11 @@ _QUANT_SUFFIXES = {
     ".nested_absmax": "bitsandbytes",
     ".SCB": "bitsandbytes",
 }
-# Dtypes that only quantized storage uses: OCP Microscaling (MX) E8M0 block scales and FP4/FP6
-# element payloads. Their presence alone marks a pre-quantized checkpoint.
+# OCP Microscaling (MX) E8M0 block scales and FP4/FP6 element payloads exist only in quantized
+# storage: their presence alone marks a pre-quantized checkpoint. FP8 tensors do as well.
 _MX_SCALE_DTYPE = "float8_e8m0fnu"
-_FP4_DTYPES = frozenset({"float4_e2m1"})
-_FP6_DTYPES = frozenset({"float6_e2m3", "float6_e3m2"})
-_QUANT_ONLY_DTYPES = frozenset({_MX_SCALE_DTYPE}) | _FP4_DTYPES | _FP6_DTYPES
-_FP8_DTYPES = frozenset({"float8_e4m3fn", "float8_e5m2"})
+# With the underscore: "float6" alone would also match "float64".
+_LOW_PRECISION_PREFIXES = (("float4_", "fp4"), ("float6_", "fp6"), ("float8_", "fp8"))
 # A weight matrix (Linear, embedding, lm_head) stored as integers is a packed quantized payload
 # (GPTQ/AWQ/MLX/bitsandbytes...). Integer or complex tensors in other roles (buffers, indices,
 # position ids) are ordinary dense data and are inventoried as such.
@@ -180,34 +178,35 @@ class _QuantizedEvidence:
     dtypes: tuple[str, ...] = ()  # the quantization-style dtypes found (dtype evidence only)
 
 
-def _low_bit_format(dtypes: set[str]) -> str:
-    """Format label: an "mx" prefix when E8M0 block scales are present, then the element type."""
-    prefix = "mx" if _MX_SCALE_DTYPE in dtypes else ""
-    if dtypes & _FP4_DTYPES:
-        return f"{prefix}fp4"
-    if dtypes & _FP6_DTYPES:
-        return f"{prefix}fp6"
-    if dtypes & _FP8_DTYPES:
-        return f"{prefix}fp8"
-    return prefix  # E8M0 scales next to integer-packed elements: microscaling, element unknown
+def _low_precision_family(dtype: str) -> str | None:
+    """Family of a low-precision dtype: "mx" (E8M0 block scales) or "fp4"/"fp6"/"fp8"."""
+    if dtype == _MX_SCALE_DTYPE:
+        return "mx"
+    return next(
+        (family for prefix, family in _LOW_PRECISION_PREFIXES if dtype.startswith(prefix)), None
+    )
 
 
 def _quantized_format(tensors: list[TensorInfo]) -> _QuantizedEvidence | None:
     """Most decisive evidence first.
 
     Quantization-only dtypes (E8M0 scales, FP4/FP6 payloads) whatever the tensors are called,
-    then quantizer tensor names, then FP8 tensors, then weight matrices stored as integers.
+    then quantizer tensor names, then FP8 tensors, then weight matrices stored as integers. The
+    format is "mx" + element type when E8M0 scales are present (OCP MX), else the element type.
     """
-    dtypes = {t.dtype for t in tensors}
-    if dtypes & _QUANT_ONLY_DTYPES:
-        found = dtypes & (_QUANT_ONLY_DTYPES | _FP8_DTYPES)
-        return _QuantizedEvidence(_low_bit_format(dtypes), "quantized_dtype", tuple(sorted(found)))
+    families = {d: f for d in {t.dtype for t in tensors} if (f := _low_precision_family(d))}
+    found = tuple(sorted(families))
+    kinds = set(families.values())
+    if kinds & {"mx", "fp4", "fp6"}:
+        prefix = "mx" if "mx" in kinds else ""
+        element = next((k for k in ("fp4", "fp6", "fp8") if k in kinds), "")  # "" if packed
+        return _QuantizedEvidence(prefix + element, "quantized_dtype", found)
     for tensor in tensors:
         for suffix, fmt in _QUANT_SUFFIXES.items():
             if tensor.name.endswith(suffix):
                 return _QuantizedEvidence(fmt, "prequantized_checkpoint")
-    if fp8 := dtypes & _FP8_DTYPES:
-        return _QuantizedEvidence("fp8", "quantized_dtype", tuple(sorted(fp8)))
+    if found:  # FP8 only
+        return _QuantizedEvidence("fp8", "quantized_dtype", found)
     packed = {t.dtype for t in tensors if t.role in _MATRIX_ROLES and t.dtype in _INT_DTYPES}
     if packed:
         return _QuantizedEvidence("integer-packed", "quantized_dtype", tuple(sorted(packed)))
