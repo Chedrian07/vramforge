@@ -31,6 +31,7 @@ from .readers import (
     RowError,
     SchemaState,
     ShardBroken,
+    UnsupportedFormat,
     open_decoded,
     table_rows,
 )
@@ -54,10 +55,12 @@ class JsonOptions:
     chunksize: int = DEFAULT_CHUNKSIZE
     on_mixed_types: str | None = "use_json"
     features: Features | None = None
+    parse_agent_traces: bool = True
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> JsonOptions:
-        chunksize = options.get("chunksize") or options.get("block_size") or DEFAULT_CHUNKSIZE
+        # datasets Json._info: a deprecated `block_size` overrides `chunksize`.
+        chunksize = options.get("block_size") or options.get("chunksize") or DEFAULT_CHUNKSIZE
         return cls(
             field=options.get("field"),
             encoding=options.get("encoding") or "utf-8",
@@ -65,6 +68,7 @@ class JsonOptions:
             chunksize=int(chunksize),
             on_mixed_types=options.get("on_mixed_types", "use_json"),
             features=options.get("features"),
+            parse_agent_traces=bool(options.get("parse_agent_traces", True)),
         )
 
 
@@ -373,7 +377,14 @@ class _JsonReader:
                 Features.from_arrow_schema(table.schema), paths
             )
             table = table_cast(table, json_features.arrow_schema)
-        self.schema.features = Features.from_arrow_schema(table.schema)
+        features = Features.from_arrow_schema(table.schema)
+        if self.info.file_format == "json_lines" and self.opts.parse_agent_traces:
+            from datasets.packaged_modules.json.json import has_agent_traces_markers
+
+            if has_agent_traces_markers(features):
+                # datasets would convert these rows with `teich` instead of reading them as is.
+                raise UnsupportedFormat("agent_traces")
+        self.schema.features = features
         return table
 
     def _emit(self, table: pa.Table) -> Iterator[ReadItem]:

@@ -317,3 +317,20 @@ def test_byte_budget_is_exact(tmp_path: Path) -> None:
     assert len(rows) == 50
     with pytest.raises(QuotaExceeded):
         read_all(path, "json", budget=size - 1)
+
+
+def test_agent_trace_shaped_json_lines_are_unsupported(tmp_path: Path) -> None:
+    # datasets 5.0.1 routes these columns to its agent-trace converter (`teich`), not the rows.
+    row = {"id": "1", "source": "s", "model": "m", "system_prompt": "x", "messages": []}
+    path = write_jsonl(tmp_path / "traces.jsonl", [row])
+    with pytest.raises(UnsupportedFormat) as excinfo:
+        read_all(path, "json")
+    assert excinfo.value.reason == "agent_traces"
+    assert read_all(path, "json", options={"parse_agent_traces": False})[0] == [row]
+
+
+def test_deprecated_block_size_overrides_chunksize() -> None:
+    from vramforge_estimator.inspection.readers_json import JsonOptions
+
+    assert JsonOptions.from_options({"block_size": 4096, "chunksize": 1 << 20}).chunksize == 4096
+    assert JsonOptions.from_options({"block_size": None, "chunksize": 1 << 20}).chunksize == 1 << 20
