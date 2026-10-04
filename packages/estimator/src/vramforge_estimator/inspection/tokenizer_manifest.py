@@ -70,10 +70,35 @@ def _environment() -> Any:
     )
 
 
-def template_kwargs(template: str, special_tokens: Iterable[str] = ()) -> list[str] | None:
-    """Variables the template reads that are neither standard, special tokens nor assigned.
+def _probed_names(ast: Any) -> set[str]:
+    """Names tested with ``is defined``/``is undefined`` or read through ``| default``.
 
-    None when the template does not parse (rendering will then fail per row in the scan).
+    Templates declare optional caller kwargs this way before assigning a fallback, e.g.
+    ``{% set enable_thinking = enable_thinking if enable_thinking is defined else true %}``.
+    """
+    from jinja2 import nodes
+
+    names = {
+        test.node.name
+        for test in ast.find_all(nodes.Test)
+        if test.name in ("defined", "undefined") and isinstance(test.node, nodes.Name)
+    }
+    names |= {
+        flt.node.name
+        for flt in ast.find_all(nodes.Filter)
+        if flt.name in ("default", "d") and isinstance(flt.node, nodes.Name)
+    }
+    return names
+
+
+def template_kwargs(template: str, special_tokens: Iterable[str] = ()) -> list[str] | None:
+    """Variables the template reads from the caller (besides standard names and special tokens).
+
+    A name read before any assignment is a kwarg. Names that are also assigned somewhere (loop- or
+    branch-scoped ``set``) count only when the template probes them as optional input
+    (``is defined`` / ``| default``), which keeps defaults like ``enable_thinking`` or
+    ``date_string`` while dropping scoping artefacts. None when the template does not parse
+    (rendering will then fail per row in the scan).
     """
     import jinja2
     from jinja2 import meta, nodes
@@ -87,7 +112,8 @@ def template_kwargs(template: str, special_tokens: Iterable[str] = ()) -> list[s
     assigned = {n.name for n in ast.find_all(nodes.Name) if n.ctx in ("store", "param")}
     assigned |= {m.name for m in ast.find_all(nodes.Macro)}
     excluded = STANDARD_TEMPLATE_VARIABLES | STANDARD_SPECIAL_TOKENS | set(env.globals)
-    return sorted(undeclared - assigned - excluded - set(special_tokens))
+    local_only = assigned - _probed_names(ast)
+    return sorted(undeclared - local_only - excluded - set(special_tokens))
 
 
 def max_length(value: object) -> tuple[int | None, bool]:

@@ -243,6 +243,49 @@ def test_template_kwargs_ignore_assigned_and_standard_names() -> None:
     assert template_kwargs("{% if %}") is None
 
 
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # optional kwargs that receive a fallback inside the template are still kwargs
+        (
+            "{%- set enable_thinking = enable_thinking if enable_thinking is defined else true %}"
+            "{% if enable_thinking %}<think>{% endif %}",
+            ["enable_thinking"],
+        ),
+        (
+            "{%- if not date_string is defined %}"
+            "{%- set date_string = strftime_now('%d %b %Y') %}{%- endif %}{{ date_string }}",
+            ["date_string"],
+        ),
+        (
+            "{%- if tools_in_user_message is undefined %}"
+            "{%- set tools_in_user_message = true %}{%- endif %}",
+            ["tools_in_user_message"],
+        ),
+        ("{%- set thinking = thinking | default(false) %}{{ thinking }}", ["thinking"]),
+        ("{%- set thinking = thinking | d(false) %}{{ thinking }}", ["thinking"]),
+        # scoping artefacts of template-local names are not kwargs
+        ("{% for m in messages %}{% set last = m %}{% endfor %}{{ last }}", []),
+        ("{% if messages %}{% set sys = messages[0] %}{% endif %}{{ sys }}", []),
+        ("{% set x = 1 %}{% if x is defined %}{{ x }}{% endif %}", []),
+        ("{% for m in messages %}{% if m is defined %}{{ m }}{% endif %}{% endfor %}", []),
+    ],
+)
+def test_template_kwargs_with_fallback_defaults(template: str, expected: list[str]) -> None:
+    assert template_kwargs(template) == expected
+
+
+def test_kwarg_with_template_default_reaches_the_manifest(load_local: Loader) -> None:
+    # compatibility only forwards enable_thinking when the manifest lists it (plan §7.3)
+    template = (
+        "{%- set enable_thinking = enable_thinking if enable_thinking is defined else true -%}"
+        "{%- for message in messages -%}{{ message.content }}{%- endfor -%}"
+        "{%- if add_generation_prompt and not enable_thinking -%}<think></think>{%- endif -%}"
+    )
+    m = load_local({"chat_template.jinja": template.encode()}).manifest
+    assert m.template_kwargs == ["enable_thinking"]
+
+
 # ---------------------------------------------------------------- HF path through the fake hub
 
 
