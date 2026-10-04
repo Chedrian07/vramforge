@@ -1,0 +1,24 @@
+# GPU presets offered by the calculator (plan.md §5.1 hardware.mode = gpu_preset).
+# nominal_gib is the vendor's nominal memory size (binary units), so
+# total_bytes = nominal_gib x 1,073,741,824. The UI also accepts custom total/usable values.
+# Only compute capability >= 8.0 GPUs are listed: the analytic profiles assume bf16 autocast with
+# flash/memory-efficient SDPA, and older GPUs may fall back to the O(T^2) math backend
+# (docs/research/architecture-memory.md, implementation implications G).
+version: "1.0.0"
+note: "공칭 용량입니다. nvidia-smi가 보고하는 총량과 실제 학습에 쓸 수 있는 용량(ECC·드라이버 예약·CUDA context·다른 프로세스 제외)은 더 작으므로, 가능하면 사용 가능 용량을 직접 입력하세요."
+gpus:
+  - { id: rtx-3060-12gb, name: "NVIDIA GeForce RTX 3060 12GB", nominal_gib: 12 }
+  - { id: rtx-3090-24gb, name: "NVIDIA GeForce RTX 3090 24GB", nominal_gib: 24 }
+  - { id: rtx-4060-ti-16gb, name: "NVIDIA GeForce RTX 4060 Ti 16GB", nominal_gib: 16 }
+  - { id: rtx-4080-16gb, name: "NVIDIA GeForce RTX 4080 16GB", nominal_gib: 16 }
+  - { id: rtx-4090-24gb, name: "NVIDIA GeForce RTX 4090 24GB", nominal_gib: 24 }
+  - { id: rtx-5090-32gb, name: "NVIDIA GeForce RTX 5090 32GB", nominal_gib: 32 }
+  - { id: a10-24gb, name: "NVIDIA A10 24GB", nominal_gib: 24 }
+  - { id: a10g-24gb, name: "NVIDIA A10G 24GB", nominal_gib: 24 }
+  - { id: l4-24gb, name: "NVIDIA L4 24GB", nominal_gib: 24 }
+  - { id: rtx-a6000-48gb, name: "NVIDIA RTX A6000 48GB", nominal_gib: 48 }
+  - { id: rtx-6000-ada-48gb, name: "NVIDIA RTX 6000 Ada 48GB", nominal_gib: 48 }
+  - { id: l40s-48gb, name: "NVIDIA L40S 48GB", nominal_gib: 48 }
+  - { id: a100-40gb, name: "NVIDIA A100 40GB", nominal_gib: 40 }
+  - { id: a100-80gb, name: "NVIDIA A100 80GB", nominal_gib: 80 }
+  - { id: h100-80gb, name: "NVIDIA H100 80GB", nominal_gib: 80 }
