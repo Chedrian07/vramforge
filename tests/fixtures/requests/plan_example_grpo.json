@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "model": {
+    "source_type": "huggingface",
+    "reference": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+    "revision": null,
+    "loading_scope": "auto_verified"
+  },
+  "dataset": {
+    "source_type": "huggingface",
+    "reference": "CyberNative/Code_Vulnerability_Security_DPO",
+    "revision": null,
+    "config": null,
+    "split": "train",
+    "scan_mode": "full",
+    "mapping": {
+      "system": "system",
+      "prompt": "question",
+      "chosen": "chosen",
+      "rejected": "rejected"
+    }
+  },
+  "training": {
+    "objective": "grpo",
+    "strategy": "qlora",
+    "quantization": {
+      "enabled": true,
+      "format": "nf4",
+      "double_quant": true,
+      "compute_dtype": "auto"
+    },
+    "lora": {
+      "r": 16,
+      "alpha": 32,
+      "dropout": 0.0,
+      "target_modules": "auto_verified",
+      "modules_to_save": []
+    },
+    "microbatch_per_device": 1,
+    "gradient_accumulation_steps": 4,
+    "gradient_checkpointing": true,
+    "packing": false,
+    "data_policy": "strict_no_truncation",
+    "backend_profile": "auto"
+  },
+  "grpo": {
+    "num_generations": 4,
+    "generation_batch_size": 4,
+    "completion_budget": null,
+    "completion_budget_candidates": [1024, 2048, 4096, 8192],
+    "beta": 0.0,
+    "reward": { "kind": "unspecified" },
+    "rollout_backend": "transformers_shared_policy"
+  },
+  "hardware": { "mode": "capacity_only" },
+  "scope": { "include_evaluation": false, "include_checkpoint_save": false },
+  "profiling": { "enabled": false }
+}
