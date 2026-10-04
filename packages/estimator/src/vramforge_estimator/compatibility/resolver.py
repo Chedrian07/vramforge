@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from vramforge_estimator import __version__
 from vramforge_estimator.architectures import ArchitectureAdapter, get_adapter, match_adapter
+from vramforge_estimator.architectures.trainable import peft_target_spec
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import (
     AnalysisRequest,
@@ -37,6 +38,7 @@ from vramforge_estimator.schemas import (
     LoadingScope,
     LoraResolved,
     LossKernel,
+    ModelComponent,
     ModelInventory,
     Objective,
     OptimizerResolved,
@@ -171,16 +173,23 @@ def _load_dtype(request: AnalysisRequest, profile: AnalyticProfile, res: _Resolu
 def _emit_patterns(
     target: str | list[str], modules: list[LinearModule], inventory: ModelInventory
 ) -> list[str]:
-    """What the exported LoraConfig.target_modules will contain."""
-    if isinstance(target, list):
-        return list(target)
-    if target == "all-linear":
-        return ["all-linear"]
+    """What the exported `LoraConfig.target_modules` will contain, with the PEFT 0.21.2 semantics
+    of `architectures.trainable.peft_target_spec`: "all-linear" and a single regex are matched only
+    as a plain string, so they are recorded as a one-element list that `peft_target_spec` turns
+    back into that string; any other value is a list matched as exact names or `.suffix`.
+
+    "auto_verified" becomes the leaf kinds when suffix matching over every module PEFT sees
+    selects exactly the resolved modules (MTP layers are never loaded), else the full names
+    (e.g. a vision `q_proj` next to the text `q_proj`, or an exclusion)."""
+    spec = peft_target_spec(target)
+    if isinstance(spec, list):
+        return list(spec)
+    if spec != "auto_verified":
+        return [spec]  # "all-linear" or one regex: PEFT receives the plain string
     kinds = sorted({m.kind for m in modules})
     chosen = {m.name for m in modules}
-    by_kind = {m.name for m in inventory.linear_modules if m.kind in kinds}
-    # PEFT matches list entries as name suffixes; leaf kinds are exact only if they select
-    # nothing else (e.g. vision `qkv` vs text `q_proj`).
+    visible = (m for m in inventory.linear_modules if m.component is not ModelComponent.MTP)
+    by_kind = {m.name for m in visible if m.kind in kinds}
     return kinds if by_kind == chosen else sorted(chosen)
 
 
@@ -213,11 +222,18 @@ def _lora(
         return None
     names = [m.name for m in modules]
     patterns = _emit_patterns(lora.target_modules, modules, inventory)
+    as_string = isinstance(peft_target_spec(patterns), str)
     res.set(
         "training.lora.target_modules",
         target_repr,
         patterns,
-        f"구조별 검증 preset/요청을 모듈 {len(names)}개로 해석했습니다.",
+        f"구조별 검증 preset/요청을 모듈 {len(names)}개로 해석했습니다."
+        + (
+            " PEFT에는 list가 아닌 문자열로 전달해야 합니다 (list 안의 all-linear·정규식은 "
+            "이름으로 비교되어 아무 모듈도 찾지 못함)."
+            if as_string
+            else " PEFT는 각 항목을 정확한 이름 또는 '.suffix'로 비교합니다."
+        ),
     )
     params = sum(
         rank_for(m.name, lora.r, lora.rank_pattern) * (m.in_features + m.out_features)
