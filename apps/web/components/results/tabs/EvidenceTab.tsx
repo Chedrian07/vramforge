@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 
 import { CopyButton } from "@/components/ui/controls";
-import { Badge, Mono } from "@/components/ui/primitives";
+import { Badge, Ident, Mono } from "@/components/ui/primitives";
 import { IssueList } from "@/components/ui/values";
 import type { AnalysisResult, ScenarioEstimate } from "@/lib/api/types";
 import { shortDigest } from "@/lib/format/bytes";
@@ -140,8 +140,8 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
           {comparison.map((row) => (
             <tr key={row.key}>
               <Td className="font-medium text-ink">{row.label}</Td>
-              <Td><Mono className="text-[12px]">{row.requested === undefined ? "—" : show(row.requested)}</Mono></Td>
-              <Td><Mono className="text-[12px]">{res ? show(row.resolved) : "확정 전"}</Mono></Td>
+              <Td><Ident className="text-[12px]">{row.requested === undefined ? "—" : show(row.requested)}</Ident></Td>
+              <Td><Ident className="text-[12px]">{res ? show(row.resolved) : "확정 전"}</Ident></Td>
               <Td className="text-[12px] text-muted">{observedCell(row.key)}</Td>
             </tr>
           ))}
@@ -164,10 +164,10 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
           <DataTable caption="요청과 다르게 해석한 설정" captionHidden head={<tr><Th>필드</Th><Th>요청</Th><Th>적용</Th><Th>이유</Th></tr>}>
             {(res.resolutions ?? []).map((r) => (
               <tr key={r.field}>
-                <Td><Mono className="text-[12px]">{r.field}</Mono></Td>
-                <Td><Mono className="text-[12px]">{show(r.requested)}</Mono></Td>
-                <Td><Mono className="text-[12px]">{show(r.resolved)}</Mono></Td>
-                <Td>{r.reason}</Td>
+                <Td><Ident className="text-[12px]">{r.field}</Ident></Td>
+                <Td><Ident className="text-[12px]">{show(r.requested)}</Ident></Td>
+                <Td><Ident className="text-[12px]">{show(r.resolved)}</Ident></Td>
+                <Td prose>{r.reason}</Td>
               </tr>
             ))}
           </DataTable>
@@ -187,10 +187,10 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
             <DataTable caption="요청했지만 적용되지 않은 옵션" head={<tr><Th>필드</Th><Th>요청</Th><Th>적용</Th><Th>이유</Th></tr>}>
               {(compat.not_effective ?? []).map((r) => (
                 <tr key={r.field}>
-                  <Td><Mono className="text-[12px]">{r.field}</Mono></Td>
-                  <Td><Mono className="text-[12px]">{show(r.requested)}</Mono></Td>
-                  <Td><Mono className="text-[12px]">{show(r.resolved)}</Mono></Td>
-                  <Td>{r.reason}</Td>
+                  <Td><Ident className="text-[12px]">{r.field}</Ident></Td>
+                  <Td><Ident className="text-[12px]">{show(r.requested)}</Ident></Td>
+                  <Td><Ident className="text-[12px]">{show(r.resolved)}</Ident></Td>
+                  <Td prose>{r.reason}</Td>
                 </tr>
               ))}
             </DataTable>
@@ -221,10 +221,10 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
           <DataTable caption="allocation 수식" captionHidden head={<tr><Th>allocation</Th><Th>shape</Th><Th>dtype</Th><Th>수식 근거</Th><Th>근거</Th></tr>}>
             {allocations.map((a, i) => (
               <tr key={`${a.name}-${i}`}>
-                <Td className="wrap-anywhere">{a.name}</Td>
-                <Td><Mono className="text-[12px]">{a.shape_expression ?? "—"}</Mono></Td>
-                <Td><Mono className="text-[12px]">{a.dtype ?? "—"}</Mono></Td>
-                <Td><Mono className="text-[12px]">{a.formula_ref ?? "—"}</Mono></Td>
+                <Td><Ident className="text-[12px]">{a.name}</Ident></Td>
+                <Td><Ident className="text-[12px]">{a.shape_expression ?? "—"}</Ident></Td>
+                <Td><Ident className="text-[12px]">{a.dtype ?? "—"}</Ident></Td>
+                <Td><Ident className="text-[12px]">{a.formula_ref ?? "—"}</Ident></Td>
                 <Td>{EVIDENCE_LABEL[a.evidence]}</Td>
               </tr>
             ))}

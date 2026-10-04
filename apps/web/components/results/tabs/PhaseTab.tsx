@@ -2,7 +2,7 @@
 
 import { Bar, BarChart, CartesianGrid, Cell, Tooltip, XAxis, YAxis } from "recharts";
 
-import { Badge, Mono } from "@/components/ui/primitives";
+import { Badge, Ident, Mono } from "@/components/ui/primitives";
 import { BytesRange, Bytes } from "@/components/ui/values";
 import type { ScenarioEstimate } from "@/lib/api/types";
 import { exactBytesRange, formatSizeRange } from "@/lib/format/bytes";
@@ -187,14 +187,14 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
                   ) : null}
                 </Td>
                 <Td>{p.included ? "포함" : <Badge tone="neutral">제외</Badge>}</Td>
-                <Td>{p.peak_timepoint ? <Mono className="text-[12px]">{p.peak_timepoint}</Mono> : "—"}</Td>
+                <Td>{p.peak_timepoint ? <Ident className="text-[12px]">{p.peak_timepoint}</Ident> : "—"}</Td>
                 <Td align="right">
                   {p.included ? <BytesRange low={p.bytes_low} high={p.bytes_high} reason="미상 항목 포함" /> : "—"}
                 </Td>
                 <Td align="right">
                   {p.included && p.known_floor_bytes != null ? <Bytes value={p.known_floor_bytes} /> : "—"}
                 </Td>
-                <Td className="text-[12px] text-muted">
+                <Td prose className="text-[12px] text-muted">
                   {p.excluded_reason ?? ""}
                   {(p.unknown_components ?? []).length > 0
                     ? ` 산정 불가: ${(p.unknown_components ?? []).join(", ")}`
@@ -227,7 +227,7 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
               {device.timepoints.map((t) => (
                 <tr key={t.timepoint}>
                   <Td>
-                    <Mono className="text-[12px]">{t.timepoint}</Mono>
+                    <Ident className="text-[12px]">{t.timepoint}</Ident>
                   </Td>
                   <Td>{PHASE_LABEL[t.phase]}</Td>
                   <Td align="right">

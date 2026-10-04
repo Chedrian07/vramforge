@@ -2,7 +2,7 @@
 
 import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 
-import { Badge, Mono } from "@/components/ui/primitives";
+import { Badge, Ident, Mono } from "@/components/ui/primitives";
 import type { AnalysisResult, BranchStats } from "@/lib/api/types";
 import { formatCount, formatNumber, shortDigest } from "@/lib/format/bytes";
 import { BRANCH_LABEL, DATA_PRESERVATION_LABEL, PRESERVATION_CHECK_LABEL } from "@/lib/format/labels";
@@ -149,7 +149,7 @@ function BranchSection({ branch }: { branch: BranchStats }) {
           {(branch.top_rows ?? []).map((row) => (
             <tr key={row.row_id}>
               <Td>
-                <Mono>{row.row_id}</Mono>
+                <Ident>{row.row_id}</Ident>
               </Td>
               <Td align="right" className="num">
                 {formatCount(row.length)}
@@ -252,15 +252,15 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
           {(scan.failed_rows_sample ?? []).map((row) => (
             <tr key={row.row_id}>
               <Td>
-                <Mono>{row.row_id}</Mono>
+                <Ident>{row.row_id}</Ident>
               </Td>
               <Td>
-                <Mono>{row.shard_id ?? "—"}</Mono>
+                <Ident>{row.shard_id ?? "—"}</Ident>
               </Td>
               <Td>
-                <Mono>{row.error_code}</Mono>
+                <Ident>{row.error_code}</Ident>
               </Td>
-              <Td>{row.message}</Td>
+              <Td prose>{row.message}</Td>
             </tr>
           ))}
         </DataTable>

@@ -2,7 +2,7 @@
 
 import { Bar, BarChart, Tooltip, XAxis, YAxis } from "recharts";
 
-import { Badge, Mono } from "@/components/ui/primitives";
+import { Badge, Ident, Mono } from "@/components/ui/primitives";
 import { BytesRange, NotComputed } from "@/components/ui/values";
 import type { ScenarioEstimate } from "@/lib/api/types";
 import { exactBytes, formatSize } from "@/lib/format/bytes";
@@ -123,7 +123,7 @@ export function MemoryTab({ scenario }: { scenario: ScenarioEstimate | null }) {
           <Td>
             <span className="flex items-center gap-2">
               <LegendSwatch color={groupOf(item.category).color} />
-              <span className="wrap-anywhere">{item.name}</span>
+              <Ident className="text-[12px]">{item.name}</Ident>
             </span>
           </Td>
           <Td>{CATEGORY_LABEL[item.category]}</Td>
@@ -135,7 +135,9 @@ export function MemoryTab({ scenario }: { scenario: ScenarioEstimate | null }) {
               {EVIDENCE_LABEL[item.evidence]}
             </Badge>
           </Td>
-          <Td className="text-[12px] text-muted">{item.note ?? ""}</Td>
+          <Td prose className="text-[12px] text-muted">
+            {item.note ?? ""}
+          </Td>
         </tr>
       ))}
       <tr className="font-medium">
