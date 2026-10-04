@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import anyio
 from python_multipart.multipart import MultipartParser, parse_options_header
 
 from vramforge_estimator.errors import make_issue
@@ -33,6 +34,7 @@ ALLOWED_EXTENSIONS: dict[str, str] = {
     ".csv": "csv",
 }
 HEAD_BYTES = 8192
+FLUSH_BYTES = 1024 * 1024
 MAX_FILENAME = 120
 MAX_FIELD_BYTES = 4096
 
@@ -277,19 +279,31 @@ async def receive_upload(
     }
     try:
         parser = MultipartParser(boundary, callbacks)  # type: ignore[arg-type]
+        pending = bytearray()
+        stopped = False
+        # Parsing and file writes run in a worker thread (batched) so a large upload never
+        # blocks the event loop; at most FLUSH_BYTES are buffered in memory.
         async for chunk in body:
-            if chunk:
-                parser.write(chunk)
-            if sink.error is not None:
-                break
-        else:
-            parser.finalize()
-        return sink.finish()
+            if not chunk:
+                continue
+            pending += chunk
+            if len(pending) >= FLUSH_BYTES:
+                await anyio.to_thread.run_sync(parser.write, bytes(pending))
+                pending.clear()
+                if sink.error is not None:
+                    stopped = True
+                    break
+        if not stopped:
+            if pending:
+                await anyio.to_thread.run_sync(parser.write, bytes(pending))
+            if sink.error is None:
+                parser.finalize()
+        return await anyio.to_thread.run_sync(sink.finish)
     except ApiError:
-        sink.discard()
+        await anyio.to_thread.run_sync(sink.discard)
         raise
     except Exception as exc:
-        sink.discard()
+        await anyio.to_thread.run_sync(sink.discard)
         raise _bad_request("multipart 본문을 해석할 수 없습니다.") from exc
 
 

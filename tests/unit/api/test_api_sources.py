@@ -291,3 +291,18 @@ def test_inspect_rejects_foreign_upload_without_calling_resolvers(
     )["dataset"]
     body = client.post("/api/v1/sources/inspect", json={"dataset": dataset}).json()
     assert body["dataset"]["issues"][0]["code"] == "SOURCE_NOT_FOUND"
+
+
+def test_large_upload_is_streamed_in_batches(
+    settings_factory: Callable[..., Settings], client_factory: Callable[..., TestClient]
+) -> None:
+    settings = settings_factory(max_upload_bytes=4 * 1024 * 1024)
+    client = client_factory(settings)
+    line = b'{"prompt": "' + b"x" * 1000 + b'"}\n'
+    data = line * 3000  # ~3 MiB: several parser batches
+    resp = _upload(client, "big.jsonl", data)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["size_bytes"] == len(data)
+    assert resp.json()["sha256"] == hashlib.sha256(data).hexdigest()
+    too_big = _upload(client, "bigger.jsonl", data * 2)
+    assert too_big.status_code == 413
