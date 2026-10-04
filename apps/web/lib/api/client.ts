@@ -20,8 +20,6 @@ import type {
 
 export const API_BASE = "/api/v1";
 export const CSRF_HEADER = "X-VramForge-Request";
-/** Optional access-token session endpoint (not in the OpenAPI snapshot yet; see report). */
-export const SESSION_PATH = `${API_BASE}/session`;
 
 /** Fills `{param}` placeholders of a path declared in the OpenAPI contract. */
 export function apiPath<K extends keyof paths>(template: K, params: Record<string, string> = {}): string {
@@ -100,6 +98,16 @@ function fallbackIssue(status: number): Issue {
   };
 }
 
+/** A 2xx whose body is not the contract JSON (e.g. an HTML page from a misrouted proxy). */
+function unreadableBody(status: number): ApiError {
+  return new ApiError(status, {
+    code: "INTERNAL_ERROR",
+    severity: "error",
+    retryable: true,
+    user_message: "서버 응답 형식이 올바르지 않습니다. 프록시 설정이나 서비스 상태를 확인하세요.",
+  });
+}
+
 function isIssue(value: unknown): value is Issue {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -160,7 +168,12 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
     }
     if (response.status === 204) return undefined as T;
     const text = await response.text();
-    return (text ? JSON.parse(text) : undefined) as T;
+    if (!text) return undefined as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw unreadableBody(response.status);
+    }
   }
 
   const analysisPath = (analysisId: string) =>
@@ -200,7 +213,7 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
         { json: body, signal },
       ),
     createSession: async (token) => {
-      await request<unknown>("POST", SESSION_PATH, { json: { token } });
+      await request<unknown>("POST", apiPath("/api/v1/session"), { json: { token } });
     },
     eventsUrl: (analysisId, after) => {
       const base = apiPath("/api/v1/analyses/{analysis_id}/events", { analysis_id: analysisId });

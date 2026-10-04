@@ -116,6 +116,16 @@ describe("http client", () => {
     expect(error.issue.retryable).toBe(true);
   });
 
+  it("turns an unreadable success body into a Korean ApiError", async () => {
+    // e.g. a reverse proxy that serves the app's HTML page for /api by mistake
+    const { api } = setup(new Response("<!doctype html><html></html>", { status: 200, headers: { "Content-Type": "text/html" } }));
+    const error = (await api.getAnalysis("a1").catch((e: unknown) => e)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(200);
+    expect(error.issue.code).toBe("INTERNAL_ERROR");
+    expect(error.issue.user_message).not.toContain("<");
+  });
+
   it("rethrows aborts untouched", async () => {
     const { api } = setup(() => Promise.reject(new DOMException("aborted", "AbortError")));
     await expect(api.localRoots()).rejects.toMatchObject({ name: "AbortError" });
