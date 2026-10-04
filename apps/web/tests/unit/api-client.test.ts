@@ -63,6 +63,14 @@ describe("http client", () => {
     expect(call(1).headers[CSRF_HEADER]).toBe("1");
   });
 
+  it("deletes with the CSRF header and accepts 204", async () => {
+    const { api, call } = setup(new Response(null, { status: 204 }));
+    await expect(api.deleteAnalysis("a1")).resolves.toBeUndefined();
+    expect(call().url).toBe("/api/v1/analyses/a1");
+    expect(call().init.method).toBe("DELETE");
+    expect(call().headers[CSRF_HEADER]).toBe("1");
+  });
+
   it("uploads multipart without forcing a content type", async () => {
     const { api, call } = setup(jsonResponse(201, { upload_id: "u1" }));
     await api.upload(new File(["{}\n"], "rows.jsonl"));

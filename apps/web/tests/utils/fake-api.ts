@@ -19,6 +19,7 @@ export function createFakeApi(overrides: Partial<ApiClient> = {}): ApiClient {
     createAnalysis: notConfigured("createAnalysis"),
     getAnalysis: notConfigured("getAnalysis"),
     cancelAnalysis: notConfigured("cancelAnalysis"),
+    deleteAnalysis: notConfigured("deleteAnalysis"),
     scenarios: notConfigured("scenarios"),
     createSession: vi.fn(async () => undefined),
     eventsUrl: (id: string) => `/api/v1/analyses/${id}/events`,

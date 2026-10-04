@@ -58,6 +58,8 @@ export interface ApiClient {
   createAnalysis(body: AnalysisRequest, idempotencyKey: string): Promise<AnalysisCreated>;
   getAnalysis(analysisId: string, signal?: AbortSignal): Promise<AnalysisStatus>;
   cancelAnalysis(analysisId: string): Promise<AnalysisStatus>;
+  /** Deletes the analysis with its artifacts (plan.md §16.4). */
+  deleteAnalysis(analysisId: string): Promise<void>;
   scenarios(analysisId: string, body: ScenarioRequest, signal?: AbortSignal): Promise<ScenarioResponse>;
   createSession(token: string): Promise<void>;
   eventsUrl(analysisId: string): string;
@@ -187,6 +189,9 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
         "POST",
         apiPath("/api/v1/analyses/{analysis_id}/cancel", { analysis_id: analysisId }),
       ),
+    deleteAnalysis: async (analysisId) => {
+      await request<undefined>("DELETE", analysisPath(analysisId));
+    },
     scenarios: (analysisId, body, signal) =>
       request<ScenarioResponse>(
         "POST",

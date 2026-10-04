@@ -207,6 +207,10 @@ const api: ApiClient = {
     run.cancelledAt = Date.now();
     return delay({ ...statusOf(run), status: "CANCEL_REQUESTED" as const }, 80);
   },
+  deleteAnalysis: async (id) => {
+    if (!runs.delete(id)) throw notFound();
+    return delay(undefined, 80);
+  },
   scenarios: async (id, body) => {
     const run = runs.get(id);
     if (!run) throw notFound();
