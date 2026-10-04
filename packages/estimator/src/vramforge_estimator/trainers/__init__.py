@@ -5,13 +5,7 @@ Owner: memory agent (docs/architecture.md §8). Signatures are the contract.
 
 from __future__ import annotations
 
-from vramforge_estimator.schemas import Objective
-
 from .base import TrainerAdapter, TrainingSchedule
-
-
-def get_trainer(objective: Objective) -> TrainerAdapter:
-    raise NotImplementedError
-
+from .registry import get_trainer
 
 __all__ = ["TrainerAdapter", "TrainingSchedule", "get_trainer"]
