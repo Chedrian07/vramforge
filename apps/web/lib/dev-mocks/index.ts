@@ -6,7 +6,7 @@
 import { ApiError, type ApiClient } from "@/lib/api/client";
 import type { AnalysisEvent } from "@/lib/api/events";
 import type { EventSourceFactory, EventSourceLike } from "@/lib/api/stream";
-import type { AnalysisRequest, AnalysisResult, AnalysisStatus, JobProgress, JobStatus } from "@/lib/api/types";
+import { isTerminalStatus, type AnalysisRequest, type AnalysisResult, type AnalysisStatus, type JobProgress, type JobStatus } from "@/lib/api/types";
 import { requestFingerprint } from "@/lib/form/fingerprint";
 
 import { dpoResult, sftResult } from "../../tests/fixtures/analysis-dpo-sft";
@@ -85,7 +85,8 @@ function script(run: Omit<MockRun, "events">): AnalysisEvent[] {
     const known = rows >= 2_048;
     push("partial_result", "TOKENIZING", { stage: "TOKENIZING", processed_rows: rows, total_rows: known ? TOTAL_ROWS : null, shard_progress: { completed: 0, total: known ? 1 : null } }, { max_tokens: Math.min(268 + rows / 2, 2_272), rows_failed: 0 });
     if (run.final.status === "PARTIAL" && rows >= 2_048) {
-      events.push({ ...events.at(-1)!, event_id: events.length + 1, type: "completed", status: "PARTIAL" });
+      // The API reports a partial stop as a `failed` event whose status is PARTIAL.
+      events.push({ ...events.at(-1)!, event_id: events.length + 1, type: "failed", status: "PARTIAL", issue: run.final.error ?? null });
       return events;
     }
   }
@@ -108,7 +109,7 @@ function statusOf(run: MockRun): AnalysisStatus {
   }
   const seen = elapsedEvents(run);
   const last = seen.at(-1);
-  if (last && ["completed", "failed", "needs_input", "cancelled"].includes(last.type)) return { ...run.final, last_event_id: last.event_id };
+  if (last && isTerminalStatus(last.status)) return { ...run.final, last_event_id: last.event_id };
   return {
     analysis_id: run.id,
     status: last?.status ?? "QUEUED",

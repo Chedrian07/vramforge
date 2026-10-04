@@ -43,4 +43,26 @@ describe("dev mock mode", () => {
     expect(status.result?.requested_config).toEqual(request);
     expect(status.result?.memory?.primary_scenario_id).toBeNull();
   });
+
+  it("ends a partial run like the API: a failed event whose status is PARTIAL", async () => {
+    vi.useFakeTimers();
+    const { api, eventSourceFactory } = devMocks!;
+    const request = toAnalysisRequest({ ...EXAMPLE_FORM_VALUES, datasetReference: "org/partial-data" });
+    const createdPromise = api.createAnalysis(request, "key-partial");
+    await vi.advanceTimersByTimeAsync(200);
+    const created = await createdPromise;
+    const es = eventSourceFactory(api.eventsUrl(created.analysis_id));
+    const ends: Array<[string, string]> = [];
+    for (const type of ["completed", "failed"]) {
+      es.addEventListener(type, (event) => {
+        const parsed = parseEventData(event.data);
+        if (parsed) ends.push([parsed.type, parsed.status]);
+      });
+    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ends).toEqual([["failed", "PARTIAL"]]);
+    const statusPromise = api.getAnalysis(created.analysis_id);
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await statusPromise).status).toBe("PARTIAL");
+  });
 });

@@ -5,12 +5,12 @@ import { useFormContext } from "react-hook-form";
 
 import { Badge, Button, Mono, NativeSelect } from "@/components/ui/primitives";
 import { IssueList } from "@/components/ui/values";
-import type { JobStatus, NeedsInput } from "@/lib/api/types";
+import { isTerminalStatus, type JobStatus, type NeedsInput } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { formatCount } from "@/lib/format/bytes";
 import { JOB_STATUS_LABEL, PROGRESS_STEPS } from "@/lib/format/labels";
 import type { FormValues } from "@/lib/form/values";
-import type { RunState } from "@/lib/hooks/useAnalysisRun";
+import { isRunActive, type RunState } from "@/lib/hooks/useAnalysisRun";
 import { jobTone } from "@/lib/result/status";
 
 import { applyMapping } from "./MappingEditor";
@@ -63,10 +63,13 @@ export function ProgressPanel({
 }) {
   const states = stepStates(run);
   const progress = run.progress;
-  const active = run.phase === "creating" || run.phase === "running";
+  const active = isRunActive(run);
+  // The status of the last event (or of the final GET) decides what is shown, never the event
+  // type: a `failed` event can carry PARTIAL. Until the final GET answers, its issue is used.
   const status = run.jobStatus;
+  const settling = run.phase === "running" && isTerminalStatus(status);
   const result = run.status?.result ?? null;
-  const terminalIssue = run.status?.error ?? result?.errors?.[0] ?? null;
+  const terminalIssue = run.status?.error ?? result?.errors?.[0] ?? run.endIssue ?? null;
 
   return (
     <section aria-labelledby="progress-title" className="rounded-xl border border-line bg-surface p-4 sm:p-6">
@@ -122,7 +125,12 @@ export function ProgressPanel({
             </Button>
           </div>
         ) : null}
-        {status === "COMPLETED" ? <p className="text-[13px] text-ok">분석을 마쳤습니다. 결과는 요약 카드와 아래 탭에 있습니다.</p> : null}
+        {settling ? (
+          <p role="status" className="text-[13px] text-muted">
+            분석이 끝났습니다. 저장된 최종 결과를 불러오는 중…
+          </p>
+        ) : null}
+        {run.status?.status === "COMPLETED" ? <p className="text-[13px] text-ok">분석을 마쳤습니다. 결과는 요약 카드와 아래 탭에 있습니다.</p> : null}
         {status === "PARTIAL" ? (
           <>
             <p className="text-[13px] text-warn">일부 단계만 끝난 부분 결과입니다. 확인한 범위까지만 표시합니다.</p>

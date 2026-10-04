@@ -17,7 +17,7 @@ import { canonicalJson } from "@/lib/form/fingerprint";
 import { datasetInspectCall, modelInspectCall, shouldApplySuggestion } from "@/lib/form/inspect";
 import type { ExplicitAnalysisRequest } from "@/lib/form/request-schema";
 import { DEFAULT_FORM_VALUES, EXAMPLE_FORM_VALUES, formSchema, type FormValues } from "@/lib/form/values";
-import { useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
+import { isRunActive, useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
 import { useFitsViewport } from "@/lib/hooks/useFitsViewport";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useBackendProfiles, useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
@@ -129,7 +129,7 @@ export function CalculatorApp() {
   const hydrated = useHydrated();
   const summaryRef = useRef<HTMLDivElement>(null);
   const summaryFits = useFitsViewport(summaryRef);
-  const running = runState.phase === "creating" || runState.phase === "running";
+  const running = isRunActive(runState);
   const shown = recompute.display ?? runState.status?.result ?? null;
   const invalidCount = Object.keys(form.formState.errors).length;
   const datasetData = datasetInspection.state.status === "done" ? datasetInspection.state.data : null;

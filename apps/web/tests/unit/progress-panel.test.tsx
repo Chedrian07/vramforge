@@ -4,6 +4,7 @@ import type { UseFormReturn } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProgressPanel, stepStates } from "@/components/calculator/ProgressPanel";
+import { ApiError } from "@/lib/api/client";
 import type { FormValues } from "@/lib/form/values";
 import { INITIAL_RUN_STATE, type RunState } from "@/lib/hooks/useAnalysisRun";
 
@@ -76,6 +77,28 @@ describe("progress panel", () => {
     expect(screen.getByText(/부분 결과입니다/)).toBeInTheDocument();
     expect(screen.getByText(/처리 시간 한도로 2,310/)).toBeInTheDocument();
     expect(stepStates({ jobStatus: "PARTIAL", progress: partialStatus.progress!, phase: "terminal" })).toEqual(["done", "stopped", "pending", "pending"]);
+  });
+
+  it("shows the ending event's status and issue while the final status is missing", () => {
+    renderPanel({
+      phase: "error",
+      analysisId: "vf-fixture-a",
+      jobStatus: "PARTIAL",
+      endIssue: { code: "SCAN_PARTIAL", severity: "error", user_message: "처리 시간 한도로 일부만 확인했습니다." },
+      error: new ApiError(0, { code: "INTERNAL_ERROR", severity: "error", retryable: true, user_message: "서버에 연결하지 못했습니다." }),
+    });
+    expect(screen.getByText(/부분 결과입니다/)).toBeInTheDocument();
+    expect(screen.getByText("처리 시간 한도로 일부만 확인했습니다.")).toBeInTheDocument();
+    expect(screen.getByText("서버에 연결하지 못했습니다.")).toBeInTheDocument();
+    expect(screen.queryByText(/분석을 마쳤습니다/)).not.toBeInTheDocument();
+  });
+
+  it("stops offering cancel once an event reports the end", () => {
+    renderPanel({ phase: "running", analysisId: "vf-fixture-a", jobStatus: "COMPLETED" });
+    expect(screen.queryByRole("button", { name: "분석 취소" })).not.toBeInTheDocument();
+    expect(screen.getByText(/저장된 최종 결과를 불러오는 중/)).toBeInTheDocument();
+    // "완료" is only claimed once the stored status says so.
+    expect(screen.queryByText(/분석을 마쳤습니다/)).not.toBeInTheDocument();
   });
 
   it("reports cancellation with the rows seen", () => {

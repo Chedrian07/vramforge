@@ -8,7 +8,7 @@ import type { AnalysisResult, Branch, ScanCoverage } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { exactBytesRange, formatCount, formatGiB, gibNumber } from "@/lib/format/bytes";
 import { BRANCH_LABEL, JOB_STATUS_LABEL, SCAN_COVERAGE_LABEL } from "@/lib/format/labels";
-import type { RunState } from "@/lib/hooks/useAnalysisRun";
+import { isRunActive, type RunState } from "@/lib/hooks/useAnalysisRun";
 import type { RecomputeView } from "@/lib/hooks/useRecompute";
 import { hardwareSelected, summarize, type ResultSummary } from "@/lib/result/summary";
 
@@ -139,7 +139,8 @@ function attentionItems(summary: ResultSummary): DisplayIssue[] {
 
 function SummaryCardImpl({ run, view, hardwareRequested, gpuWorkerConnected, exportSlot }: SummaryCardProps) {
   const result = view.display ?? run.status?.result ?? null;
-  const running = run.phase === "creating" || run.phase === "running";
+  const running = isRunActive(run);
+  const settling = run.phase === "running" && !running; // terminal event seen, final GET pending
   const hasEstimate = result != null && (run.phase === "terminal" || view.display != null);
   const summary = hasEstimate && result ? summarize(result) : null;
   const stale = staleNote(view);
@@ -178,7 +179,7 @@ function SummaryCardImpl({ run, view, hardwareRequested, gpuWorkerConnected, exp
             <span className="num text-[44px] leading-none font-semibold tracking-tight text-muted">—</span>
             <span className="text-[13px] text-muted">GiB / GPU</span>
             <span className="text-[14px] font-medium text-ink-2">
-              {running ? `분석 진행 중 · ${stageLabel}` : "전체 데이터 분석 필요"}
+              {running ? `분석 진행 중 · ${stageLabel}` : settling ? "분석 종료 · 결과 불러오는 중" : "전체 데이터 분석 필요"}
             </span>
           </div>
         )}
