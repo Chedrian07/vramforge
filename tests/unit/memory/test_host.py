@@ -137,9 +137,12 @@ def test_full_finetune_checkpoint_saves_the_model_and_executed_state(fake_adapte
 
 
 def test_analysis_ram() -> None:
+    # The scanner keeps per-branch length histograms, not one value per row, so the row count
+    # gives no lower bound; only the tokenizer files do.
     est = estimate_analysis_ram(1000, 10_000)
-    assert est.bytes_low == 10_000 + 8 * 1000 and est.bytes_high is None
-    partial = estimate_analysis_ram(None, 10_000)
-    assert partial.bytes_low == 10_000
-    assert item(partial, "length_statistics").bytes_low is None
+    assert est.bytes_low == 10_000 and est.bytes_high is None
+    stats = item(est, "length_statistics")
+    assert stats.bytes_low is None and stats.note is not None and "histogram" in stats.note
+    buffer = item(est, "row_buffer")
+    assert buffer.bytes_low is None and buffer.note is not None and "parquet" in buffer.note
     assert estimate_analysis_ram(None, None).bytes_low is None

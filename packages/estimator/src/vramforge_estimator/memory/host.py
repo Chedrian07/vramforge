@@ -258,6 +258,11 @@ def estimate_disk(
 
 
 def estimate_analysis_ram(rows: int | None, tokenizer_bytes: int | None) -> AnalysisRamEstimate:
+    """The scanner tokenizes one row at a time, buffers length records until it writes a parquet
+    part and keeps per-branch length histograms, never one value per row (scan/scanner.py,
+    scan/stats.py `LengthAccumulator`). Only the tokenizer files give a known lower bound; the
+    row count bounds nothing here."""
+    _ = rows
     items = [
         EstimateItem(
             name="tokenizer",
@@ -267,11 +272,27 @@ def estimate_analysis_ram(rows: int | None, tokenizer_bytes: int | None) -> Anal
             note="tokenizer 파일은 로드할 때 메모리로 읽힙니다 (내부 자료구조 크기는 미측정).",
         ),
         EstimateItem(
-            name="length_statistics",
-            bytes_low=8 * rows if rows is not None else None,
+            name="row_buffer",
+            bytes_low=None,
             bytes_high=None,
-            evidence=Evidence.ANALYTIC if rows is not None else Evidence.UNKNOWN,
-            note="정확한 최대·분위수를 위해 row마다 길이 값(int64 이상)을 보관합니다.",
+            evidence=Evidence.UNKNOWN,
+            note=(
+                "row를 하나씩 읽어 토큰화하고(원문·token id는 보관하지 않음) 길이 기록은 "
+                "checkpoint 간격(ScanLimits.checkpoint_every_rows)마다 parquet로 씁니다. 가장 긴 "
+                "row의 원문·token 수가 이 계산에 전달되지 않아 크기를 산정하지 않았습니다. 분석 "
+                "worker 1개 기준이며 worker를 늘리면 그 수만큼 배수가 됩니다."
+            ),
+        ),
+        EstimateItem(
+            name="length_statistics",
+            bytes_low=None,
+            bytes_high=None,
+            evidence=Evidence.UNKNOWN,
+            note=(
+                "branch별 길이 histogram(서로 다른 길이 값 수에 비례)과 가장 긴 row 몇 개만 "
+                "보관하며 row마다 값을 보관하지 않습니다. 서로 다른 길이 값 수가 이 계산에 "
+                "전달되지 않아 크기를 산정하지 않았습니다."
+            ),
         ),
         _baseline(),
     ]

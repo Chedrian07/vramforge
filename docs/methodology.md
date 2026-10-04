@@ -336,7 +336,9 @@ RAM·디스크도 GPU와 같은 규칙입니다: 근거 없는 부분은 `null`�
 | | DPO precompute fingerprint | 가장 큰 tensor fp32 크기 × 2 (`hash_module`, CPU 실측 2.00배) |
 | | dataloader | `null` + 가정: `dataloader_num_workers=0`(worker 복제 없음), accumulation 창 batch(정수 id·mask) prefetch, `pin_memory=True`는 그 batch만, CPU offload 없음 |
 | | runtime 기본 RSS | `null` (Python·PyTorch·CUDA 라이브러리, 측정 근거 없음) |
-| 분석 서버 RAM | tokenizer 파일, row별 길이 값 (8 B × row) | 하한 |
+| 분석 서버 RAM | tokenizer 파일 | 하한 (내부 자료구조는 미측정) |
+| | row buffer | `null` + 가정: row를 하나씩 토큰화(원문·token id 미보관), 길이 기록은 checkpoint 간격마다 parquet로 기록, 분석 worker 1개 기준 |
+| | 길이 통계 | `null`: branch별 길이 histogram(서로 다른 길이 값 수에 비례)과 상위 row만 보관, row별 값은 보관하지 않음 |
 | 디스크 | 모델·데이터 다운로드(manifest 파일 크기), row-length artifact, checkpoint 1회분, 학습 노드 datasets cache(`null`) | 미상 항목이 있으면 total `null` |
 | | checkpoint 1회분 | 학습 가중치(PEFT: LoRA·`modules_to_save` 사본·학습 bias의 adapter 파일, full: 모델 전체) + gradient를 받는 파라미터의 optimizer state(AdamW: state 2개 × param dtype + tensor당 fp32 `step`, 8-bit: §5.2 규칙). 실행되지 않는 비전 adapter는 가중치만 저장됩니다. scheduler·RNG·tokenizer 파일은 제외 |
 
