@@ -308,3 +308,12 @@ def test_tsv_separator_option(tmp_path: Path, datasets_rows: Oracle) -> None:
         {"prompt": "안녕", "completion": "하세요"},
     ]
     assert rows == datasets_rows(path, "csv", sep="\t")["train"]
+
+
+def test_byte_budget_is_exact(tmp_path: Path) -> None:
+    path = write_jsonl(tmp_path / "rows.jsonl", [{"i": i} for i in range(50)])
+    size = path.stat().st_size
+    rows, _ = read_all(path, "json", budget=size)  # exactly the file size: read completely
+    assert len(rows) == 50
+    with pytest.raises(QuotaExceeded):
+        read_all(path, "json", budget=size - 1)

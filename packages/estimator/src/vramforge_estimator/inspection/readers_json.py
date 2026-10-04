@@ -85,7 +85,7 @@ def iter_json_file(
         schema.json_field_paths = schema.decode_paths()
     chunksize = opts.chunksize
     if source.byte_budget is not None:
-        chunksize = min(chunksize, max(source.byte_budget // 2, 64 << 10))
+        chunksize = min(chunksize, max(source.byte_budget // 4, 1 << 10))
     stream = open_decoded(source, spec.compression, limits)
     try:
         head = stream.read(chunksize)

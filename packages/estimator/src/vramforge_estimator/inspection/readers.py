@@ -169,7 +169,11 @@ class FileSource:
 
 
 class _LimitedStream(io.RawIOBase):
-    """Counts the bytes read through it and raises `QuotaExceeded` past `cap`."""
+    """Passes at most `cap` bytes through; asking for data beyond that raises `QuotaExceeded`.
+
+    Reads are clipped at the cap (no read-ahead past it), so a file of exactly `cap` bytes is
+    read completely and only a longer one fails.
+    """
 
     def __init__(self, raw: IO[bytes], cap: int, limit: str) -> None:
         super().__init__()
@@ -192,13 +196,14 @@ class _LimitedStream(io.RawIOBase):
 
     def readinto(self, buffer: Any) -> int:
         view = memoryview(buffer).cast("B")
-        data = self._raw.read(len(view))
-        if not data:
+        remaining = self._cap - self.count
+        if remaining <= 0:
+            if self._raw.read(1):
+                raise QuotaExceeded(self._limit, self._cap)
             return 0
+        data = self._raw.read(min(len(view), remaining))
         n = len(data)
         self.count += n
-        if self.count > self._cap:
-            raise QuotaExceeded(self._limit, self._cap)
         view[:n] = data
         return n
 
