@@ -31,7 +31,9 @@ export function datasetInspectCall(
   const revision = values.datasetRevision.trim();
   const config = values.datasetConfig.trim();
   return {
-    key: JSON.stringify([reference, revision, config]),
+    // The objective is part of the key: the server ranks mapping candidates (and decides whether
+    // they are ambiguous) for it.
+    key: JSON.stringify([reference, revision, config, values.objective]),
     body: {
       model: null,
       objective: values.objective,

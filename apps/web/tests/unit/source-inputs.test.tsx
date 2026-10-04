@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UseFormReturn } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +11,30 @@ import { useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspect
 
 import { DATASET_REF, MODEL_REF } from "../fixtures/common";
 import { ambiguousDatasetInspection, datasetInspection, modelInspection, uploadResponse } from "../fixtures/sources";
+import type { DatasetInspection } from "@/lib/api/types";
+
+/** A different dataset: instruction/output columns, prompt-completion suggestion. */
+const promptCompletionInspection: DatasetInspection = {
+  ...datasetInspection,
+  columns: [
+    { name: "instruction", dtype: "string", kind: "string" },
+    { name: "output", dtype: "string", kind: "string" },
+    { name: "source", dtype: "string", kind: "string" },
+  ],
+  detected_format: "prompt_completion",
+  suggested_mapping: {
+    format: "prompt_completion",
+    system: null,
+    prompt: "instruction",
+    chosen: null,
+    rejected: null,
+    completion: "output",
+    messages: null,
+    text: null,
+    empty_system_policy: "omit",
+  },
+  mapping_candidates: [],
+};
 import { FormHarness } from "../utils/form-harness";
 import { makeEnvironment, renderWithProviders } from "../utils/render";
 
@@ -127,6 +151,63 @@ describe("dataset input and mapping editor", () => {
     await user.selectOptions(screen.getByLabelText("Config"), "extended");
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     expect(inspect.mock.calls[1]![0]).toMatchObject({ dataset: { config: "extended" } });
+    // The chosen candidate still fits the columns of the new config, so it is kept.
+    await waitFor(() => expect(screen.getByLabelText("Config")).toHaveValue("extended"));
+    expect(form().getValues("mapPrompt")).toBe("instruction");
+    expect(form().getValues("mappingEnabled")).toBe(true);
+  });
+
+  it("starts again from auto-detection when the dataset changes", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async (body) => ({
+      model: null,
+      dataset: body.dataset?.reference === DATASET_REF ? datasetInspection : promptCompletionInspection,
+    }));
+    const { form } = renderSection(<DatasetHost />, { inspect });
+    const input = screen.getByLabelText("Dataset");
+    await user.type(input, DATASET_REF);
+    await user.tab();
+    await waitFor(() => expect(form().getValues("mapPrompt")).toBe("question"));
+
+    await user.clear(input);
+    await user.type(input, "org/other-data");
+    await user.tab();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(form().getValues("mappingFormat")).toBe("prompt_completion"));
+    const v = form().getValues();
+    expect([v.mapPrompt, v.mapCompletion, v.mapChosen, v.mapRejected, v.mapSystem]).toEqual(["instruction", "output", "", "", ""]);
+  });
+
+  it("drops a restored mapping that does not fit the inspected columns", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: promptCompletionInspection }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, {
+      datasetReference: "org/other-data",
+      mappingEnabled: true,
+      mappingFormat: "preference",
+      mapSystem: "system",
+      mapPrompt: "question",
+      mapChosen: "chosen",
+      mapRejected: "rejected",
+      emptySystemPolicy: "keep",
+    });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await waitFor(() => expect(form().getValues("mappingFormat")).toBe("prompt_completion"));
+    expect(form().getValues("mapChosen")).toBe("");
+    expect(form().getValues("emptySystemPolicy")).toBe("omit");
+  });
+
+  it("asks the inspector again when the objective changed", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: datasetInspection }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, { datasetReference: DATASET_REF, objective: "grpo" });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    act(() => form().setValue("objective", "dpo"));
+    await user.click(screen.getByLabelText("Dataset"));
+    await user.tab();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(inspect.mock.calls[1]![0]).toMatchObject({ objective: "dpo" });
   });
 
   it("uploads a file and analyses it by its upload reference", async () => {

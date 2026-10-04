@@ -12,11 +12,12 @@ import type { DatasetInspection, UploadResponse } from "@/lib/api/types";
 import { formatCount, formatSize, shortDigest } from "@/lib/format/bytes";
 import { DATASET_FORMAT_LABEL } from "@/lib/format/labels";
 import { datasetInspectCall, referenceOfKey, shouldApplySuggestion } from "@/lib/form/inspect";
+import { mappingFitsColumns } from "@/lib/form/mapping";
 import { hasViewerRowParam } from "@/lib/form/references";
 import type { FormValues } from "@/lib/form/values";
 import { useLocalRoots, type useDatasetInspection } from "@/lib/hooks/useInspection";
 
-import { MappingEditor, applyMapping } from "./MappingEditor";
+import { MappingEditor, applyMapping, clearMapping } from "./MappingEditor";
 
 type Inspection = ReturnType<typeof useDatasetInspection>;
 
@@ -37,11 +38,23 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const trigger = (force: boolean, overrides: Partial<Pick<FormValues, "datasetConfig">> = {}) => {
     const call = datasetInspectCall({ ...getValues(), ...overrides });
     if (!call) return;
+    // An explicit mapping belongs to the dataset it was made for: another dataset starts again
+    // from auto-detection and gets its own suggestion (plan.md §4.1, §7.2).
+    const previous = referenceOfKey(inspection.state.key);
+    if (getValues("mappingEnabled") && previous != null && previous !== call.body.dataset?.reference) {
+      clearMapping(setValue);
+    }
     const run = force ? inspection.reinspect(call.key, call.body) : inspection.inspect(call.key, call.body);
     void run.then((data) => {
+      if (!data) return;
+      // A mapping kept across a config change or restored after a reload must still fit.
+      const columns = (data.columns ?? []).map((c) => c.name);
+      if (getValues("mappingEnabled") && columns.length > 0 && !mappingFitsColumns(getValues(), columns)) {
+        clearMapping(setValue);
+      }
       // An unambiguous suggestion is applied (and shown) unless the user already edited it.
       // An auto-selected split stays "auto" (null) so the result can report split_auto_selected.
-      if (data?.suggested_mapping && shouldApplySuggestion(data, getValues("mappingEnabled"))) {
+      if (data.suggested_mapping && shouldApplySuggestion(data, getValues("mappingEnabled"))) {
         applyMapping(setValue, data.suggested_mapping);
       }
     });
@@ -58,7 +71,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
       setValue("datasetReference", data.reference, opts);
       setValue("datasetConfig", "", opts);
       setValue("datasetSplit", "", opts);
-      setValue("mappingEnabled", false, opts);
+      clearMapping(setValue);
       inspection.forget();
       trigger(true);
     } catch (err) {

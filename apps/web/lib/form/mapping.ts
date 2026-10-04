@@ -75,3 +75,10 @@ export function explicitMappingErrors(values: MappingValues): Partial<Record<"ma
   }
   return errors;
 }
+
+/** True when every column of the explicit mapping exists in `columns` (e.g. after a dataset or
+ * config change, or for a mapping restored from an earlier analysis). */
+export function mappingFitsColumns(values: MappingValues, columns: readonly string[]): boolean {
+  const available = new Set(columns);
+  return Object.values(mappedColumns(values)).every((column) => available.has(column));
+}
