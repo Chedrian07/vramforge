@@ -27,7 +27,7 @@ async function open(target: ExportTarget, id: string | null, api: ExportApi = ma
   return { menu: screen.getByRole("dialog"), user };
 }
 
-const createObjectURL = vi.fn((_blob: Blob) => "blob:vf-fixture-export");
+const createObjectURL = vi.fn<(blob: Blob) => string>(() => "blob:vf-fixture-export");
 const revokeObjectURL = vi.fn();
 let clicked: Array<{ href: string; download: string }> = [];
 

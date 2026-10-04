@@ -141,7 +141,7 @@ describe("model input", () => {
 });
 
 describe("inspection retry policy", () => {
-  const error = (status: number) => new ApiError(status, { code: "INTERNAL_ERROR", severity: "error", user_message: "x" });
+  const error = (status: number) => new ApiError(status, { code: "INTERNAL_ERROR", severity: "error", retryable: false, user_message: "x" });
 
   it("retries only unanswered, throttled or server-failed requests, once", () => {
     expect(shouldRetryInspection(0, error(0))).toBe(true);
