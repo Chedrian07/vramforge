@@ -103,9 +103,9 @@ def test_hub_files_are_downloaded_on_demand_and_only_for_the_split(
     assert fake_hub["__log__"] == []  # opening the stream downloads nothing
     first = next(iter(stream))
     assert first.row_index == 0
-    assert fake_hub["__log__"] == ["data/train-00000-of-00003.jsonl"]
+    assert fake_hub["__log__"] == ["download:data/train-00000-of-00003.jsonl"]
     list(stream)
-    assert "data/test-00000-of-00001.jsonl" not in fake_hub["__log__"]
+    assert not any("test-00000" in entry for entry in fake_hub["__log__"])
     assert stream.complete
 
 

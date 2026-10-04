@@ -113,7 +113,7 @@ def test_hub_manifest_listing_matches_datasets(
         assert split_files(hub_layout, config.name) == split_files(local_layout, config.name)
     assert hub_layout.default_config == local_layout.default_config
     # Only card files were fetched while resolving: data files are downloaded on demand.
-    assert set(fake_hub["__log__"]) <= {"README.md"}
+    assert set(fake_hub["__log__"]) <= {"download:README.md"}
 
 
 def test_files_are_sorted_per_pattern_not_naturally(tmp_path: Path) -> None:
