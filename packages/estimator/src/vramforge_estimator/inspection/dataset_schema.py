@@ -31,6 +31,7 @@ from .readers import (
     UnsupportedFormat,
     compression_of,
     iter_file,
+    reason_message,
 )
 
 if TYPE_CHECKING:
@@ -214,7 +215,7 @@ def _dtype_of(values: list[Any]) -> str:
 def _preview_problem(shard_id: str, reason: str) -> Issue:
     return make_issue(
         ErrorCode.DATASET_FORMAT_UNSUPPORTED,
-        f"데이터 파일 {shard_id}을(를) 미리보기로 읽을 수 없습니다.",
+        f"데이터 파일 {shard_id}을(를) 미리보기로 읽을 수 없습니다. {reason_message(reason)}",
         severity=Severity.ERROR,
         stage=Stage.INSPECTING,
         component="dataset",

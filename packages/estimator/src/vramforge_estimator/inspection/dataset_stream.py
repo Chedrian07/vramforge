@@ -43,6 +43,7 @@ from .readers import (
     UnsupportedFormat,
     compression_of,
     iter_file,
+    reason_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,8 @@ class DatasetRowStream:
             self._stop(
                 _issue(
                     ErrorCode.SCAN_PARTIAL,
-                    f"데이터 파일 {shard_id}을(를) 끝까지 읽을 수 없어 중단했습니다.",
+                    f"데이터 파일 {shard_id}을(를) 끝까지 읽을 수 없어 중단했습니다. "
+                    f"{reason_message(exc.reason)}",
                     reason=exc.reason,
                     shard_id=shard_id,
                     rows_read=self.rows_seen,
@@ -243,7 +245,7 @@ class DatasetRowStream:
             self._stop(
                 _issue(
                     ErrorCode.DATASET_FORMAT_UNSUPPORTED,
-                    f"데이터 파일 {shard_id}의 형식 또는 옵션을 지원하지 않습니다.",
+                    f"데이터 파일 {shard_id}을(를) 읽지 않았습니다. {reason_message(exc.reason)}",
                     reason=exc.reason,
                     shard_id=shard_id,
                 )

@@ -334,3 +334,24 @@ def test_deprecated_block_size_overrides_chunksize() -> None:
 
     assert JsonOptions.from_options({"block_size": 4096, "chunksize": 1 << 20}).chunksize == 4096
     assert JsonOptions.from_options({"block_size": None, "chunksize": 1 << 20}).chunksize == 1 << 20
+
+
+def test_json_array_after_leading_whitespace_is_unsupported_like_datasets(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    path = tmp_path / "pretty.json"
+    path.write_text('\n  [\n {"a": 1},\n {"a": 2}\n]\n', encoding="utf-8")
+    with pytest.raises(UnsupportedFormat) as excinfo:
+        read_all(path, "json")
+    assert excinfo.value.reason == "json_array_leading_whitespace"
+    with pytest.raises(Exception):  # noqa: B017 - datasets raises its own generation error
+        datasets_rows(path, "json")
+
+
+def test_pretty_printed_objects_follow_pyarrow_like_datasets(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    path = tmp_path / "pretty.jsonl"
+    path.write_text('{\n  "a": 1\n}\n{\n  "a": 2\n}\n', encoding="utf-8")
+    rows, _ = read_all(path, "json")
+    assert rows == [{"a": 1}, {"a": 2}] == datasets_rows(path, "json")["train"]

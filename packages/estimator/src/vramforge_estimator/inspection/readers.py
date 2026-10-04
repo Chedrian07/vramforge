@@ -82,6 +82,33 @@ class UnsupportedFormat(ReaderError):
     """The file (or its builder options) is outside what the readers support."""
 
 
+# Korean explanations of `ReaderError.reason` codes (user-facing, no raw data).
+REASON_MESSAGES: dict[str, str] = {
+    "binary_content": "텍스트(JSON)가 아닌 바이너리 내용입니다.",
+    "encoding": "지정한 문자 인코딩으로 읽을 수 없습니다.",
+    "json_array_expected": "JSON 배열 형식이 아닙니다.",
+    "json_array_unterminated": "JSON 배열이 닫히지 않았습니다(파일이 잘렸을 수 있습니다).",
+    "json_trailing_data": "JSON 배열 뒤에 다른 내용이 있습니다.",
+    "json_array_leading_whitespace": "JSON 배열 앞에 공백이나 줄바꿈이 있어 datasets가 이 파일을 "
+    "읽지 못합니다. 파일이 '['로 시작하도록 고쳐 주세요.",
+    "json_field_unreadable": "README의 field 설정으로 JSON을 읽을 수 없습니다.",
+    "agent_traces": "datasets가 이 컬럼 구성을 agent trace로 해석해 row를 그대로 읽지 않습니다.",
+    "csv_unreadable": "CSV로 해석할 수 없습니다.",
+    "parquet_unreadable": "Parquet 파일 구조가 손상되었습니다.",
+    "arrow_unreadable": "Arrow 파일 구조가 손상되었습니다.",
+    "schema_mismatch": "다른 레코드나 파일과 컬럼 구성이 달라 함께 읽을 수 없습니다.",
+    "compressed_columnar": "압축된 Parquet/Arrow 파일은 지원하지 않습니다.",
+    "compression_not_supported": "지원하지 않는 압축 형식입니다.",
+    "parquet_filters": "row filter가 지정된 Parquet 설정은 지원하지 않습니다.",
+    "parquet_skips_bad_files": "손상 파일을 건너뛰는 설정은 지원하지 않습니다.",
+    "module_not_supported": "지원하지 않는 데이터 형식입니다.",
+}
+
+
+def reason_message(reason: str) -> str:
+    return REASON_MESSAGES.get(reason, "파일을 읽을 수 없습니다.")
+
+
 @dataclass(frozen=True)
 class RowError:
     """A record that could not be decoded. `line` is 1-based within the (decompressed) file."""

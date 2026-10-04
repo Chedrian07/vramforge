@@ -97,6 +97,9 @@ def iter_json_file(
             head = head[len(codecs.BOM_UTF8) :]
         if opts.encoding.replace("_", "-").lower() in ("utf-8", "utf8") and b"\x00" in head[:8192]:
             raise ShardBroken("binary_content")  # JSON text never contains a raw NUL byte
+        if not head.startswith(b"[") and head.lstrip(_WHITESPACE).startswith(b"["):
+            # datasets only detects arrays at byte 0; otherwise pyarrow and pandas both fail.
+            raise UnsupportedFormat("json_array_leading_whitespace")
         reader = _JsonReader(stream, opts, limits, schema, info, chunksize, source.byte_budget)
         if opts.field is not None:
             info.file_format = "json_field"
