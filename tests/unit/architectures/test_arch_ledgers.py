@@ -13,6 +13,7 @@ from vramforge_estimator.architectures import activations as act
 from vramforge_estimator.architectures.ledger import K_GC_BACKWARD, K_GC_FORWARD
 from vramforge_estimator.schemas import (
     AllocationCategory,
+    AllocationSpec,
     Evidence,
     ModelInventory,
     Objective,
@@ -38,10 +39,15 @@ def auto(mimo: ModelInventory) -> list[str]:
     return [m.name for m in HYBRID.lora_target_modules(mimo, "auto_verified", [])]
 
 
-def step(inv: ModelInventory, cfg: ResolvedConfig, batch: int = 1, seq: int = 4096) -> dict:
-    return by_name(
-        HYBRID.train_step_ledger(inv, cfg, SequenceShape(batch=batch, seq_len=seq), TPS, "policy")
-    )
+def step(
+    inv: ModelInventory,
+    cfg: ResolvedConfig,
+    batch: int = 1,
+    seq: int = 4096,
+    padding: bool | None = None,
+) -> dict:
+    shape = SequenceShape(batch=batch, seq_len=seq, has_padding=padding)
+    return by_name(HYBRID.train_step_ledger(inv, cfg, shape, TPS, "policy"))
 
 
 def _x(lin: dict[str, tuple[int, int]]) -> act.LayerTrain:
@@ -154,6 +160,66 @@ def test_single_unpadded_sequence_has_no_mask(mimo: ModelInventory, auto: list[s
     assert "policy.act.attn_mask.full_attention" in padded
     grpo = step(mimo, make_cfg(objective=Objective.GRPO, targets=auto, gc=False))
     assert "policy.act.attn_mask.full_attention" in grpo  # left-padded prompts
+
+
+def test_reported_padding_selects_one_exact_path(mimo: ModelInventory, auto: list[str]) -> None:
+    cfg = make_cfg(objective=Objective.DPO, targets=auto, gc=False)
+    ranged = step(mimo, cfg, batch=2)  # has_padding None: both paths, low .. high
+    padded = step(mimo, cfg, batch=2, padding=True)
+    unpadded = step(mimo, cfg, batch=2, padding=False)
+    for name in (
+        "policy.act.attn_mask.full_attention",
+        "policy.act.full_attention.mask",
+        "policy.act.full_attention.attention",
+    ):
+        a = padded[name]
+        assert a.bytes_low == a.bytes_high == ranged[name].bytes_high, name
+        assert a.evidence is Evidence.ANALYTIC and "범위" not in (a.note or "")
+    assert "mem-efficient" in (padded["policy.act.full_attention.attention"].note or "")
+    # no padding: flash path, no mask anywhere (B = 2 rows of one length)
+    assert not any("mask" in n for n in unpadded)
+    attn = unpadded["policy.act.full_attention.attention"]
+    assert (
+        attn.bytes_low == attn.bytes_high == ranged["policy.act.full_attention.attention"].bytes_low
+    )
+    assert "INFERRED" not in (attn.note or "")
+    # the trainer's flag also overrides the "padding possible" heuristics
+    one = step(mimo, make_cfg(targets=auto, gc=False), padding=True)  # B = 1 with padding
+    assert one["policy.act.attn_mask.full_attention"].bytes_low == 4096 * 4096
+    grpo = step(mimo, make_cfg(objective=Objective.GRPO, targets=auto, gc=False), padding=False)
+    assert not any("mask" in n for n in grpo)
+
+
+def test_reported_padding_narrows_the_gc_factors(ib: ModuleType) -> None:
+    # dense layers are all attention layers, so padding changes S_max (in MiMo the largest layer
+    # is a linear-attention layer, which padding does not touch)
+    inv = ib.tiny_dense_inventory("llama")
+    cfg = make_cfg(objective=Objective.DPO, strategy=Strategy.LORA, targets=[])
+
+    def rec(padding: bool | None) -> AllocationSpec:
+        shape = SequenceShape(batch=2, seq_len=100, has_padding=padding)
+        return by_name(DENSE.train_step_ledger(inv, cfg, shape, TPS, "p"))[
+            "p.act.recompute.backward"
+        ]
+
+    ranged, padded, unpadded = rec(None), rec(True), rec(False)
+    assert unpadded.bytes_low == ranged.bytes_low < padded.bytes_low
+    assert unpadded.bytes_high < padded.bytes_high == ranged.bytes_high
+    assert "INFERRED" in (ranged.note or "") and "INFERRED" in (padded.note or "")
+    assert "INFERRED" not in (unpadded.note or "")  # flash path only: nothing source-inferred
+
+
+def test_no_grad_forward_honours_reported_padding(mimo: ModelInventory, auto: list[str]) -> None:
+    cfg = make_cfg(objective=Objective.DPO, targets=auto)
+
+    def ref(padding: bool | None) -> dict:
+        shape = SequenceShape(batch=2, seq_len=1024, has_padding=padding)
+        return by_name(HYBRID.no_grad_forward_ledger(mimo, cfg, shape, ["R:fwd"], "ref"))
+
+    mask = "ref.nograd.attn_mask.full_attention"
+    assert (ref(None)[mask].bytes_low, ref(None)[mask].bytes_high) == (0, 2 * 1024 * 1024)
+    assert ref(True)[mask].bytes_low == 2 * 1024 * 1024
+    assert mask not in ref(False)
 
 
 def test_gc_keeps_the_bool_mask_through_backward(mimo: ModelInventory, auto: list[str]) -> None:

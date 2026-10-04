@@ -135,6 +135,15 @@ def padding_possible(cfg: ResolvedConfig, shape: SequenceShape) -> bool:
     return shape.batch > 1 or pad_multiple or cfg.objective is Objective.GRPO
 
 
+def padding_variants(cfg: ResolvedConfig, shape: SequenceShape) -> list[bool]:
+    """Padding cases to evaluate: exactly the trainer-reported `SequenceShape.has_padding` (masked
+    SDPA terms only when True); when it is None, the unmasked and the masked path whenever padding
+    is possible (each group then spans low = min .. high = max)."""
+    if shape.has_padding is not None:
+        return [shape.has_padding]
+    return [False, True] if padding_possible(cfg, shape) else [False]
+
+
 # ---------------------------------------------------------------- kernel paths
 
 
@@ -464,7 +473,7 @@ def train_step(
     use_cache = cfg.use_cache_during_training and not gc
     mode = act_mode(cfg)
     paths = resolve_paths(structure, cfg)
-    variants = [False, True] if padding_possible(cfg, shape) else [False]
+    variants = padding_variants(cfg, shape)
     sets = layer_sets(structure, cfg, tr, paths, batch, seq, mode, variants)
     every = [tps.forward, tps.loss, tps.backward]
     dims = {"B": batch, "T": seq, "H": d.hidden}
@@ -874,7 +883,7 @@ def no_grad_forward(
     load = canonical_dtype(cfg.load_dtype)
     mode = act_mode(cfg, autocast=autocast)
     paths = resolve_paths(structure, cfg)
-    variants = [False, True] if padding_possible(cfg, shape) else [False]
+    variants = padding_variants(cfg, shape)
     sets = layer_sets(structure, cfg, tr, paths, batch, seq, mode, variants)
     p = f"{prefix}.nograd"
     dims = {"B": batch, "T": seq, "H": d.hidden}
