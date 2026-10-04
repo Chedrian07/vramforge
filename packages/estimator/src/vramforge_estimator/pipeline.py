@@ -21,11 +21,13 @@ Stopping rules:
 
 Status axes (plan §12.1): `scan_coverage` from the scan, `data_preservation` from the audit,
 `training_readiness` from the compatibility report combined with data findings (context exceeded
-or preservation violated → unsupported; preservation unknown → conditional), `estimate_evidence`
-from the memory estimate (`metadata_only` when only the inventory exists) and `hardware_fit` from
-the primary scenario — or, when there is no primary scenario (e.g. GRPO without an explicit
-completion budget), the worst outcome over all scenarios (exceeds > unknown > low_margin >
-expected_fit).
+or preservation violated → unsupported; preservation unknown → conditional; a run that halted,
+was cancelled or needs input is never `ready`), `estimate_evidence` from the memory estimate
+(`metadata_only` when only the inventory exists) and `hardware_fit` from the primary scenario —
+or, when there is no primary scenario (e.g. GRPO without an explicit completion budget), the worst
+outcome over all scenarios (exceeds > unknown > low_margin > expected_fit). A fit verdict is
+withheld (unknown) for every scenario while some row lengths are unverified (sample scan or failed
+rows; plan §10.3).
 
 The signatures are owned by the orchestrator; the body is implemented by the api agent.
 """
@@ -1055,25 +1057,42 @@ class _Run:
             margin_policy=request.margin_policy,
             readiness=readiness,
         )
+        estimate = self.guard_unverified_fits(estimate)
         self.result.memory = estimate
-        self.result.hardware_fit = self.guard_unverified_fit(_summary_fit(estimate))
+        self.result.hardware_fit = _summary_fit(estimate)
         self.collect_estimate_notes(estimate)
         self.secondary_estimates()
 
-    def guard_unverified_fit(self, fit: HardwareFitResult | None) -> HardwareFitResult | None:
+    def guard_unverified_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
         """No fit verdict unless every row's length is known (plan §10.3: a fit needs the full
-        analysis). Applies to sample scans and to scans with rows that failed to tokenize."""
+        analysis). Applies to every scenario of sample scans and of scans with rows that failed
+        to tokenize, so neither the summary nor a scenario card claims a fit."""
         scan_result = self.result.dataset_scan
         if (
-            fit is None
-            or scan_result is None
-            or fit.status not in (HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN)
-            or (scan_result.coverage is ScanCoverage.COMPLETE and not scan_result.rows_failed)
+            scan_result is not None
+            and scan_result.coverage is ScanCoverage.COMPLETE
+            and not scan_result.rows_failed
         ):
-            return fit
+            return estimate
         message = (
             "일부 row의 길이를 확인하지 못해(샘플 분석 또는 처리 실패 row) 적합 판정을 보류합니다."
         )
+        withheld = False
+        scenarios = []
+        for scenario in estimate.scenarios:
+            fit = scenario.hardware_fit
+            if fit.status in (HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN):
+                withheld = True
+                fit = fit.model_copy(
+                    update={
+                        "status": HardwareFit.UNKNOWN,
+                        "reason": "unknown_components",
+                        "message": message,
+                    }
+                )
+            scenarios.append(scenario.model_copy(update={"hardware_fit": fit}))
+        if not withheld:
+            return estimate
         self.note(
             make_issue(
                 ErrorCode.SCAN_PARTIAL,
@@ -1083,13 +1102,7 @@ class _Run:
                 reason="lengths_unverified",
             )
         )
-        return fit.model_copy(
-            update={
-                "status": HardwareFit.UNKNOWN,
-                "reason": "unknown_components",
-                "message": message,
-            }
-        )
+        return estimate.model_copy(update={"scenarios": scenarios})
 
     def collect_estimate_notes(self, estimate: MemoryEstimate) -> None:
         result = self.result
@@ -1208,13 +1221,21 @@ class _Run:
             fit = result.hardware_fit.status
         else:
             fit = HardwareFit.UNKNOWN
+        readiness = self.current_readiness()
+        if readiness is TrainingReadiness.READY and self.stopped_early():
+            # The whole setup was never verified; the trainer-config export is gated on `ready`.
+            readiness = TrainingReadiness.CONDITIONAL
         return StatusAxes(
             scan_coverage=coverage,
             data_preservation=preservation,
-            training_readiness=self.current_readiness(),
+            training_readiness=readiness,
             estimate_evidence=evidence,
             hardware_fit=fit,
         )
+
+    def stopped_early(self) -> bool:
+        """The run halted, was cancelled or ended with NEEDS_INPUT."""
+        return self.halted_status is not None or halting_issue(self.result) is not None
 
 
 def _new_result(request: AnalysisRequest, analysis_id: str) -> AnalysisResult:

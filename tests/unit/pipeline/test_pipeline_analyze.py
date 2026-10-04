@@ -462,3 +462,78 @@ def test_auto_selected_split_is_reported(
     auto = analyze(example_request(**{"dataset.split": None}), ctx)  # cache hit path
     assert auto.dataset_scan.split == "train"
     assert auto.dataset_scan.split_auto_selected is True
+
+
+@pytest.mark.parametrize(
+    "stop",
+    ["estimate_not_implemented", "estimate_error", "cancelled_before_estimate", "needs_input"],
+)
+def test_runs_that_stop_early_are_never_ready(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    """A halted, cancelled or NEEDS_INPUT run did not verify the setup: the readiness axis (which
+    gates the trainer-config export) must not say ready even when the profile itself is ready."""
+    request = example_request()
+    if stop == "estimate_not_implemented":
+        FakeModules(estimate_memory=raising(NotImplementedError())).install(monkeypatch)
+    elif stop == "estimate_error":
+        failure = issue(ErrorCode.UNKNOWN_MEMORY_COMPONENT, "ledger를 만들 수 없습니다.")
+        FakeModules(estimate_memory=raising(failure)).install(monkeypatch)
+    elif stop == "cancelled_before_estimate":
+        FakeModules().install(monkeypatch)
+        ctx.cancel_after_stage = JobStatus.PLANNING_BATCHES
+    else:
+        FakeModules(
+            inspect_dataset=lambda *a, **k: dataset_inspection(mapping_ambiguous=True)
+        ).install(monkeypatch)
+        request = example_request(**{"dataset.mapping": None})
+    result = analyze(request, ctx)
+    assert terminal_status(result) is not JobStatus.COMPLETED
+    assert result.compatibility_report.readiness is TrainingReadiness.READY
+    assert result.status.training_readiness is TrainingReadiness.CONDITIONAL
+    assert result.memory is None
+
+
+def test_unverified_lengths_withhold_every_scenario_fit(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rows that failed to tokenize leave the longest length unknown: no scenario may claim a
+    fit (plan §10.3), not only the summary."""
+    from pipeline_fakes import scan_result
+
+    from vramforge_estimator.scan import ScanOutcome
+
+    scenarios = [
+        scenario("budget_1024", fit=HardwareFit.EXPECTED_FIT),
+        scenario("budget_2048", fit=HardwareFit.LOW_MARGIN),
+        scenario("budget_8192", high=90 * GiB, fit=HardwareFit.EXCEEDS),
+    ]
+
+    def failed_rows_scan(stream, adapter, scan_ctx, **kwargs):
+        lengths = scan_ctx.artifact_dir / "lengths"
+        lengths.mkdir(parents=True, exist_ok=True)
+        (lengths / "part-00000.parquet").write_bytes(b"PAR1fakePAR1")
+        result = scan_result(preprocess_key=kwargs["preprocess_key"], rows_failed=1)
+        return ScanOutcome(result=result, artifact_path=lengths)
+
+    FakeModules(
+        full_scan=failed_rows_scan,
+        estimate_memory=lambda *a, **k: memory_estimate(scenarios, primary=None),
+    ).install(monkeypatch)
+    request = example_request(**{"hardware": {"mode": "custom", "device_total_bytes": 80 * GiB}})
+    result = analyze(request, ctx)
+    fits = [s.hardware_fit.status for s in result.memory.scenarios]
+    assert fits == [HardwareFit.UNKNOWN, HardwareFit.UNKNOWN, HardwareFit.EXCEEDS]
+    assert result.hardware_fit.status is HardwareFit.EXCEEDS  # the worst scenario still shows
+    assert [w.details.get("reason") for w in result.warnings].count("lengths_unverified") == 1
+
+    FakeModules(estimate_memory=lambda *a, **k: memory_estimate(scenarios, primary=None)).install(
+        monkeypatch
+    )
+    fresh = FakeContext(artifact_dir=tmp_path / "fresh")  # no cached failed-rows scan
+    verified = analyze(request, fresh)  # complete scan without failures keeps the verdicts
+    assert [s.hardware_fit.status for s in verified.memory.scenarios] == [
+        HardwareFit.EXPECTED_FIT,
+        HardwareFit.LOW_MARGIN,
+        HardwareFit.EXCEEDS,
+    ]
