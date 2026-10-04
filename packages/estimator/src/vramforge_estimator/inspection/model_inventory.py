@@ -3,7 +3,9 @@
 Every serialized tensor becomes a `TensorInfo` (component, role, module, layer index). 2-D
 ``*.weight`` tensors of Linear-like modules become `LinearModule`s (shape ``[out, in]``) — the
 unit for quantization and LoRA accounting; embeddings and ``lm_head`` are not Linear modules
-here. Tied embeddings are counted once in ``params_total``.
+here. Tied embeddings are counted once in ``params_total``. Pre-quantized checkpoints
+(quantization-only dtypes such as E8M0 scales or FP4/FP6 payloads, quantizer tensor names, FP8
+tensors, integer weight matrices) are refused instead of being inventoried as dense.
 """
 
 from __future__ import annotations
@@ -98,7 +100,18 @@ _QUANT_SUFFIXES = {
     ".nested_absmax": "bitsandbytes",
     ".SCB": "bitsandbytes",
 }
-_INT_DTYPES = frozenset({"int8", "uint8", "int16", "int32", "int64"})
+# Dtypes that only quantized storage uses: OCP Microscaling (MX) E8M0 block scales and FP4/FP6
+# element payloads. Their presence alone marks a pre-quantized checkpoint.
+_MX_SCALE_DTYPE = "float8_e8m0fnu"
+_FP4_DTYPES = frozenset({"float4_e2m1"})
+_FP6_DTYPES = frozenset({"float6_e2m3", "float6_e3m2"})
+_QUANT_ONLY_DTYPES = frozenset({_MX_SCALE_DTYPE}) | _FP4_DTYPES | _FP6_DTYPES
+_FP8_DTYPES = frozenset({"float8_e4m3fn", "float8_e5m2"})
+# A weight matrix (Linear, embedding, lm_head) stored as integers is a packed quantized payload
+# (GPTQ/AWQ/MLX/bitsandbytes...). Integer or complex tensors in other roles (buffers, indices,
+# position ids) are ordinary dense data and are inventoried as such.
+_INT_DTYPES = frozenset({"int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64"})
+_MATRIX_ROLES = frozenset({TensorRole.LINEAR_WEIGHT, TensorRole.EMBEDDING, TensorRole.LM_HEAD})
 
 
 @dataclass(frozen=True)
@@ -160,16 +173,44 @@ def role_of(name: str, ndim: int, conv_modules: set[str], matrix_modules: set[st
     return TensorRole.OTHER
 
 
-def _quantized_format(tensors: list[TensorInfo]) -> str | None:
-    """Most specific evidence first: quantizer tensor names, then fp8, then integer weights."""
+@dataclass(frozen=True)
+class _QuantizedEvidence:
+    format: str  # e.g. "gptq/awq", "fp8", "mxfp4"
+    reason: str  # "quantized_dtype" (from dtypes) | "prequantized_checkpoint" (tensor names)
+    dtypes: tuple[str, ...] = ()  # the quantization-style dtypes found (dtype evidence only)
+
+
+def _low_bit_format(dtypes: set[str]) -> str:
+    """Format label: an "mx" prefix when E8M0 block scales are present, then the element type."""
+    prefix = "mx" if _MX_SCALE_DTYPE in dtypes else ""
+    if dtypes & _FP4_DTYPES:
+        return f"{prefix}fp4"
+    if dtypes & _FP6_DTYPES:
+        return f"{prefix}fp6"
+    if dtypes & _FP8_DTYPES:
+        return f"{prefix}fp8"
+    return prefix  # E8M0 scales next to integer-packed elements: microscaling, element unknown
+
+
+def _quantized_format(tensors: list[TensorInfo]) -> _QuantizedEvidence | None:
+    """Most decisive evidence first.
+
+    Quantization-only dtypes (E8M0 scales, FP4/FP6 payloads) whatever the tensors are called,
+    then quantizer tensor names, then FP8 tensors, then weight matrices stored as integers.
+    """
+    dtypes = {t.dtype for t in tensors}
+    if dtypes & _QUANT_ONLY_DTYPES:
+        found = dtypes & (_QUANT_ONLY_DTYPES | _FP8_DTYPES)
+        return _QuantizedEvidence(_low_bit_format(dtypes), "quantized_dtype", tuple(sorted(found)))
     for tensor in tensors:
         for suffix, fmt in _QUANT_SUFFIXES.items():
             if tensor.name.endswith(suffix):
-                return fmt
-    if any(t.dtype.startswith("float8") for t in tensors):
-        return "fp8"
-    if any(t.role is TensorRole.LINEAR_WEIGHT and t.dtype in _INT_DTYPES for t in tensors):
-        return "integer-packed"
+                return _QuantizedEvidence(fmt, "prequantized_checkpoint")
+    if fp8 := dtypes & _FP8_DTYPES:
+        return _QuantizedEvidence("fp8", "quantized_dtype", tuple(sorted(fp8)))
+    packed = {t.dtype for t in tensors if t.role in _MATRIX_ROLES and t.dtype in _INT_DTYPES}
+    if packed:
+        return _QuantizedEvidence("integer-packed", "quantized_dtype", tuple(sorted(packed)))
     return None
 
 
@@ -231,12 +272,18 @@ def build_inventory(
 
     quantized = _quantized_format(tensors)
     if quantized is not None:
+        evidence: dict[str, object] = {}
+        cause = ""
+        if quantized.dtypes:
+            evidence["quantized_dtypes"] = list(quantized.dtypes)
+            cause = f"(양자화 형식 dtype: {', '.join(quantized.dtypes)})"
         raise _error(
             ErrorCode.UNSUPPORTED_MODEL_FORMAT,
-            f"이미 양자화된 checkpoint({quantized})는 지원하지 않습니다. "
+            f"이미 양자화된 checkpoint({quantized.format})는 지원하지 않습니다{cause}. "
             "원본 정밀도(bf16/fp16/fp32) safetensors 가중치가 필요합니다.",
-            reason="prequantized_checkpoint",
-            quantized_checkpoint_format=quantized,
+            reason=quantized.reason,
+            quantized_checkpoint_format=quantized.format,
+            **evidence,
         )
 
     by_name = {t.name: t for t in tensors}

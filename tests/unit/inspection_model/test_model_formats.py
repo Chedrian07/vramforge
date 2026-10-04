@@ -14,7 +14,7 @@ from huggingface_hub import errors as hf_errors
 
 from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.inspection import inspect_model
-from vramforge_estimator.schemas import ErrorCode, ModelInventory, ModelSourceRef
+from vramforge_estimator.schemas import ErrorCode, ModelInventory, ModelSourceRef, TensorRole
 from vramforge_estimator.sources import SourceAccess, hub, resolve_model
 
 CONFIG = {
@@ -140,8 +140,6 @@ def test_declared_quantization_config(model_dir: ModelDir) -> None:
             },
             "gptq/awq",
         ),
-        ({"model.layers.0.mlp.up_proj.weight": ("F8_E4M3", [8, 8])}, "fp8"),
-        ({"model.layers.0.mlp.up_proj.weight": ("U8", [8, 4])}, "integer-packed"),
         (
             {
                 "model.layers.0.mlp.up_proj.weight": ("U8", [32, 1]),
@@ -151,14 +149,132 @@ def test_declared_quantization_config(model_dir: ModelDir) -> None:
         ),
     ],
 )
-def test_prequantized_tensors_without_config(
+def test_prequantized_tensor_names_without_config(
     model_dir: ModelDir, tensors: dict[str, tuple[str, list[int]]], fmt: str
 ) -> None:
-    _fails(
+    exc = _fails(
         ErrorCode.UNSUPPORTED_MODEL_FORMAT,
         *model_dir(tensors={**TENSORS, **tensors}),
         reason="prequantized_checkpoint",
         quantized_checkpoint_format=fmt,
+    )
+    assert "quantized_dtypes" not in exc.issue.details
+
+
+@pytest.mark.parametrize(
+    ("tensors", "fmt", "dtypes"),
+    [
+        # OCP MXFP4: FP4 payload + E8M0 block scales (the scale's name alone would say "fp8")
+        (
+            {
+                "model.layers.0.mlp.up_proj.weight": ("F4", [8, 8]),
+                "model.layers.0.mlp.up_proj.weight_scale": ("F8_E8M0", [8, 1]),
+            },
+            "mxfp4",
+            ["float4_e2m1", "float8_e8m0fnu"],
+        ),
+        ({"model.layers.0.mlp.up_proj.weight": ("F4", [8, 8])}, "fp4", ["float4_e2m1"]),
+        ({"model.layers.0.mlp.up_proj.weight": ("F6_E2M3", [8, 8])}, "fp6", ["float6_e2m3"]),
+        (
+            {
+                "model.layers.0.mlp.up_proj.weight": ("F6_E3M2", [8, 8]),
+                "model.layers.0.mlp.up_proj.weight_scale": ("F8_E8M0", [8, 1]),
+            },
+            "mxfp6",
+            ["float6_e3m2", "float8_e8m0fnu"],
+        ),
+        (
+            {
+                "model.layers.0.mlp.up_proj.weight": ("F8_E4M3", [8, 8]),
+                "model.layers.0.mlp.up_proj.weight_scale": ("F8_E8M0", [8, 1]),
+            },
+            "mxfp8",
+            ["float8_e4m3fn", "float8_e8m0fnu"],
+        ),
+        # E8M0 scales next to uint8-packed elements: microscaling, element type unknown
+        (
+            {
+                "model.layers.0.mlp.up_proj.weight_packed": ("U8", [8, 4]),
+                "model.layers.0.mlp.up_proj.weight_scale": ("F8_E8M0", [8, 1]),
+            },
+            "mx",
+            ["float8_e8m0fnu"],
+        ),
+        # a single E8M0 tensor is enough: no dense weight or buffer is stored in that dtype
+        ({"model.layers.0.mlp.up_proj.input_scale": ("F8_E8M0", [1])}, "mx", ["float8_e8m0fnu"]),
+        ({"model.layers.0.mlp.up_proj.weight": ("F8_E4M3", [8, 8])}, "fp8", ["float8_e4m3fn"]),
+        ({"model.layers.0.mlp.up_proj.weight": ("F8_E5M2", [8, 8])}, "fp8", ["float8_e5m2"]),
+        # weight matrices stored as integers are packed payloads (GPTQ/AWQ/MLX style)
+        ({"model.layers.0.mlp.up_proj.weight": ("U8", [8, 4])}, "integer-packed", ["uint8"]),
+        (
+            {
+                "model.layers.0.mlp.up_proj.weight": ("U32", [8, 1]),
+                "model.layers.0.mlp.up_proj.scales": ("F16", [8, 1]),
+                "model.layers.0.mlp.up_proj.biases": ("F16", [8, 1]),
+            },
+            "integer-packed",
+            ["uint32"],
+        ),
+        ({"model.embed_tokens.weight": ("U32", [16, 1])}, "integer-packed", ["uint32"]),
+        ({"lm_head.weight": ("U16", [16, 2])}, "integer-packed", ["uint16"]),
+        ({"model.layers.0.mlp.up_proj.weight": ("U64", [8, 1])}, "integer-packed", ["uint64"]),
+    ],
+)
+def test_quantization_dtypes_are_refused_not_inventoried(
+    model_dir: ModelDir, tensors: dict[str, tuple[str, list[int]]], fmt: str, dtypes: list[str]
+) -> None:
+    exc = _fails(
+        ErrorCode.UNSUPPORTED_MODEL_FORMAT,
+        *model_dir(tensors={**TENSORS, **tensors}),
+        reason="quantized_dtype",
+        quantized_checkpoint_format=fmt,
+        quantized_dtypes=dtypes,
+    )
+    message = exc.issue.user_message
+    assert f"checkpoint({fmt})" in message
+    assert all(dtype in message for dtype in dtypes)
+
+
+def test_unsigned_and_complex_tensors_of_a_dense_checkpoint_are_inventoried(
+    model_dir: ModelDir,
+) -> None:
+    extra = {
+        "model.rotary_emb.freqs_cis": ("C64", [4, 2]),
+        "model.layers.0.mlp.expert_ids": ("U16", [4]),
+        "model.layers.0.self_attn.kv_slot_index": ("U32", [3]),
+        "model.token_type_ids": ("U64", [1, 8]),
+    }
+    inv = _inspect(*model_dir(tensors={**TENSORS, **extra}))
+    assert inv.quantized_checkpoint_format is None
+    by_name = {t.name: t for t in inv.tensors}
+    assert {n: (by_name[n].dtype, by_name[n].numel, by_name[n].nbytes) for n in extra} == {
+        "model.rotary_emb.freqs_cis": ("complex64", 8, 64),
+        "model.layers.0.mlp.expert_ids": ("uint16", 4, 8),
+        "model.layers.0.self_attn.kv_slot_index": ("uint32", 3, 12),
+        "model.token_type_ids": ("uint64", 8, 64),
+    }
+    assert {by_name[n].role for n in extra} == {TensorRole.PARAMETER}
+    dense = 16 * 8 * 2 + 64
+    assert inv.params_total == dense + 8 + 4 + 3 + 8
+    assert inv.bytes_serialized_total == dense * 2 + 64 + 8 + 12 + 64
+    assert [m.name for m in inv.linear_modules] == ["model.layers.0.self_attn.q_proj"]
+    assert inv.facts.extra["checkpoint_dtype_params"] == {
+        "bfloat16": dense,
+        "complex64": 8,
+        "uint16": 4,
+        "uint32": 3,
+        "uint64": 8,
+    }
+
+
+def test_misaligned_sub_byte_tensor_is_a_malformed_header(model_dir: ModelDir) -> None:
+    # 3 FP4 elements are 12 bits: safetensors refuses to open such a file at all
+    tensors = {**TENSORS, "model.layers.0.mlp.up_proj.weight": ("F4", [3, 1])}
+    _fails(
+        ErrorCode.MODEL_METADATA_UNAVAILABLE,
+        *model_dir(tensors=tensors),
+        reason="malformed_safetensors_header:misaligned_slice",
+        tensor="model.layers.0.mlp.up_proj.weight",
     )
 
 
@@ -356,6 +472,30 @@ def test_hf_header_with_unknown_dtype(mimo_hub: tuple[Any, SourceAccess, Any]) -
     with pytest.raises(EstimatorError) as exc:
         inspect_model(source, access)
     assert exc.value.issue.code is ErrorCode.UNSUPPORTED_MODEL_FORMAT
+
+
+@pytest.mark.parametrize(
+    ("dtype", "scale", "fmt"),
+    [("F8_E8M0", 2, "mx"), ("F4", 4, "fp4"), ("U16", 1, "integer-packed")],
+)
+def test_hf_checkpoint_with_quantization_dtypes_is_refused(
+    mimo_hub: tuple[Any, SourceAccess, Any], dtype: str, scale: int, fmt: str
+) -> None:
+    source, access, client = mimo_hub
+    repo = client.repos[("model", source.repo_id)]
+    shard = "model-00001-of-00004.safetensors"
+    header, size, sha = repo.shards[shard]
+    changed = json.loads(json.dumps(header))
+    entry = changed["lm_head.weight"]  # BF16 [248320, 4096]; same byte size in the new dtype
+    entry["dtype"] = dtype
+    entry["shape"] = [entry["shape"][0], entry["shape"][1] * scale]
+    repo.shards[shard] = (changed, size, sha)
+    with pytest.raises(EstimatorError) as exc:
+        inspect_model(source, access)
+    issue = exc.value.issue
+    assert issue.code is ErrorCode.UNSUPPORTED_MODEL_FORMAT
+    assert issue.details["reason"] == "quantized_dtype"
+    assert issue.details["quantized_checkpoint_format"] == fmt
 
 
 def test_hub_client_is_not_used_for_local_sources(

@@ -12,32 +12,45 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-ITEMSIZE = {
-    "F64": 8,
-    "F32": 4,
-    "BF16": 2,
-    "F16": 2,
-    "F8_E4M3": 1,
-    "F8_E5M2": 1,
-    "I64": 8,
-    "I32": 4,
-    "I16": 2,
-    "I8": 1,
-    "U8": 1,
-    "BOOL": 1,
+# Bits per element (safetensors Dtype::bitsize); FP4/FP6 pack several elements per byte.
+BITS = {
+    "F64": 64,
+    "F32": 32,
+    "BF16": 16,
+    "F16": 16,
+    "F8_E4M3": 8,
+    "F8_E5M2": 8,
+    "F8_E8M0": 8,
+    "F6_E2M3": 6,
+    "F6_E3M2": 6,
+    "F4": 4,
+    "C64": 64,
+    "I64": 64,
+    "I32": 32,
+    "I16": 16,
+    "I8": 8,
+    "U64": 64,
+    "U32": 32,
+    "U16": 16,
+    "U8": 8,
+    "BOOL": 8,
 }
 
 
 def header_for(
     tensors: Mapping[str, tuple[str, Sequence[int]]], metadata: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
-    """A header mapping with contiguous data_offsets in the given order."""
+    """A header mapping with contiguous data_offsets in the given order.
+
+    Sub-byte tensors are rounded up to whole bytes like a naive writer would; safetensors itself
+    refuses those that do not end on a byte boundary, which tests rely on.
+    """
     header: dict[str, Any] = {}
     if metadata:
         header["__metadata__"] = dict(metadata)
     offset = 0
     for name, (dtype, shape) in tensors.items():
-        size = math.prod(shape) * ITEMSIZE[dtype]
+        size = -(-math.prod(shape) * BITS[dtype] // 8)
         header[name] = {
             "dtype": dtype,
             "shape": list(shape),
