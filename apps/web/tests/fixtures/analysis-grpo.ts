@@ -182,6 +182,9 @@ export const grpoResolved: Schemas["ResolvedConfig"] = {
   microbatch: 1,
   accumulation: 4,
   pad_to_multiple_of: null,
+  mixed_precision: "bf16",
+  packing: false,
+  assistant_only_loss: false,
   gradient_checkpointing: true,
   checkpointing_granularity: "per_decoder_layer",
   attention_path_by_layer_type: { full_attention: "sdpa", linear_attention: "torch_fallback" },
@@ -200,6 +203,7 @@ export const grpoResolved: Schemas["ResolvedConfig"] = {
     reward_kind: "unspecified",
     reward_model_reference: null,
     rollout_backend: "transformers_shared_policy",
+    reward_on_training_gpu: true,
     live_sequences: 4,
     update_microbatch: 1,
     accumulation: 4,
@@ -289,6 +293,7 @@ export const contextOk: Schemas["ContextValidation"] = {
   limit_source: "config.max_position_embeddings",
   max_observed_length: 268,
   exceeded_rows: 0,
+  exceeded_rows_exact: true,
   status: "ok",
 };
 

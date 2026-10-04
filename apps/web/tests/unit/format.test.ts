@@ -73,6 +73,9 @@ describe("labels", () => {
   it("uses the plan §10.3 wording for fit reasons", () => {
     expect(FIT_REASON_LABEL.floor_exceeds_capacity).toBe("확정된 구성만으로 용량 초과");
     expect(FIT_REASON_LABEL.not_evaluated).toBe("용량만 표시, 적합 판정 없음");
+    // Reasons added with the loading budget and the incomplete-scan gate.
+    expect(FIT_REASON_LABEL.load_budget_insufficient).toBe("모델 로딩 단계 여유 부족");
+    expect(FIT_REASON_LABEL.scan_incomplete).toBe("판정 보류 (전체 데이터 스캔 미완료)");
   });
 
   it("maps every running job state to one of the four stages", () => {

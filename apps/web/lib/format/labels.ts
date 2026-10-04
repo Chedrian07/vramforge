@@ -101,6 +101,8 @@ export const FIT_REASON_LABEL: Record<FitReason, string> = {
   fits_with_margin: "선택한 가정에서 예상 적합",
   unknown_components: "판정 보류 (미확정 footprint)",
   unsupported: "판정 보류 (지원 미확정 backend)",
+  load_budget_insufficient: "모델 로딩 단계 여유 부족",
+  scan_incomplete: "판정 보류 (전체 데이터 스캔 미완료)",
 };
 
 export const EVIDENCE_LABEL: Record<Evidence, string> = {

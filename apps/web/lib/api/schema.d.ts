@@ -450,6 +450,8 @@ export interface components {
              */
             created_at: string;
             error?: components["schemas"]["Issue"] | null;
+            /** Expires At */
+            expires_at?: string | null;
             /** Fingerprint */
             fingerprint: string;
             /** Finished At */
@@ -457,6 +459,7 @@ export interface components {
             /** Last Event Id */
             last_event_id?: number | null;
             progress?: components["schemas"]["JobProgress"] | null;
+            request?: components["schemas"]["AnalysisRequest"] | null;
             result?: components["schemas"]["AnalysisResult"] | null;
             status: components["schemas"]["JobStatus"];
             /**
@@ -758,11 +761,13 @@ export interface components {
             backend_verified_max?: number | null;
             /** Effective Limit */
             effective_limit?: number | null;
+            /** Exceeded Rows */
+            exceeded_rows?: number | null;
             /**
-             * Exceeded Rows
-             * @default 0
+             * Exceeded Rows Exact
+             * @default true
              */
-            exceeded_rows: number;
+            exceeded_rows_exact: boolean;
             /** Limit Source */
             limit_source?: string | null;
             /** Max Observed Length */
@@ -845,11 +850,8 @@ export interface components {
             branches?: components["schemas"]["BranchStats"][];
             /** Config */
             config?: string | null;
-            /**
-             * Context Exceeded Rows
-             * @default 0
-             */
-            context_exceeded_rows: number;
+            /** Context Exceeded Rows */
+            context_exceeded_rows?: number | null;
             coverage: components["schemas"]["ScanCoverage"];
             /** Duplicate Rows */
             duplicate_rows?: number | null;
@@ -859,6 +861,8 @@ export interface components {
             failed_rows_sample?: components["schemas"]["FailedRow"][];
             mapping_applied?: components["schemas"]["ColumnMapping"] | null;
             objective: components["schemas"]["Objective"];
+            /** Omitted System Messages */
+            omitted_system_messages?: number | null;
             /** Preprocess Key */
             preprocess_key: string;
             /** Preprocessing Adapter */
@@ -994,6 +998,8 @@ export interface components {
             loss_type: string;
             /** Precompute Batch Size */
             precompute_batch_size?: number | null;
+            /** Reference Model */
+            reference_model?: string | null;
             reference_strategy: components["schemas"]["ReferenceStrategy"];
             /**
              * Sync Ref Model
@@ -1007,6 +1013,8 @@ export interface components {
             adapter: string;
             /** Compute */
             compute: string;
+            /** Conv State */
+            conv_state?: string | null;
             /** Gradient */
             gradient: string;
             /** Kv Cache */
@@ -1046,7 +1054,7 @@ export interface components {
          * ErrorCode
          * @enum {string}
          */
-        ErrorCode: "SOURCE_ACCESS_DENIED" | "SOURCE_REVISION_CHANGED" | "LOCAL_PATH_NOT_ALLOWED" | "MODEL_METADATA_UNAVAILABLE" | "TOKENIZER_REQUIRED" | "TEMPLATE_REQUIRED" | "REMOTE_CODE_REQUIRED" | "COLUMN_MAPPING_REQUIRED" | "SCAN_PARTIAL" | "SCAN_FAILED_ROWS" | "DATA_PRESERVATION_VIOLATION" | "CONTEXT_EXCEEDED" | "GRPO_REWARD_UNSPECIFIED" | "GRPO_BUDGET_UNSPECIFIED" | "TRAINER_BATCH_CONSTRAINT" | "UNSUPPORTED_ARCHITECTURE" | "UNSUPPORTED_BACKEND_COMBINATION" | "REQUESTED_OPTION_NOT_EFFECTIVE" | "UNKNOWN_MEMORY_COMPONENT" | "CALIBRATION_OUT_OF_DOMAIN" | "PROFILE_OOM" | "PROFILE_SCOPE_INCOMPLETE" | "SOURCE_NOT_FOUND" | "SOURCE_URL_NOT_ALLOWED" | "UNSUPPORTED_MODEL_FORMAT" | "TEMPLATE_CONTENT_LOSS" | "DATASET_CONFIG_REQUIRED" | "DATASET_SPLIT_REQUIRED" | "DATASET_FORMAT_UNSUPPORTED" | "SCAN_QUOTA_EXCEEDED" | "SAMPLER_DROPS_ROWS" | "UNSUPPORTED_DISTRIBUTED_TOPOLOGY" | "CONFLICTING_OPTIONS" | "REANALYSIS_REQUIRED" | "GPU_WORKER_UNAVAILABLE" | "INVALID_REQUEST" | "CONCURRENCY_LIMIT" | "UPLOAD_TOO_LARGE" | "UPLOAD_TYPE_NOT_ALLOWED" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CANCELLED" | "JOB_TIMEOUT" | "INTERNAL_ERROR";
+        ErrorCode: "SOURCE_ACCESS_DENIED" | "SOURCE_REVISION_CHANGED" | "LOCAL_PATH_NOT_ALLOWED" | "MODEL_METADATA_UNAVAILABLE" | "TOKENIZER_REQUIRED" | "TEMPLATE_REQUIRED" | "REMOTE_CODE_REQUIRED" | "COLUMN_MAPPING_REQUIRED" | "SCAN_PARTIAL" | "SCAN_FAILED_ROWS" | "DATA_PRESERVATION_VIOLATION" | "CONTEXT_EXCEEDED" | "GRPO_REWARD_UNSPECIFIED" | "GRPO_BUDGET_UNSPECIFIED" | "TRAINER_BATCH_CONSTRAINT" | "UNSUPPORTED_ARCHITECTURE" | "UNSUPPORTED_BACKEND_COMBINATION" | "REQUESTED_OPTION_NOT_EFFECTIVE" | "UNKNOWN_MEMORY_COMPONENT" | "CALIBRATION_OUT_OF_DOMAIN" | "PROFILE_OOM" | "PROFILE_SCOPE_INCOMPLETE" | "SOURCE_NOT_FOUND" | "SOURCE_URL_NOT_ALLOWED" | "UNSUPPORTED_MODEL_FORMAT" | "TEMPLATE_CONTENT_LOSS" | "DATASET_CONFIG_REQUIRED" | "DATASET_SPLIT_REQUIRED" | "DATASET_FORMAT_UNSUPPORTED" | "SCAN_QUOTA_EXCEEDED" | "SAMPLER_DROPS_ROWS" | "UNSUPPORTED_DISTRIBUTED_TOPOLOGY" | "CONFLICTING_OPTIONS" | "REANALYSIS_REQUIRED" | "GPU_WORKER_UNAVAILABLE" | "INVALID_REQUEST" | "CONCURRENCY_LIMIT" | "UPLOAD_TOO_LARGE" | "UPLOAD_TYPE_NOT_ALLOWED" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CANCELLED" | "JOB_TIMEOUT" | "INTERNAL_ERROR" | "NOT_IMPLEMENTED" | "EMPTY_DATASET" | "SAMPLER_ORDER_NOT_REPRODUCED" | "PROMPT_BOUNDARY_MISMATCH" | "SPECIAL_TOKEN_DUPLICATED" | "LOAD_BUDGET_EXCEEDED";
         /** ErrorResponse */
         ErrorResponse: {
             error: components["schemas"]["Issue"];
@@ -1206,6 +1214,11 @@ export interface components {
             reward_kind: components["schemas"]["RewardKind"];
             /** Reward Model Reference */
             reward_model_reference?: string | null;
+            /**
+             * Reward On Training Gpu
+             * @default true
+             */
+            reward_on_training_gpu: boolean;
             rollout_backend: components["schemas"]["RolloutBackend"];
             /** Steps Per Generation */
             steps_per_generation: number;
@@ -1248,7 +1261,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "not_evaluated" | "floor_exceeds_capacity" | "high_exceeds_capacity" | "margin_insufficient" | "fits_with_margin" | "unknown_components" | "unsupported";
+            reason: "not_evaluated" | "floor_exceeds_capacity" | "high_exceeds_capacity" | "margin_insufficient" | "fits_with_margin" | "unknown_components" | "unsupported" | "load_budget_insufficient" | "scan_incomplete";
             status: components["schemas"]["HardwareFit"];
             /** Utilization Ratio */
             utilization_ratio?: number | null;
@@ -1563,6 +1576,8 @@ export interface components {
             /** Assumptions */
             assumptions?: components["schemas"]["Assumption"][];
             evidence_level: components["schemas"]["EvidenceLevel"];
+            /** Issues */
+            issues?: components["schemas"]["Issue"][];
             /** Primary Scenario Id */
             primary_scenario_id?: string | null;
             /** Scenarios */
@@ -1827,6 +1842,11 @@ export interface components {
             accumulation: number;
             /** Architecture Adapter */
             architecture_adapter?: string | null;
+            /**
+             * Assistant Only Loss
+             * @default false
+             */
+            assistant_only_loss: boolean;
             /** Attention Path By Layer Type */
             attention_path_by_layer_type?: {
                 [key: string]: string;
@@ -1836,6 +1856,8 @@ export interface components {
              * @enum {string}
              */
             checkpointing_granularity: "none" | "per_decoder_layer";
+            /** Completion Only Loss */
+            completion_only_loss?: boolean | null;
             /** Dependency Lock Digest */
             dependency_lock_digest?: string | null;
             dpo?: components["schemas"]["DpoResolved"] | null;
@@ -1859,8 +1881,19 @@ export interface components {
             loss_path: string;
             /** Microbatch */
             microbatch: number;
+            /**
+             * Mixed Precision
+             * @default bf16
+             * @enum {string}
+             */
+            mixed_precision: "bf16" | "fp16" | "none";
             objective: components["schemas"]["Objective"];
             optimizer: components["schemas"]["OptimizerResolved"];
+            /**
+             * Packing
+             * @default false
+             */
+            packing: boolean;
             /** Pad To Multiple Of */
             pad_to_multiple_of?: number | null;
             /** Preprocessing Adapter */
@@ -2195,6 +2228,8 @@ export interface components {
             pad_token?: string | null;
             /** Template Kwargs */
             template_kwargs?: string[];
+            /** Template Parse Error */
+            template_parse_error?: string | null;
             /** Tokenizer Class */
             tokenizer_class: string;
             /** Vocab Size */
