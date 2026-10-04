@@ -217,14 +217,60 @@ def test_healthcheck_requires_a_fresh_local_worker(
     assert healthcheck.check(settings, redis=fake_redis, hostname=socket.gethostname()) is True
     assert healthcheck.check(settings, redis=fake_redis, hostname="another-host") is False
 
-    monkeypatch.setattr(main, "check", lambda s: True)
+    monkeypatch.setattr(healthcheck, "check", lambda s: True)
     with pytest.raises(SystemExit) as ok:
         main.main(["healthcheck"])
     assert ok.value.code == 0
-    monkeypatch.setattr(main, "check", lambda s: False)
+    monkeypatch.setattr(healthcheck, "check", lambda s: False)
     with pytest.raises(SystemExit) as bad:
         main.main(["healthcheck"])
     assert bad.value.code == 1
+
+
+HEAVY_MODULES = (
+    "sqlalchemy",
+    "alembic",
+    "vramforge_api.db",
+    "vramforge_estimator.pipeline",
+    "vramforge_estimator.inspection",
+    "vramforge_worker.tasks",
+    "transformers",
+    "tokenizers",
+    "datasets",
+    "pyarrow",
+    "torch",
+)
+
+
+def _loaded_after(code: str) -> set[str]:
+    import json
+    import subprocess
+    import sys
+
+    script = f"import json, sys\n{code}\nprint(json.dumps(sorted(sys.modules)))\n"
+    env = {**os.environ, "VRAMFORGE_REDIS_URL": "redis://127.0.0.1:1/0"}
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, check=True
+    )
+    return set(json.loads(out.stdout.strip().splitlines()[-1]))
+
+
+def test_healthcheck_imports_only_what_it_needs() -> None:
+    """The compose healthcheck runs the CLI every few seconds: no database layer, estimator or
+    tokenizer stack may be imported for it (lazy imports in main.py)."""
+    cli = _loaded_after("import vramforge_worker.main")
+    probe = _loaded_after(
+        "from vramforge_worker import main\n"
+        "try:\n    main.main(['healthcheck'])\nexcept SystemExit as exc:\n"
+        "    assert exc.code == 1, exc.code"
+    )
+    for loaded in (cli, probe):
+        heavy = sorted(
+            m for m in loaded if any(m == h or m.startswith(f"{h}.") for h in HEAVY_MODULES)
+        )
+        assert heavy == [], heavy
+    assert "redis" not in cli  # nothing beyond argparse until a command runs
+    assert {"redis", "vramforge_api.settings"} <= probe
 
 
 def test_worker_burst_runs_queued_jobs_with_json_serializer(
