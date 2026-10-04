@@ -263,3 +263,77 @@ def test_trainer_config_is_refused_for_halted_or_running_results(
     with pytest.raises(EstimatorError) as exc:
         export_trainer_config(running)
     assert "메모리 산정" in exc.value.issue.user_message
+
+
+@pytest.mark.parametrize(
+    ("strategy", "lora", "separate", "passed"),
+    [
+        ("frozen_base_switch", True, None, None),
+        ("precomputed_log_probs", True, None, None),
+        ("standalone_model", False, None, None),
+        ("standalone_model", True, None, "policy"),
+        ("standalone_model", False, "org/reference-model", "org/reference-model"),
+    ],
+)
+def test_dpo_reference_setup_is_exported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+    lora: bool,
+    separate: str | None,
+    passed: str | None,
+) -> None:
+    """TRL builds the analyzed reference itself only for ref_model=None cases; otherwise the
+    launcher must pass `ref_model` or the run differs from the estimate."""
+    from vramforge_estimator.schemas import ConfigResolution, DpoResolved, ReferenceStrategy
+
+    overrides: dict = {
+        "dpo": DpoResolved(
+            reference_strategy=ReferenceStrategy(strategy), beta=0.1, loss_type="sigmoid"
+        ),
+        "resolutions": [
+            ConfigResolution(
+                field="dpo.reference_model",
+                requested=separate,
+                resolved=separate,
+                reason="test",
+            )
+        ],
+    }
+    if not lora:
+        overrides["lora"] = None
+    result = build_result("dpo", tmp_path, monkeypatch, resolved_overrides=overrides)
+    reference = yaml.safe_load(export_trainer_config(result))["reference"]
+    assert reference["strategy"] == strategy
+    assert reference["pass_ref_model"] is (passed is not None)
+    if passed == "policy":
+        assert reference["ref_model"] == {
+            "id": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+            "revision": fakes.MODEL_SHA,
+        }
+    elif passed is not None:
+        assert reference["ref_model"]["id"] == passed
+    else:
+        assert reference["ref_model"] is None and reference["note"].startswith("ref_model=None")
+
+
+@pytest.mark.parametrize("objective", ["sft", "dpo", "grpo"])
+def test_analyzed_template_options_reach_the_trainer(
+    objective: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run must render the chat template with the options the analysis tokenized with."""
+    kwargs = {"enable_thinking": False}
+    result = build_result(
+        objective, tmp_path, monkeypatch, resolved_overrides={"template_kwargs": kwargs}
+    )
+    data = yaml.safe_load(export_trainer_config(result))
+    if objective == "grpo":
+        assert data["trl"]["args"]["chat_template_kwargs"] == kwargs
+        assert "chat_template_kwargs" not in data["dataset"]
+    else:  # TRL 1.14.1 SFT/DPO read the options per row
+        assert data["dataset"]["chat_template_kwargs"] == kwargs
+        assert data["dataset"]["output_columns"][-1] == "chat_template_kwargs"
+        assert "chat_template_kwargs" not in data["trl"]["args"]
+
+    plain = build_result(objective, tmp_path / "plain", monkeypatch)
+    assert "chat_template_kwargs" not in yaml.safe_load(export_trainer_config(plain))["dataset"]

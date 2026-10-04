@@ -14,7 +14,8 @@ Produced only for a `ready` result. The `trl.args` section maps 1:1 to
 - `model_init_kwargs.dtype` is pinned because TRL loads string model ids in float32 otherwise.
 
 The model, quantization (`transformers.BitsAndBytesConfig`), PEFT (`peft.LoraConfig`), dataset
-(mapping transform, raw columns dropped) and processing-class sections describe the launcher
+(mapping transform, raw columns dropped, per-row `chat_template_kwargs` for SFT/DPO when template
+options were analyzed), processing-class and (DPO) reference sections describe the launcher
 inputs; raw data, tokens, absolute paths and private URLs are never included. A result whose
 pipeline halted or whose memory estimate is missing is never ready.
 """
@@ -32,6 +33,7 @@ from vramforge_estimator.schemas import (
     ErrorCode,
     Objective,
     ReferenceStrategy,
+    ResolvedConfig,
     RewardKind,
     ScanCoverage,
     Stage,
@@ -226,6 +228,49 @@ def _precision(compute: str) -> tuple[bool, bool]:
     return compute == "bfloat16", compute == "float16"
 
 
+def _dpo_reference(resolved: ResolvedConfig, model_id: str, revision: str) -> dict[str, Any]:
+    """How the launcher must set up the reference model the estimate assumed.
+
+    TRL 1.14.1 `DPOTrainer` with `ref_model=None` uses the adapter-disabled policy for PEFT and
+    builds a second copy of the policy checkpoint for full fine-tuning (dpo_trainer.py:912-929);
+    any other analyzed setup needs an explicit `ref_model` (docs/research/trl-sft-dpo.md §E).
+    """
+    dpo = resolved.dpo
+    assert dpo is not None
+    strategy = dpo.reference_strategy
+    separate = next(
+        (r.resolved for r in resolved.resolutions if r.field == "dpo.reference_model"), None
+    )
+    ref_model: dict[str, Any] | None = None
+    if strategy is ReferenceStrategy.STANDALONE_MODEL and (resolved.lora is not None or separate):
+        ref_model = (
+            {"id": str(separate), "revision": None}
+            if separate
+            else {"id": model_id, "revision": revision}
+        )
+        note = (
+            "DPOTrainer(ref_model=...)에 reference 모델을 직접 전달해야 합니다. 정책과 같은 "
+            "model_init_kwargs·quantization으로 로드하세요. 전달하지 않으면 TRL은 다른 "
+            "reference 구성을 써서 분석한 메모리와 달라집니다."
+        )
+    elif strategy is ReferenceStrategy.STANDALONE_MODEL:
+        note = (
+            "ref_model=None: TRL이 같은 checkpoint와 model_init_kwargs로 두 번째 모델을 만듭니다."
+        )
+    elif strategy is ReferenceStrategy.PRECOMPUTED_LOG_PROBS:
+        note = (
+            "ref_model=None: precompute_ref_log_probs로 학습 전에 reference log-prob을 계산합니다."
+        )
+    else:
+        note = "ref_model=None: adapter를 끈 정책 모델이 reference입니다."
+    return {
+        "strategy": strategy.value,
+        "pass_ref_model": ref_model is not None,
+        "ref_model": ref_model,
+        "note": note,
+    }
+
+
 def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
     check_ready(result)
     resolved = result.resolved_config
@@ -352,7 +397,13 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
         output_columns = ["messages"]
     elif mapping.format is DatasetFormat.TEXT or mapping.text:
         output_columns = ["text"]
-    dataset_section = {
+    template_kwargs = dict(resolved.template_kwargs)
+    row_template_kwargs = bool(template_kwargs) and objective is not Objective.GRPO
+    if row_template_kwargs:
+        # SFT/DPO in TRL 1.14.1 read template options per row (`example["chat_template_kwargs"]`);
+        # without the column the run would render the template differently from the analysis.
+        output_columns = [*output_columns, "chat_template_kwargs"]
+    dataset_section: dict[str, Any] = {
         "id": dataset.repo_id or dataset.reference,
         "revision": dataset.resolved_revision,
         "config": scan.config,
@@ -363,6 +414,11 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
         "output_columns": output_columns,
         "remove_original_columns": True,
     }
+    if row_template_kwargs:
+        dataset_section["chat_template_kwargs"] = template_kwargs
+        dataset_section["chat_template_kwargs_note"] = (
+            "모든 row의 chat_template_kwargs 열에 이 값을 넣습니다. 분석에 쓴 template 옵션입니다."
+        )
     processing_class = {
         "type": "tokenizer",
         "class": "AutoTokenizer",
@@ -396,6 +452,8 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
         "processing_class": processing_class,
         "trl": {"config_class": CONFIG_CLASS[objective], "args": args},
     }
+    if objective is Objective.DPO:
+        config["reference"] = _dpo_reference(resolved, model_id, model.resolved_revision)
     if objective is Objective.GRPO:
         grpo = resolved.grpo
         assert grpo is not None
