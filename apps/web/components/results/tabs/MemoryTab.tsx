@@ -5,7 +5,7 @@ import { Bar, BarChart, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Mono } from "@/components/ui/primitives";
 import { BytesRange, NotComputed } from "@/components/ui/values";
 import type { ScenarioEstimate } from "@/lib/api/types";
-import { exactBytes, formatSize, gibNumber } from "@/lib/format/bytes";
+import { exactBytes, formatSize } from "@/lib/format/bytes";
 import { CATEGORY_LABEL, EVIDENCE_LABEL, PHASE_LABEL } from "@/lib/format/labels";
 import { groupOf, groupTotals } from "@/lib/result/groups";
 
@@ -18,6 +18,8 @@ import {
   Td,
   Th,
   TooltipBox,
+  gibTickLabel,
+  gibTicks,
   type ChartTooltipProps,
 } from "../chart-kit";
 
@@ -49,6 +51,7 @@ export function MemoryTab({ scenario }: { scenario: ScenarioEstimate | null }) {
   const row: Record<string, number | string> = { name: breakdown.timepoint };
   for (const t of totals) row[t.group.key] = t.high;
   const knownHigh = totals.reduce((acc, t) => acc + t.high, 0);
+  const axis = gibTicks(knownHigh);
   const phaseLabel = PHASE_LABEL[breakdown.phase];
 
   const chart = (
@@ -64,8 +67,9 @@ export function MemoryTab({ scenario }: { scenario: ScenarioEstimate | null }) {
         >
           <XAxis
             type="number"
-            domain={[0, "dataMax"]}
-            tickFormatter={(v: number) => `${gibNumber(v)}`}
+            domain={[0, axis.max]}
+            ticks={axis.ticks}
+            tickFormatter={gibTickLabel}
             unit=" GiB"
             {...AXIS_PROPS}
           />

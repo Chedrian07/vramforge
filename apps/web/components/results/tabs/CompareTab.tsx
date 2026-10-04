@@ -5,7 +5,7 @@ import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge } from "@/components/ui/primitives";
 import { Bytes, BytesRange } from "@/components/ui/values";
 import type { AnalysisResult } from "@/lib/api/types";
-import { exactBytes, formatCount, formatPercent, formatSize, gibNumber } from "@/lib/format/bytes";
+import { exactBytes, formatCount, formatPercent, formatSize } from "@/lib/format/bytes";
 import { HARDWARE_FIT_LABEL } from "@/lib/format/labels";
 import type { ScenarioHistoryEntry } from "@/lib/hooks/useRecompute";
 import { FIT_TONE } from "@/lib/result/status";
@@ -20,6 +20,8 @@ import {
   Td,
   Th,
   TooltipBox,
+  gibTickLabel,
+  gibTicks,
   type ChartTooltipProps,
 } from "../chart-kit";
 
@@ -67,6 +69,7 @@ export function CompareTab({
   const chartRows = rows.filter((r): r is typeof r & { high: number } => r.high != null);
   const first = rows[0]?.high ?? null;
   const chartHeight = Math.max(140, chartRows.length * 40 + 48);
+  const axis = gibTicks(Math.max(0, ...chartRows.map((r) => r.high)));
   const basePeak = base ? peakOf(base) : null;
 
   return (
@@ -90,8 +93,9 @@ export function CompareTab({
                   <CartesianGrid horizontal={false} stroke={GRID_STROKE} />
                   <XAxis
                     type="number"
-                    domain={[0, "dataMax"]}
-                    tickFormatter={(v: number) => gibNumber(v)}
+                    domain={[0, axis.max]}
+                    ticks={axis.ticks}
+                    tickFormatter={gibTickLabel}
                     unit=" GiB"
                     {...AXIS_PROPS}
                   />

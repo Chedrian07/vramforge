@@ -5,7 +5,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Tooltip, XAxis, YAxis } from "recha
 import { Badge, Mono } from "@/components/ui/primitives";
 import { BytesRange, Bytes } from "@/components/ui/values";
 import type { ScenarioEstimate } from "@/lib/api/types";
-import { exactBytesRange, formatSizeRange, gibNumber } from "@/lib/format/bytes";
+import { exactBytesRange, formatSizeRange } from "@/lib/format/bytes";
 import { PHASE_LABEL } from "@/lib/format/labels";
 
 import {
@@ -18,6 +18,8 @@ import {
   Td,
   Th,
   TooltipBox,
+  gibTickLabel,
+  gibTicks,
   type ChartTooltipProps,
 } from "../chart-kit";
 
@@ -57,6 +59,7 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
       isPeak: p.phase === device.peak_phase,
     }));
   const height = Math.max(120, rows.length * 40 + 48);
+  const axis = gibTicks(Math.max(0, ...rows.map((r) => r.high)));
 
   return (
     <div className="flex flex-col gap-4">
@@ -92,8 +95,9 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
                     <CartesianGrid horizontal={false} stroke={GRID_STROKE} />
                     <XAxis
                       type="number"
-                      domain={[0, "dataMax"]}
-                      tickFormatter={(v: number) => gibNumber(v)}
+                      domain={[0, axis.max]}
+                      ticks={axis.ticks}
+                      tickFormatter={gibTickLabel}
                       unit=" GiB"
                       {...AXIS_PROPS}
                     />

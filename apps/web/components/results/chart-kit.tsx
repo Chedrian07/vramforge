@@ -17,6 +17,28 @@ export const AXIS_PROPS = {
 
 export const GRID_STROKE = "var(--vf-chart-grid)";
 
+const GIB_BYTES = 1_073_741_824;
+
+/**
+ * Axis ticks at clean GiB values (0, 2, 4, … GiB) instead of byte-nice values such as 3.7 GiB.
+ * Returns the tick list (in bytes) and the matching domain upper bound.
+ */
+export function gibTicks(maxBytes: number, targetTicks = 5): { ticks: number[]; max: number } {
+  const maxGib = Math.max(maxBytes / GIB_BYTES, 0.001);
+  const raw = maxGib / targetTicks;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((candidate) => candidate >= raw) ?? 10 * magnitude;
+  const count = Math.ceil(maxGib / step);
+  const ticks = Array.from({ length: count + 1 }, (_, i) => Math.round(i * step * GIB_BYTES));
+  return { ticks, max: ticks.at(-1) ?? maxBytes };
+}
+
+/** Tick label for a byte value that sits on a clean GiB step. */
+export function gibTickLabel(bytes: number): string {
+  const gib = bytes / GIB_BYTES;
+  return Number.isInteger(gib) ? String(gib) : gib.toFixed(gib < 1 ? 2 : 1).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 /** Width used before the container is measured (SSR, jsdom); the box clips until measured. */
 export const INITIAL_DIMENSION = { width: 640, height: 220 };
 
