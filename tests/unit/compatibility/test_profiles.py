@@ -186,3 +186,12 @@ def test_workspace_assumptions_are_sourced_ranges() -> None:
         assert ws.cuda_context_bytes.high == 1 * GiB
         for rng in (ws.cuda_context_bytes, ws.library_workspace_bytes, ws.allocator_slack_fraction):
             assert rng.low <= rng.high and rng.source
+
+
+def test_validation_presets_match_every_profile() -> None:
+    from vramforge_estimator.compatibility.validation import PRESET_ACCUMULATION, PRESET_MICROBATCH
+
+    for prof in load_registry().analytic.values():
+        for objective, preset in prof.presets.items():
+            assert PRESET_MICROBATCH[objective] == preset.microbatch
+            assert PRESET_ACCUMULATION[objective] == preset.accumulation

@@ -285,3 +285,30 @@ def test_support_for_and_backend_profiles(adapter) -> None:
     assert resp.gpu_worker_connected is False
     assert resp.environments[0].dependency_lock_digest.startswith("sha256:")
     assert resp.hardware_presets and all(p.total_bytes > 0 for p in resp.hardware_presets)
+
+
+class _RaisingArch(FakeArch):
+    def trainable_groups(self, inventory, cfg):
+        from vramforge_estimator.errors import EstimatorError, make_issue
+
+        raise EstimatorError(
+            make_issue(ErrorCode.CONFLICTING_OPTIONS, "4-bit 모듈은 사본 학습 불가")
+        )
+
+    def lora_target_modules(self, inventory, target, exclude):
+        if target == "all-linear":
+            from vramforge_estimator.errors import EstimatorError, make_issue
+
+            raise EstimatorError(make_issue(ErrorCode.CONFLICTING_OPTIONS, "대상 없음"))
+        return super().lora_target_modules(inventory, target, exclude)
+
+
+def test_adapter_configuration_errors_become_blockers(adapter, monkeypatch) -> None:
+    monkeypatch.setattr(resolver_mod, "get_adapter", lambda adapter_id: _RaisingArch(adapter_id))
+    cfg, report = resolve(request(), hybrid_inventory(), None)
+    assert cfg is None and report.readiness is TrainingReadiness.UNSUPPORTED
+    assert [b.user_message for b in report.blockers] == ["4-bit 모듈은 사본 학습 불가"]
+    cfg2, report2 = resolve(
+        request(training__lora={"target_modules": "all-linear"}), hybrid_inventory(), None
+    )
+    assert cfg2 is None and report2.blockers[0].user_message == "대상 없음"

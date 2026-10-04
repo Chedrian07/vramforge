@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from vramforge_estimator import __version__
 from vramforge_estimator.architectures import ArchitectureAdapter, get_adapter, match_adapter
-from vramforge_estimator.errors import make_issue
+from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import (
     AnalysisRequest,
     ArchitectureFacts,
@@ -190,7 +190,11 @@ def _lora(
     if t.strategy is Strategy.FULL:
         return None
     lora = t.lora
-    modules = arch.lora_target_modules(inventory, lora.target_modules, lora.exclude_modules)
+    try:
+        modules = arch.lora_target_modules(inventory, lora.target_modules, lora.exclude_modules)
+    except EstimatorError as exc:
+        res.blockers.append(exc.issue)
+        return None
     target_repr = (
         lora.target_modules if isinstance(lora.target_modules, str) else list(lora.target_modules)
     )
@@ -586,6 +590,12 @@ def resolve(
         )
     arch = get_adapter(adapter_id)
     cfg = _build(request, inventory, tokenizer, profile, env, arch, res)
+    if not res.blockers:
+        # The adapter validates trainability (e.g. modules_to_save on a 4-bit module).
+        try:
+            arch.trainable_groups(inventory, cfg)
+        except EstimatorError as exc:
+            res.blockers.append(exc.issue)
     readiness = _readiness(request, rule.readiness, res)
     report = CompatibilityReport(
         profile_id=profile.id,
