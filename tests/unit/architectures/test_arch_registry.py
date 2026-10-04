@@ -53,6 +53,15 @@ def test_unsupported_structures_do_not_match(
         assert match_adapter(facts.model_copy(update={"extra": {**facts.extra, **extra}})) is None
 
 
+def test_layernorm_configs_do_not_match(mimo: ModelInventory, ib: ModuleType) -> None:
+    dense = ib.tiny_dense_inventory("llama").facts
+    layernorm = dense.model_copy(update={"extra": {**dense.extra, "layer_norm_eps": 1e-5}})
+    assert match_adapter(layernorm) is None  # StableLM / GPT-NeoX style nn.LayerNorm
+    both = {**mimo.facts.extra, "layer_norm_eps": 1e-5}
+    assert "rms_norm_eps" in mimo.facts.extra
+    assert match_adapter(mimo.facts.model_copy(update={"extra": both})) == "qwen3_5_hybrid"
+
+
 def test_linear_attention_without_gated_deltanet_dims_does_not_match(mimo: ModelInventory) -> None:
     assert match_adapter(mimo.facts.model_copy(update={"linear_attention": {}})) is None
 

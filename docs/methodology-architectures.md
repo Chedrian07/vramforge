@@ -43,12 +43,13 @@
 |---|---|
 | `qwen3_5_hybrid` | `layer_types`에 `linear_attention`이 있고 나머지는 `full_attention`, `linear_attention` 차원 5개(`num_key_heads`, `num_value_heads`, `key_head_dim`, `value_head_dim`, `conv_kernel_dim`)가 모두 양수 |
 | `dense_decoder` | 모든 layer가 `full_attention`/`sliding_attention`(`layer_types`가 없으면 transformers `get_layer_types_and_kwargs`처럼 `sliding_window` 유무로 추론), linear-attention 차원 없음 |
-| 공통 거절 | MoE 표지(`num_experts`, `num_local_experts`, `n_routed_experts`, `moe_intermediate_size`, `num_experts_per_tok`, `n_shared_experts`, `moe_layer_freq`, `decoder_sparse_step` > 0), `is_encoder_decoder`, `hidden_act`가 SiLU 아님 |
+| 공통 거절 | MoE 표지(`num_experts`, `num_local_experts`, `n_routed_experts`, `moe_intermediate_size`, `num_experts_per_tok`, `n_shared_experts`, `moe_layer_freq`, `decoder_sparse_step` > 0), `is_encoder_decoder`, `hidden_act`가 SiLU 아님, `rms_norm_eps` 없이 `layer_norm_eps`/`layer_norm_epsilon`만 있음(nn.LayerNorm decoder) |
 
 모든 adapter 메서드는 먼저 inventory의 **모듈 shape**을 검증한다(`ModelStructure`). 맞지 않으면
 `UNSUPPORTED_ARCHITECTURE`(한국어 메시지 + `details`)다.
 
 - 공통: 각 text layer에 `gate/up/down_proj`(`H→I`, `I→H`), `input_layernorm`, `post_attention_layernorm`. 그 밖의 Linear(예: MoE expert, `shared_expert_gate`)가 있으면 거절.
+  실행되는 text norm에 `bias` tensor가 있으면 nn.LayerNorm(예: Llama 이름을 쓰는 StableLM)이라 저장 tensor가 RMSNorm 식(AM §5)과 달라 거절한다. 실행되지 않는 vision tower의 LayerNorm bias는 상관없다.
 - Qwen3.5 full layer: `q_proj: H→2·nq·d`(query + output gate, AM §1.2), `k/v_proj: H→nkv·d`, `o_proj: nq·d→H`, head 단위 `q_norm/k_norm [d]`.
 - Qwen3.5 linear layer: `in_proj_qkv: H→C`, `in_proj_z: H→Vd`, `in_proj_a/b: H→Hv`, `out_proj: Vd→H`, gated `norm`.
 - dense: `q_proj: H→nq·d`, `k/v_proj: H→nkv·d`, `o_proj: nq·d→H`; norm은 위 두 개와 선택적 `q_norm/k_norm`(Qwen3)만.

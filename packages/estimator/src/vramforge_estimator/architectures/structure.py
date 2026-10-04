@@ -192,6 +192,7 @@ class ModelStructure:
         )
         self.layers: tuple[Layer, ...] = self._layers()
         self.dims = self._dims()
+        self._validate_rmsnorm()
         if family == "qwen3_5":
             self._validate_qwen35()
         else:
@@ -334,6 +335,25 @@ class ModelStructure:
         )
 
     # ------------------------------------------------------------------ validation
+
+    def _validate_rmsnorm(self) -> None:
+        """The verified saved sets are RMSNorm ones (architecture-memory.md §5). A norm with a
+        bias is a LayerNorm (e.g. StableLM with Llama module names): different saved tensors."""
+        biased = sorted(
+            {
+                t.module
+                for t in self.tensors
+                if t.role is TensorRole.NORM
+                and t.component in EXECUTED_COMPONENTS
+                and t.name.endswith(".bias")
+            }
+        )
+        if biased:
+            raise structure_error(
+                "bias가 있는 norm(LayerNorm)은 검증된 RMSNorm 식과 저장 tensor가 달라 지원하지 "
+                "않습니다.",
+                norms=[_leaf(m) for m in biased[:10]],
+            )
 
     def _expect(self, layer: Layer, kind: str, in_f: int, out_f: int) -> None:
         m = layer.linears.get(kind)

@@ -120,6 +120,23 @@ def test_missing_pre_norm_is_unsupported(ib: ModuleType) -> None:
         ModelStructure(ib.inventory_from_tensors(cfg, rows), "dense")
 
 
+def test_layernorm_decoder_with_llama_names_is_unsupported(ib: ModuleType) -> None:
+    # StableLM: q/k/v/o + gate/up/down + input/post_attention_layernorm, but nn.LayerNorm (bias)
+    cfg = dict(ib.TINY_DENSE, model_type="stablelm", architectures=["StableLmForCausalLM"])
+    rows = ib.dense_rows(cfg)
+    rows += [(n.removesuffix("weight") + "bias", dt, sh) for n, dt, sh in rows if "norm" in n]
+    with pytest.raises(EstimatorError) as err:
+        ModelStructure(ib.inventory_from_tensors(cfg, rows), "dense")
+    assert err.value.issue.code is ErrorCode.UNSUPPORTED_ARCHITECTURE
+    assert "input_layernorm" in err.value.issue.details["norms"]
+
+
+def test_vision_layernorm_biases_do_not_block_the_text_decoder(mimo: ModelInventory) -> None:
+    # the vision tower's LayerNorms have biases but never run on text-only data
+    assert any(t.name.endswith("norm1.bias") for t in mimo.tensors)
+    assert ModelStructure(mimo, "qwen3_5").count(LINEAR_ATTENTION) == 24
+
+
 def test_layer_types_are_inferred_like_transformers(ib: ModuleType) -> None:
     dense = ib.tiny_dense_inventory("llama").facts
     assert text_layer_types(dense) == [FULL_ATTENTION, FULL_ATTENTION]

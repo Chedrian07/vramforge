@@ -24,6 +24,7 @@ from . import ledger
 from .base import GenerationTimepoints, StepTimepoints, TrainableGroup
 from .structure import (
     ATTENTION_PROJ,
+    EXECUTED_COMPONENTS,
     FULL_ATTENTION,
     GDN_PROJ,
     LINEAR_ATTENTION,
@@ -50,6 +51,8 @@ _LINEAR_ATTENTION_KEYS = (
     "value_head_dim",
     "conv_kernel_dim",
 )
+# Config epsilons of nn.LayerNorm decoders (StableLM, GPT-NeoX, ...); RMSNorm ones use rms_norm_eps.
+_LAYER_NORM_KEYS = ("layer_norm_eps", "layer_norm_epsilon")
 
 
 def _common_supports(facts: ArchitectureFacts) -> bool:
@@ -60,6 +63,8 @@ def _common_supports(facts: ArchitectureFacts) -> bool:
     act = facts.extra.get("hidden_act")
     if act is not None and str(act).lower() not in SILU_ACTS:
         return False  # the verified MLP is a SiLU-gated MLP
+    if "rms_norm_eps" not in facts.extra and any(k in facts.extra for k in _LAYER_NORM_KEYS):
+        return False  # LayerNorm decoder: the verified saved sets are RMSNorm ones
     return not (facts.layer_types and len(facts.layer_types) != facts.num_hidden_layers)
 
 
@@ -161,6 +166,7 @@ class DecoderAdapter:
                 t
                 for t in st.tensors
                 if t.role is TensorRole.EMBEDDING
+                and t.component in EXECUTED_COMPONENTS
                 and len(t.shape) == 2
                 and t.shape[1] == st.dims.hidden
             ),
