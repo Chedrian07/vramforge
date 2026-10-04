@@ -9,6 +9,7 @@ parameter of a quantized model to bf16 (§Q6.1).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
@@ -29,6 +30,9 @@ from . import matching
 from .base import TrainableGroup
 from .structure import EXECUTED_COMPONENTS, ModelStructure, arch_issue, module_ancestors
 from .weights import quantized_modules, resident_dtype
+
+# Characters that only occur in a regex, never in a module name (dots alone stay suffixes).
+_REGEX_SYNTAX = re.compile(r"[*+?\[\](){}|^$\\]")
 
 NO_GRAD_NOTE = (
     "텍스트 전용 데이터에서는 실행되지 않아 gradient와 optimizer state가 생기지 않습니다 "
@@ -68,9 +72,13 @@ def resolve_lora_targets(
     - "all-linear": every Linear except the output embedding, vision Linear included
       (tuners_utils.py:2430-2492)
     - other str: one regex, `re.fullmatch` on module names; list: exact name or `.suffix`
+    - a one-element list holding regex-only syntax (`*+?[](){}|^$\\`) is that single regex: the
+      request schema carries "explicit suffixes or a single regex string" in one list field
     - `exclude` (list semantics) is applied last
     Callers apply the loading scope (vision modules do not exist in a text-only load).
     """
+    if isinstance(target, list) and len(target) == 1 and _REGEX_SYNTAX.search(target[0]):
+        target = target[0]
     if target == "auto_verified":
         chosen = [m for m in structure.text_linears() if m.kind in verified_kinds]
     elif target == "all-linear":

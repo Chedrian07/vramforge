@@ -97,6 +97,12 @@ def test_explicit_names_regex_and_exclude(st: ModelStructure) -> None:
     assert len(_targets(st, "auto_verified", ["in_proj_a", "in_proj_b"])) == 248 - 48
 
 
+def test_single_regex_in_a_list_is_a_regex(st: ModelStructure) -> None:
+    # request schema: `target_modules` list = explicit suffixes or a single regex string
+    assert len(_targets(st, [r".*language_model.*\.(q|k|v|o)_proj"])) == 32
+    assert len(_targets(st, ["self_attn.q_proj"])) == 8  # dots alone keep suffix semantics
+
+
 @pytest.mark.parametrize("target", [["conv1d"], ["embed_tokens"], r".*\.mlp"])
 def test_non_linear_targets_are_rejected(st: ModelStructure, target: str | list[str]) -> None:
     with pytest.raises(EstimatorError) as err:

@@ -132,6 +132,7 @@ LoRA 대상 해석(`lora_target_modules`)은 inventory 전체(full-checkpoint �
 | `"all-linear"` | PEFT 의미: 출력 embedding을 뺀 모든 Linear, vision 포함 (MiMo 358개) |
 | 그 밖의 문자열 | 정규식 1개, `re.fullmatch(pattern, module_name)` |
 | 리스트 | 이름 일치 또는 `name.endswith("." + entry)` |
+| 원소 1개 리스트 + 정규식 전용 문자(`*+?[](){}\|^$\`) | 그 정규식 1개 (요청 스키마가 "이름 목록 또는 정규식 1개"를 같은 리스트 필드로 받음). 점(`.`)만 있으면 이름 의미 |
 | `exclude` | 리스트 의미로 마지막에 적용 |
 
 - Linear가 아닌 모듈(embedding, conv, container)이 걸리면 `CONFLICTING_OPTIONS`로 거절한다. 아무것도 안 걸려도 오류다.
