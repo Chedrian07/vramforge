@@ -18,9 +18,26 @@ from vramforge_estimator.schemas import (
     AnalysisResult,
     Issue,
     JobStatus,
+    ModelInventory,
+    ModelInventorySummary,
     ScenarioResponse,
 )
 from vramforge_estimator.sources import SourceAccess
+
+
+def inventory_summary(inventory: ModelInventory) -> ModelInventorySummary:
+    """The part of a full inventory embedded in results and API responses."""
+    return ModelInventorySummary(
+        facts=inventory.facts,
+        tensor_count=len(inventory.tensors),
+        linear_module_count=len(inventory.linear_modules),
+        params_total=inventory.params_total,
+        bytes_serialized_total=inventory.bytes_serialized_total,
+        by_component=inventory.by_component,
+        tied_groups=inventory.tied_groups,
+        quantized_checkpoint_format=inventory.quantized_checkpoint_format,
+        inventory_hash=inventory.inventory_hash,
+    )
 
 
 class JobContext(ScanContext, Protocol):
@@ -46,4 +63,4 @@ def recompute(
     raise NotImplementedError
 
 
-__all__ = ["JobContext", "analyze", "recompute"]
+__all__ = ["JobContext", "analyze", "inventory_summary", "recompute"]
