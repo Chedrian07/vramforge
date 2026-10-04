@@ -337,3 +337,35 @@ def test_analyzed_template_options_reach_the_trainer(
 
     plain = build_result(objective, tmp_path / "plain", monkeypatch)
     assert "chat_template_kwargs" not in yaml.safe_load(export_trainer_config(plain))["dataset"]
+
+
+def test_report_keeps_unknown_excluded_and_conditional_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """plan §12.3 (unknown ≠ not applicable) and §8.4 (a conditional result is not a confirmed
+    system recommendation) in the human-readable report."""
+    ready = build_result("grpo", tmp_path, monkeypatch)
+    text = export_report_md(ready).decode()
+    evaluation = next(line for line in text.splitlines() if line.startswith("| EVALUATION"))
+    assert "제외" in evaluation and "미상" not in evaluation  # excluded, not unknown
+    assert "가장 긴 prompt + 가장 큰 completion budget" in text  # GRPO length is not observed
+    assert "조건부 결과입니다" not in text
+    from vramforge_estimator.schemas import ExcludedComponent
+
+    scoped = ready.model_copy(  # the default scope leaves evaluation out of a ready result
+        update={"excluded_components": [ExcludedComponent(name="EVALUATION", reason="범위 밖")]}
+    )
+    assert "조건부 결과입니다" not in export_report_md(scoped).decode()
+
+    reward = fakes.issue(ErrorCode.GRPO_REWARD_UNSPECIFIED, "reward가 지정되지 않았습니다.")
+    conditional = build_result(
+        "grpo",
+        tmp_path / "conditional",
+        monkeypatch,
+        readiness=TrainingReadiness.CONDITIONAL,
+        report_kwargs={"warnings": [reward.model_copy(update={"severity": Severity.WARNING})]},
+    )
+    text = export_report_md(conditional).decode()
+    assert "조건부 결과입니다" in text
+    assert "계획용 권장 용량 (조건부)" in text
+    assert "- 경고 \\[GRPO_REWARD_UNSPECIFIED\\]" in text  # severity is spelled out

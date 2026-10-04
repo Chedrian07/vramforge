@@ -17,8 +17,10 @@ from vramforge_estimator.schemas import (
     EvidenceLevel,
     HardwareFit,
     Issue,
+    Objective,
     ScanCoverage,
     ScenarioEstimate,
+    Severity,
     TrainingReadiness,
 )
 from vramforge_estimator.units import GiB
@@ -59,6 +61,11 @@ FIT_KO = {
     HardwareFit.EXCEEDS: "예상 용량 초과",
     HardwareFit.UNKNOWN: "판정 보류",
 }
+SEVERITY_KO = {Severity.ERROR: "오류", Severity.WARNING: "경고", Severity.INFO: "안내"}
+CONDITIONAL_NOTE = (
+    "조건부 결과입니다: 학습 준비 상태가 ready가 아니므로(제외한 구성 요소는 아래 미상·제외 항목 "
+    "참고) 권장 용량은 전체 학습 시스템의 확정값이 아닙니다."
+)
 
 
 def esc(value: object) -> str:
@@ -100,7 +107,14 @@ def _primary(result: AnalysisResult) -> ScenarioEstimate | None:
 
 
 def _issue_line(issue: Issue) -> str:
-    return f"- \\[{issue.code.value}\\] {esc(issue.user_message)}"
+    label = SEVERITY_KO.get(issue.severity, issue.severity.value)
+    return f"- {label} \\[{issue.code.value}\\] {esc(issue.user_message)}"
+
+
+def _conditional(result: AnalysisResult) -> bool:
+    """A result that is not ready (e.g. reward unspecified) is not a confirmed recommendation for
+    the whole training system (plan §8.4). Scope exclusions such as evaluation alone are not."""
+    return result.status.training_readiness is not TrainingReadiness.READY
 
 
 def render_report(result: AnalysisResult) -> str:
@@ -155,7 +169,7 @@ def render_report(result: AnalysisResult) -> str:
         rec = primary.recommendation
         summary_rows.append(
             [
-                "계획용 권장 용량",
+                "계획용 권장 용량" + (" (조건부)" if _conditional(result) else ""),
                 fmt_bytes(rec.recommended_application_capacity_bytes)
                 + f" (여유 {fmt_bytes(rec.planning_margin_bytes)})"
                 if rec
@@ -239,8 +253,14 @@ def render_report(result: AnalysisResult) -> str:
     if context is not None:
         observed = context.max_observed_length
         limit = context.effective_limit
+        # GRPO checks the longest prompt plus a completion budget, which is not an observed length.
+        checked = (
+            "검사한 최대 길이(가장 긴 prompt + 가장 큰 completion budget)"
+            if req.training.objective is Objective.GRPO
+            else "관측 최대 길이"
+        )
         lines.append(
-            f"- context: 관측 최대 {f'{observed:,}' if observed is not None else '-'} 토큰, "
+            f"- context: {checked} {f'{observed:,}' if observed is not None else '-'} 토큰, "
             f"상한 {f'{limit:,}' if limit is not None else '미상'} "
             f"({esc(context.limit_source or '근거 없음')}), "
             f"상태 {esc(context.status)}"
@@ -297,15 +317,18 @@ def render_report(result: AnalysisResult) -> str:
             *_table(["시나리오", "예상 피크", "권장 용량", "적합"], rows),
             "",
         ]
+        if _conditional(result):
+            lines += [CONDITIONAL_NOTE, ""]
         shown = primary or memory.scenarios[0]
         if shown.devices:
             device = shown.devices[0]
+            # Excluded phases have no numbers: "제외", never "미상" (unknown ≠ not applicable).
             phase_rows = [
                 [
                     esc(p.phase.value),
                     "포함" if p.included else f"제외 ({esc(p.excluded_reason or '-')})",
-                    fmt_bytes(p.bytes_low),
-                    fmt_bytes(p.bytes_high),
+                    fmt_bytes(p.bytes_low) if p.included else "-",
+                    fmt_bytes(p.bytes_high) if p.included else "-",
                     esc(p.peak_timepoint or "-"),
                 ]
                 for p in device.phases
