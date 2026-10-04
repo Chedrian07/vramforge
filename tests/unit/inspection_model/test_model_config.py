@@ -219,11 +219,11 @@ def test_tiny_dense_decoder_inventory(tmp_path: Path, st_writer: Any) -> None:
     assert facts.extra["rms_norm_eps"] == 1e-05
 
     assert len(inv.tensors) == 20
-    assert inv.params_total == 90_432
-    assert inv.bytes_serialized_total == 180_864
+    assert inv.params_total == 106_816
+    assert inv.bytes_serialized_total == 213_632
     assert inv.index_total_size is None
     assert inv.tied_groups == [["model.embed_tokens.weight", "lm_head.weight"]]
-    assert [(c.component, c.params) for c in inv.by_component] == [(ModelComponent.TEXT, 90_432)]
+    assert [(c.component, c.params) for c in inv.by_component] == [(ModelComponent.TEXT, 106_816)]
     assert Counter(m.layer_type for m in inv.linear_modules) == {"full_attention": 8, "mlp": 6}
     k_proj = next(m for m in inv.linear_modules if m.name == "model.layers.1.self_attn.k_proj")
     assert (k_proj.in_features, k_proj.out_features, k_proj.layer_index) == (64, 32, 1)
@@ -242,9 +242,9 @@ def test_tied_head_serialized_twice_is_counted_once(tmp_path: Path, st_writer: A
     st_writer.write_safetensors(
         target / "model.safetensors",
         {
-            "model.embed_tokens.weight": ("F16", [256, 64]),
+            "model.embed_tokens.weight": ("F16", [512, 64]),
             "model.layers.0.self_attn.q_proj.weight": ("F16", [64, 64]),
-            "lm_head.weight": ("F16", [256, 64]),
+            "lm_head.weight": ("F16", [512, 64]),
         },
     )
     access = SourceAccess(local_roots={"models": root})
@@ -252,6 +252,6 @@ def test_tied_head_serialized_twice_is_counted_once(tmp_path: Path, st_writer: A
         resolve_model(ModelSourceRef(reference="local:models/tied"), access), access
     )
     assert inv.tied_groups == [["model.embed_tokens.weight", "lm_head.weight"]]
-    assert inv.params_total == 256 * 64 + 64 * 64  # lm_head shares the embedding storage
-    assert inv.bytes_serialized_total == 2 * (2 * 256 * 64 + 64 * 64)
+    assert inv.params_total == 512 * 64 + 64 * 64  # lm_head shares the embedding storage
+    assert inv.bytes_serialized_total == 2 * (2 * 512 * 64 + 64 * 64)
     assert inv.facts.extra["lm_head_serialized"] is True
