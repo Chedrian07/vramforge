@@ -99,7 +99,7 @@ api·worker·migrate ──▶ postgres, redis  (외부와 연결되지 않는 �
 
 ### 4.2 선택 항목 (설정할 때만 전달)
 
-아래 변수는 compose에 값 없이 선언되어 있습니다. 셸이나 `.env`에 설정했을 때만 api·worker 컨테이너로 전달되고, 설정하지 않으면 컨테이너에 아예 없습니다. 그래서 빈 토큰이 전달되지 않고, API 기본값이 그대로 쓰입니다.
+아래 변수는 compose에 값 없이 선언되어 있습니다. 셸이나 `.env`에 설정했을 때만 컨테이너로 전달되고, 설정하지 않으면 컨테이너에 아예 없습니다. 그래서 빈 토큰이 전달되지 않고, API 기본값이 그대로 쓰입니다. 비밀값은 쓰는 서비스에만 전달됩니다. `HF_TOKEN`은 api·worker, `VRAMFORGE_ACCESS_TOKEN`은 api에만 가고, `migrate`는 DB 접속 정보(`VRAMFORGE_DATABASE_URL`)와 `VRAMFORGE_LOG_LEVEL`만 받습니다.
 
 | 변수 | 설정하지 않았을 때 | 설명 |
 |---|---|---|

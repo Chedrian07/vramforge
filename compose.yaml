@@ -18,21 +18,29 @@ x-python-build: &python-build
     UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.12.23}
 
 # Settings read by vramforge-api and vramforge-worker (services/api/.../settings.py).
-x-app-env: &app-env
+# Value-less entries are passed through only when set in the shell or .env. Unset, they are
+# absent in the container: no empty token, and the API's own defaults apply.
+# Each secret goes only to the services that use it (plan.md §18): migrate gets the database URL
+# alone, HF_TOKEN reaches api and worker, VRAMFORGE_ACCESS_TOKEN reaches the api only.
+x-db-env: &db-env
   VRAMFORGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-vramforge}:${POSTGRES_PASSWORD:-vramforge}@postgres:5432/${POSTGRES_DB:-vramforge}
+  VRAMFORGE_LOG_LEVEL:
+
+x-worker-env: &worker-env
+  <<: *db-env
   VRAMFORGE_REDIS_URL: redis://redis:6379/0
   VRAMFORGE_DATA_DIR: /data
   VRAMFORGE_LOCAL_ROOTS: ${VRAMFORGE_LOCAL_ROOTS:-local=/sources/local}
-  VRAMFORGE_COOKIE_SECURE: ${VRAMFORGE_COOKIE_SECURE:-false}
-  # Value-less entries are passed through only when set in the shell or .env. Unset, they are
-  # absent in the container: no empty token, and the API's own defaults apply.
   HF_TOKEN:
-  VRAMFORGE_ACCESS_TOKEN:
   VRAMFORGE_MAX_UPLOAD_BYTES:
   VRAMFORGE_MAX_CONCURRENT_JOBS_PER_OWNER:
   VRAMFORGE_JOB_TIMEOUT_S:
   VRAMFORGE_RETENTION_DAYS:
-  VRAMFORGE_LOG_LEVEL:
+
+x-api-env: &api-env
+  <<: *worker-env
+  VRAMFORGE_COOKIE_SECURE: ${VRAMFORGE_COOKIE_SECURE:-false}
+  VRAMFORGE_ACCESS_TOKEN:
 
 x-app-volumes: &app-volumes
   - vfdata:/data
@@ -97,7 +105,7 @@ services:
     build: *python-build
     command: ["vramforge-api"]
     init: true
-    environment: *app-env
+    environment: *api-env
     volumes: *app-volumes
     networks: [default, backend]
     depends_on:
@@ -124,7 +132,7 @@ services:
     build: *python-build
     command: ["vramforge-worker"]
     init: true
-    environment: *app-env
+    environment: *worker-env
     volumes: *app-volumes
     networks: [default, backend]
     depends_on:
@@ -152,7 +160,7 @@ services:
     build: *python-build
     command: ["vramforge-api", "migrate"]
     init: true
-    environment: *app-env
+    environment: *db-env
     networks: [backend]
     depends_on:
       postgres:
