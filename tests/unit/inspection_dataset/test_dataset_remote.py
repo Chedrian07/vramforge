@@ -41,12 +41,18 @@ def http_error(cls: type[hf_errors.HfHubHTTPError], status: int) -> hf_errors.Hf
     return cls(f"{status} for {url}", response=response)
 
 
-def wrapped(cause: BaseException) -> FileNotFoundError:
-    """How HfFileSystem reports a repository or revision lookup (`raise ... from err`)."""
+def wrapped(
+    cause: BaseException, outer: type[FileNotFoundError] = FileNotFoundError
+) -> FileNotFoundError:
+    """`raise outer(...) from cause`: how HfFileSystem reports a repository or revision lookup,
+    and how hf_hub_download reports a failed metadata request (LocalEntryNotFoundError)."""
     try:
-        raise FileNotFoundError(f"datasets/acme/demo-set {SECRET}") from cause
+        raise outer(f"datasets/acme/demo-set {SECRET}") from cause
     except FileNotFoundError as exc:
         return exc
+
+
+LOCAL = hf_errors.LocalEntryNotFoundError
 
 
 ACCESS = (ErrorCode.SOURCE_ACCESS_DENIED, False, "access_denied")
@@ -71,6 +77,11 @@ MAPPING: list[tuple[BaseException, tuple[ErrorCode, bool, str], int | None]] = [
     (TimeoutError(SECRET), RETRY, None),
     (ConnectionResetError(SECRET), RETRY, None),
     (hf_errors.LocalEntryNotFoundError(f"not cached {SECRET}"), RETRY, None),
+    # hf_hub_download: "cannot locate the file on the Hub" chained to the failed HEAD request.
+    (wrapped(httpx.ConnectError(f"refused {SECRET}"), LOCAL), RETRY, None),
+    (wrapped(http_error(hf_errors.HfHubHTTPError, 502), LOCAL), RETRY, 502),
+    (wrapped(http_error(hf_errors.HfHubHTTPError, 403), LOCAL), ACCESS, 403),
+    (wrapped(http_error(hf_errors.RevisionNotFoundError, 404), LOCAL), GONE, 404),
 ]
 
 
@@ -100,10 +111,18 @@ def test_network_messages_are_dataset_specific_and_name_the_request() -> None:
     assert "다시 시도" in read.user_message
 
 
-def test_offline_mode_is_not_retryable() -> None:
-    issue = remote_issue(hf_errors.OfflineModeIsEnabled(SECRET), "a.jsonl", "read")
+@pytest.mark.parametrize(
+    "exc",
+    [
+        hf_errors.OfflineModeIsEnabled(SECRET),
+        wrapped(hf_errors.OfflineModeIsEnabled(SECRET), LOCAL),  # hf_hub_download, offline
+    ],
+)
+def test_offline_mode_is_not_retryable(exc: BaseException) -> None:
+    issue = remote_issue(exc, "a.jsonl", "read")
     assert (issue.code, issue.retryable) == (ErrorCode.MODEL_METADATA_UNAVAILABLE, False)
     assert issue.details["reason"] == "offline_mode"
+    assert SECRET not in issue.model_dump_json()
 
 
 # ---------------------------------------------------------------- fake Hub transport
