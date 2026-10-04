@@ -12,6 +12,9 @@ import os
 
 import pytest
 
+# The parity tests build real TRL trainers; never let them send Hub telemetry from test runs.
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
 
 def _parity_available() -> bool:
     return all(importlib.util.find_spec(m) is not None for m in ("torch", "trl", "peft"))
