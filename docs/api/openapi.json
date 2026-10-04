@@ -569,6 +569,18 @@
               }
             ]
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "fingerprint": {
             "title": "Fingerprint",
             "type": "string"
@@ -600,6 +612,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/JobProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisRequest"
               },
               {
                 "type": "null"
@@ -1537,9 +1559,20 @@
             "title": "Effective Limit"
           },
           "exceeded_rows": {
-            "default": 0,
-            "title": "Exceeded Rows",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exceeded Rows"
+          },
+          "exceeded_rows_exact": {
+            "default": true,
+            "title": "Exceeded Rows Exact",
+            "type": "boolean"
           },
           "limit_source": {
             "anyOf": [
@@ -1794,9 +1827,15 @@
             "title": "Config"
           },
           "context_exceeded_rows": {
-            "default": 0,
-            "title": "Context Exceeded Rows",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Exceeded Rows"
           },
           "coverage": {
             "$ref": "#/components/schemas/ScanCoverage"
@@ -1842,6 +1881,17 @@
           },
           "objective": {
             "$ref": "#/components/schemas/Objective"
+          },
+          "omitted_system_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Omitted System Messages"
           },
           "preprocess_key": {
             "title": "Preprocess Key",
@@ -2285,6 +2335,17 @@
             ],
             "title": "Precompute Batch Size"
           },
+          "reference_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Model"
+          },
           "reference_strategy": {
             "$ref": "#/components/schemas/ReferenceStrategy"
           },
@@ -2312,6 +2373,17 @@
           "compute": {
             "title": "Compute",
             "type": "string"
+          },
+          "conv_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conv State"
           },
           "gradient": {
             "title": "Gradient",
@@ -2452,7 +2524,13 @@
           "NOT_FOUND",
           "CANCELLED",
           "JOB_TIMEOUT",
-          "INTERNAL_ERROR"
+          "INTERNAL_ERROR",
+          "NOT_IMPLEMENTED",
+          "EMPTY_DATASET",
+          "SAMPLER_ORDER_NOT_REPRODUCED",
+          "PROMPT_BOUNDARY_MISMATCH",
+          "SPECIAL_TOKEN_DUPLICATED",
+          "LOAD_BUDGET_EXCEEDED"
         ],
         "title": "ErrorCode",
         "type": "string"
@@ -2780,8 +2858,12 @@
           },
           "completion_budget_candidates": {
             "items": {
+              "maximum": 1048576.0,
+              "minimum": 1.0,
               "type": "integer"
             },
+            "maxItems": 16,
+            "minItems": 1,
             "title": "Completion Budget Candidates",
             "type": "array"
           },
@@ -2901,6 +2983,11 @@
               }
             ],
             "title": "Reward Model Reference"
+          },
+          "reward_on_training_gpu": {
+            "default": true,
+            "title": "Reward On Training Gpu",
+            "type": "boolean"
           },
           "rollout_backend": {
             "$ref": "#/components/schemas/RolloutBackend"
@@ -3029,7 +3116,9 @@
               "margin_insufficient",
               "fits_with_margin",
               "unknown_components",
-              "unsupported"
+              "unsupported",
+              "load_budget_insufficient",
+              "scan_incomplete"
             ],
             "title": "Reason",
             "type": "string"
@@ -3828,6 +3917,13 @@
           "evidence_level": {
             "$ref": "#/components/schemas/EvidenceLevel"
           },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
           "primary_scenario_id": {
             "anyOf": [
               {
@@ -4595,6 +4691,11 @@
             ],
             "title": "Architecture Adapter"
           },
+          "assistant_only_loss": {
+            "default": false,
+            "title": "Assistant Only Loss",
+            "type": "boolean"
+          },
           "attention_path_by_layer_type": {
             "additionalProperties": {
               "type": "string"
@@ -4609,6 +4710,17 @@
             ],
             "title": "Checkpointing Granularity",
             "type": "string"
+          },
+          "completion_only_loss": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Only Loss"
           },
           "dependency_lock_digest": {
             "anyOf": [
@@ -4693,11 +4805,26 @@
             "title": "Microbatch",
             "type": "integer"
           },
+          "mixed_precision": {
+            "default": "bf16",
+            "enum": [
+              "bf16",
+              "fp16",
+              "none"
+            ],
+            "title": "Mixed Precision",
+            "type": "string"
+          },
           "objective": {
             "$ref": "#/components/schemas/Objective"
           },
           "optimizer": {
             "$ref": "#/components/schemas/OptimizerResolved"
+          },
+          "packing": {
+            "default": false,
+            "title": "Packing",
+            "type": "boolean"
           },
           "pad_to_multiple_of": {
             "anyOf": [
@@ -5663,6 +5790,17 @@
             },
             "title": "Template Kwargs",
             "type": "array"
+          },
+          "template_parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Parse Error"
           },
           "tokenizer_class": {
             "title": "Tokenizer Class",
