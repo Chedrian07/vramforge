@@ -451,3 +451,14 @@ def test_tokenizer_manifest_without_template_is_reported(
     ).install(monkeypatch)
     result = analyze(example_request(), ctx)
     assert result.tokenizer_manifest.chat_template_present is False
+
+
+def test_auto_selected_split_is_reported(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules().install(monkeypatch)
+    explicit = analyze(example_request(), ctx)
+    assert explicit.dataset_scan.split_auto_selected is False
+    auto = analyze(example_request(**{"dataset.split": None}), ctx)  # cache hit path
+    assert auto.dataset_scan.split == "train"
+    assert auto.dataset_scan.split_auto_selected is True

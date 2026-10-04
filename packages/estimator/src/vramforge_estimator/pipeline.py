@@ -848,7 +848,10 @@ class _Run:
                         issues=tuple(issues),
                     ),
                 )
-        self.result.dataset_scan = outcome_result
+        # The scanner cannot know whether the split was chosen by the user (plan §7.1).
+        self.result.dataset_scan = outcome_result.model_copy(
+            update={"split_auto_selected": self.request.dataset.split is None}
+        )
         self.write_artifacts_manifest(pkey)
         self.scan_issues = issues
         for issue in issues:
