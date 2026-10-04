@@ -17,7 +17,7 @@ Layouts (TRL dataset types):
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.inspection import TokenizerHandle
@@ -69,9 +69,9 @@ def resolve_sft_layout(mapping: ColumnMapping) -> tuple[SftLayout, str | None]:
 
 
 class TrlSftAdapter(TrlAdapterBase):
-    name: ClassVar[str] = f"trl-{TRL_VERSION}-sft"
-    version: ClassVar[str] = "1"
-    objective: ClassVar[Objective] = Objective.SFT
+    name = f"trl-{TRL_VERSION}-sft"
+    version = "1"
+    objective = Objective.SFT
 
     def __init__(
         self,

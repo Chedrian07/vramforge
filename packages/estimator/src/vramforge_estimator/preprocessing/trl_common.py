@@ -13,7 +13,7 @@ Tokenizer calls mirror what TRL 1.14.1 does through transformers 5.18 (no torch)
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.inspection import TokenizerHandle
@@ -21,7 +21,9 @@ from vramforge_estimator.schemas import (
     ColumnMapping,
     EmptySystemPolicy,
     ErrorCode,
+    Issue,
     Objective,
+    Severity,
     Stage,
 )
 
@@ -69,7 +71,13 @@ def check_template_kwargs(template_kwargs: Mapping[str, Any] | None) -> dict[str
 
 def mapping_error(message: str, **details: object) -> EstimatorError:
     return EstimatorError(
-        make_issue(ErrorCode.COLUMN_MAPPING_REQUIRED, message, stage=Stage.TOKENIZING, **details)
+        Issue(
+            code=ErrorCode.COLUMN_MAPPING_REQUIRED,
+            severity=Severity.ERROR,
+            stage=Stage.TOKENIZING,
+            user_message=message,
+            details=dict(details),
+        )
     )
 
 
@@ -91,9 +99,9 @@ def _safe_reason(exc: BaseException, texts: Sequence[str]) -> str:
 class TrlAdapterBase:
     """Common state and tokenizer helpers. Subclasses implement `_process` and the note."""
 
-    name: ClassVar[str]
-    version: ClassVar[str]
-    objective: ClassVar[Objective]
+    name: str
+    version: str
+    objective: Objective
 
     def __init__(
         self,

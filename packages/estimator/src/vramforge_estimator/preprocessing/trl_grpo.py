@@ -11,7 +11,7 @@ Completion lengths are not data: they are budget scenarios planned later (plan Â
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any
 
 from vramforge_estimator.inspection import TokenizerHandle
 from vramforge_estimator.schemas import ColumnMapping, DatasetFormat, EmptySystemPolicy, Objective
@@ -22,9 +22,9 @@ from .trl_common import TRL_VERSION, TrlAdapterBase, mapping_error
 
 
 class TrlGrpoAdapter(TrlAdapterBase):
-    name: ClassVar[str] = f"trl-{TRL_VERSION}-grpo"
-    version: ClassVar[str] = "1"
-    objective: ClassVar[Objective] = Objective.GRPO
+    name = f"trl-{TRL_VERSION}-grpo"
+    version = "1"
+    objective = Objective.GRPO
 
     def __init__(
         self,

@@ -10,7 +10,7 @@ lengths the model sees are ``len(prompt_ids) + len(<branch>_ids)`` — stored as
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any
 
 from vramforge_estimator.inspection import TokenizerHandle
 from vramforge_estimator.schemas import (
@@ -45,9 +45,9 @@ def extract_prompt(
 
 
 class TrlDpoAdapter(TrlAdapterBase):
-    name: ClassVar[str] = f"trl-{TRL_VERSION}-dpo"
-    version: ClassVar[str] = "1"
-    objective: ClassVar[Objective] = Objective.DPO
+    name = f"trl-{TRL_VERSION}-dpo"
+    version = "1"
+    objective = Objective.DPO
 
     def __init__(
         self,
