@@ -49,6 +49,20 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[AnalysisResul
         {"margin_policy": {"min_bytes": 0, "fraction": 0.3}},
         {"scope": {"include_evaluation": True, "include_checkpoint_save": True}},
         {"dataset.mapping": None},  # auto-detection would give the applied mapping again
+        # format=auto holds hints: hints that agree with the applied mapping change nothing
+        {"dataset.mapping": {"empty_system_policy": "omit"}},
+        {"dataset.mapping": {"prompt": "question"}},
+        {"dataset.mapping": {"format": "auto", "chosen": "chosen", "rejected": "rejected"}},
+        # the explicit form of the mapping the scan resolved
+        {
+            "dataset.mapping": {
+                "format": "preference",
+                "system": "system",
+                "prompt": "question",
+                "chosen": "chosen",
+                "rejected": "rejected",
+            }
+        },
         {"dataset.split": None},
         {"model.revision": "2367e865d009c13ac81713a2878291d33ab28177"},  # the pinned commit
     ],
@@ -73,6 +87,18 @@ def test_estimate_layer_changes_do_not_need_reanalysis(
         ({"dataset.eval_split": "test"}, "평가 split"),
         ({"dataset.scan_mode": "sample", "dataset.sample_rows": 10}, "스캔 범위"),
         ({"dataset.mapping.prompt": "system"}, "컬럼 매핑"),
+        ({"dataset.mapping": {"prompt": "system"}}, "컬럼 매핑"),
+        ({"dataset.mapping": {"empty_system_policy": "keep"}}, "빈 system"),
+        (
+            {
+                "dataset.mapping": {
+                    "format": "preference",
+                    "chosen": "chosen",
+                    "rejected": "rejected",
+                }
+            },
+            "컬럼 매핑",  # explicit: the prompt and system roles are dropped
+        ),
         ({"dataset.mapping.empty_system_policy": "keep"}, "빈 system"),
         ({"dataset.mapping.format": "prompt_only"}, "데이터 형식"),
         ({"training.template": {"enable_thinking": False}}, "chat template"),

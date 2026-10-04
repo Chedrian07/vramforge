@@ -199,6 +199,14 @@ def tokenizer_manifest(*, chat_template: bool = True) -> TokenizerManifest:
     )
 
 
+def string_columns(*names: str) -> list[DatasetColumn]:
+    return [DatasetColumn(name=n, dtype="string", kind="string") for n in names]
+
+
+# The example dataset's columns (CyberNative/Code_Vulnerability_Security_DPO).
+DEFAULT_COLUMNS = ("system", "question", "chosen", "rejected", "lang")
+
+
 def dataset_inspection(**overrides: Any) -> DatasetInspection:
     values: dict[str, Any] = {
         "manifest": dataset_manifest(),
@@ -207,10 +215,7 @@ def dataset_inspection(**overrides: Any) -> DatasetInspection:
         "splits": [DatasetSplitInfo(name="train", num_rows=4)],
         "selected_split": "train",
         "split_auto_selected": False,
-        "columns": [
-            DatasetColumn(name=n, dtype="string", kind="string")
-            for n in ("system", "question", "chosen", "rejected", "lang")
-        ],
+        "columns": string_columns(*DEFAULT_COLUMNS),
         "detected_format": DatasetFormat.PREFERENCE,
         "mapping_candidates": [
             ColumnMapping(system="system", prompt="question", chosen="chosen", rejected="rejected")
@@ -222,6 +227,40 @@ def dataset_inspection(**overrides: Any) -> DatasetInspection:
     }
     values.update(overrides)
     return DatasetInspection(**values)
+
+
+def mapped_inspection(
+    columns: list[DatasetColumn],
+    objective: Objective | None,
+    requested: ColumnMapping | None,
+    **overrides: Any,
+) -> DatasetInspection:
+    """An inspection whose mapping fields come from the real inspector's mapping analysis of
+    `columns` with the request's mapping (hints, explicit format, empty-system policy)."""
+    from vramforge_estimator.inspection.dataset_mapping import analyze_mapping
+
+    analysis = analyze_mapping(columns, objective, requested)
+    values: dict[str, Any] = {
+        "columns": columns,
+        "detected_format": analysis.detected_format,
+        "mapping_candidates": analysis.candidates,
+        "suggested_mapping": analysis.suggested,
+        "mapping_ambiguous": analysis.ambiguous,
+        "issues": list(analysis.issues),
+    }
+    values.update(overrides)
+    return dataset_inspection(**values)
+
+
+def mapping_aware(columns: list[DatasetColumn]) -> Callable[..., DatasetInspection]:
+    """An `inspect_dataset` fake that analyzes `columns` like the real inspector."""
+
+    def inspect(source: Any, ref: Any, access: Any, objective: Any = None) -> DatasetInspection:
+        return mapped_inspection(
+            columns, objective, ref.mapping, split_auto_selected=ref.split is None
+        )
+
+    return inspect
 
 
 def resolved_config(objective: Objective = Objective.GRPO, **overrides: Any) -> ResolvedConfig:
@@ -496,6 +535,7 @@ class FakeModules:
     chat_template: bool = True
     objective: Objective = Objective.GRPO
     last_estimate_kwargs: dict[str, Any] = field(default_factory=dict)
+    adapters: list[Any] = field(default_factory=list)  # preprocessing adapters handed out
 
     # defaults ------------------------------------------------------------------------
     def _resolve_model(self, ref: Any, access: Any) -> ResolvedSource:
@@ -517,7 +557,9 @@ class FakeModules:
         )
 
     def _inspect_dataset(self, source: Any, ref: Any, access: Any, objective: Any = None):
-        return dataset_inspection()
+        # Like the real inspector: the request's mapping is analyzed against the columns, and
+        # "train" is auto-selected only when the request names no split.
+        return mapping_aware(string_columns(*DEFAULT_COLUMNS))(source, ref, access, objective)
 
     def _open_rows(self, source: Any, *, config: Any, split: str, access: Any) -> object:
         return object()
@@ -529,6 +571,9 @@ class FakeModules:
 
         adapter = _Adapter()
         adapter.objective = objective  # type: ignore[attr-defined]
+        adapter.mapping = mapping  # type: ignore[attr-defined]
+        adapter.empty_system_policy = kwargs.get("empty_system_policy")  # type: ignore[attr-defined]
+        self.adapters.append(adapter)
         return adapter
 
     def _full_scan(self, stream: Any, adapter: Any, ctx: Any, **kwargs: Any) -> ScanOutcome:
@@ -536,12 +581,13 @@ class FakeModules:
         lengths.mkdir(parents=True, exist_ok=True)
         (lengths / "manifest.json").write_text("{}", encoding="utf-8")
         (lengths / "part-00000.parquet").write_bytes(b"PAR1fakePAR1")
-        return ScanOutcome(
-            result=scan_result(
-                kwargs["objective"], self.scan_coverage, preprocess_key=kwargs["preprocess_key"]
-            ),
-            artifact_path=lengths,
+        result = scan_result(
+            kwargs["objective"], self.scan_coverage, preprocess_key=kwargs["preprocess_key"]
         )
+        mapping = getattr(adapter, "mapping", None)
+        if isinstance(mapping, ColumnMapping):  # like the scanner: the adapter's mapping
+            result = result.model_copy(update={"mapping_applied": mapping})
+        return ScanOutcome(result=result, artifact_path=lengths)
 
     def _load_lengths(self, path: Path) -> LengthTable:
         return LengthTable(row_ids=["train:0"], prompt_tokens=[272])
@@ -625,10 +671,13 @@ __all__ = [
     "example_request",
     "inventory",
     "issue",
+    "mapped_inspection",
+    "mapping_aware",
     "memory_estimate",
     "raising",
     "resolved_config",
     "scan_result",
     "scenario",
+    "string_columns",
     "tokenizer_manifest",
 ]

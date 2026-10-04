@@ -158,11 +158,9 @@ def test_conditional_grpo_has_plan_but_no_trainer_config(
 def test_needs_input_then_explicit_mapping(
     settings: Settings, client_factory: Callable[..., TestClient], modules: Any, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        inspection,
-        "inspect_dataset",
-        lambda *a, **k: fakes.dataset_inspection(mapping_ambiguous=True),
-    )
+    # Two prompt candidates: auto-detection is ambiguous, the request's role hints are not.
+    columns = fakes.string_columns("system", "question", "prompt", "chosen", "rejected")
+    monkeypatch.setattr(inspection, "inspect_dataset", fakes.mapping_aware(columns))
     client = client_factory(settings)
     status = _analyze(client, ready_grpo_body(**{"dataset.mapping": None}))
     assert status["status"] == "NEEDS_INPUT"
@@ -170,8 +168,24 @@ def test_needs_input_then_explicit_mapping(
     assert status["error"]["code"] == "COLUMN_MAPPING_REQUIRED"
     with client.stream("GET", f"/api/v1/analyses/{status['analysis_id']}/events") as resp:
         assert read_sse(resp)[-1]["event"] == "needs_input"
-    again = _analyze(client, ready_grpo_body())  # the example request has an explicit mapping
+    again = _analyze(client, ready_grpo_body())  # the example request names every role
     assert again["status"] == "COMPLETED"
+    applied = again["result"]["dataset_scan"]["mapping_applied"]
+    assert (applied["format"], applied["prompt"]) == ("preference", "question")
+
+
+def test_explicit_mapping_with_a_missing_column_asks_again(
+    settings: Settings, client_factory: Callable[..., TestClient], modules: Any
+) -> None:
+    client = client_factory(settings)
+    body = ready_grpo_body(
+        **{"dataset.mapping": {"format": "prompt_only", "prompt": "no_such_column"}}
+    )
+    status = _analyze(client, body)
+    assert status["status"] == "NEEDS_INPUT"
+    assert status["error"]["code"] == "COLUMN_MAPPING_REQUIRED"
+    assert "no_such_column" in status["result"]["needs_input"]["choices"][0]["reason"]
+    assert modules.calls.count("full_scan") == 0
 
 
 def test_running_job_cancel_end_to_end(

@@ -16,10 +16,12 @@ from pipeline_fakes import (
     dataset_inspection,
     example_request,
     issue,
+    mapping_aware,
     memory_estimate,
     raising,
     resolved_config,
     scenario,
+    string_columns,
     tokenizer_manifest,
 )
 
@@ -33,6 +35,7 @@ from vramforge_estimator.schemas import (
     DatasetColumn,
     DatasetFormat,
     DatasetSplitInfo,
+    EmptySystemPolicy,
     ErrorCode,
     EvidenceLevel,
     HardwareFit,
@@ -195,14 +198,127 @@ def test_ambiguous_mapping_needs_input(
     assert "full_scan" not in fakes.calls
 
 
-def test_explicit_mapping_skips_the_ambiguity_question(
+# Two prompt candidates ("prompt", "question"): ambiguous for GRPO/DPO until a hint picks one.
+AMBIGUOUS_COLUMNS = ("system", "question", "prompt", "chosen", "rejected")
+
+
+def _scanned_mapping(fakes: FakeModules) -> ColumnMapping:
+    (adapter,) = fakes.adapters
+    return adapter.mapping
+
+
+def test_role_hints_resolve_an_ambiguous_mapping(
     ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    FakeModules(inspect_dataset=lambda *a, **k: dataset_inspection(mapping_ambiguous=True)).install(
+    """format=auto with role hints goes through the inspector's suggestion computed with those
+    hints: the hints settle the ambiguity and the scan uses the resolved (explicit) mapping."""
+    inspect = mapping_aware(string_columns(*AMBIGUOUS_COLUMNS))
+    fakes = FakeModules(inspect_dataset=inspect).install(monkeypatch)
+    asked = analyze(example_request(**{"dataset.mapping": None}), ctx)
+    assert terminal_status(asked) is JobStatus.NEEDS_INPUT
+    (choice,) = asked.needs_input.choices
+    assert choice.field == "dataset.mapping" and len(choice.options) == 2
+    assert [e.code for e in asked.errors] == [ErrorCode.COLUMN_MAPPING_REQUIRED]  # asked once
+    assert "get_adapter" not in fakes.calls
+
+    fakes = FakeModules(inspect_dataset=inspect).install(monkeypatch)
+    hinted = analyze(example_request(**{"dataset.mapping": {"prompt": "question"}}), ctx)
+    assert terminal_status(hinted) is JobStatus.COMPLETED
+    applied = _scanned_mapping(fakes)
+    assert applied.format is DatasetFormat.PREFERENCE
+    assert (applied.system, applied.prompt, applied.chosen, applied.rejected) == (
+        "system",
+        "question",
+        "chosen",
+        "rejected",
+    )
+    assert hinted.dataset_scan.mapping_applied == applied
+
+
+def test_policy_only_mapping_uses_the_detected_columns(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mapping that only carries the empty-system policy is detection plus that policy, not a
+    mapping without columns (which would fail every row)."""
+    fakes = FakeModules().install(monkeypatch)
+    request = example_request(**{"dataset.mapping": {"empty_system_policy": "keep"}})
+    result = analyze(request, ctx)
+    assert terminal_status(result) is JobStatus.COMPLETED
+    applied = _scanned_mapping(fakes)
+    assert applied.prompt == "question" and applied.chosen == "chosen"
+    assert applied.empty_system_policy is EmptySystemPolicy.KEEP
+    assert fakes.adapters[0].empty_system_policy is EmptySystemPolicy.KEEP
+
+
+def test_explicit_mapping_is_scanned_as_given(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    explicit = {
+        "format": "preference",
+        "system": "system",
+        "prompt": "question",
+        "chosen": "chosen",
+        "rejected": "rejected",
+    }
+    fakes = FakeModules(inspect_dataset=mapping_aware(string_columns(*AMBIGUOUS_COLUMNS))).install(
         monkeypatch
     )
-    result = analyze(example_request(), ctx)  # the example request carries a mapping
+    result = analyze(example_request(**{"dataset.mapping": explicit}), ctx)
     assert terminal_status(result) is JobStatus.COMPLETED
+    assert _scanned_mapping(fakes) == ColumnMapping.model_validate(explicit)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "fragment"),
+    [
+        (
+            {"format": "preference", "prompt": "nope", "chosen": "chosen", "rejected": "rejected"},
+            "nope",
+        ),
+        ({"format": "messages", "messages": "question"}, "question→messages"),
+    ],
+)
+def test_explicit_mapping_that_cannot_match_the_columns_needs_input(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, mapping: dict, fragment: str
+) -> None:
+    """A missing column or a column of the wrong kind would fail every row: ask instead."""
+    fakes = FakeModules().install(monkeypatch)
+    result = analyze(example_request(**{"dataset.mapping": mapping}), ctx)
+    assert terminal_status(result) is JobStatus.NEEDS_INPUT
+    (choice,) = result.needs_input.choices
+    assert choice.field == "dataset.mapping" and fragment in choice.reason
+    assert ColumnMapping.model_validate(mapping) not in result.needs_input.mapping_candidates
+    assert result.needs_input.mapping_candidates  # the detected mappings are offered
+    assert {e.code for e in result.errors} == {ErrorCode.COLUMN_MAPPING_REQUIRED}
+    assert [e.user_message for e in result.errors].count(choice.reason) == 1  # not repeated
+    assert "get_adapter" not in fakes.calls and "full_scan" not in fakes.calls
+
+
+def test_explicit_mapping_is_checked_even_when_the_inspector_did_not(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules(inspect_dataset=lambda *a, **k: dataset_inspection()).install(monkeypatch)
+    request = example_request(**{"dataset.mapping": {"format": "text", "text": "missing_column"}})
+    result = analyze(request, ctx)
+    assert terminal_status(result) is JobStatus.NEEDS_INPUT
+    assert "missing_column" in result.needs_input.choices[0].reason
+
+
+def test_hint_contradicting_the_suggestion_needs_input(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules(inspect_dataset=lambda *a, **k: dataset_inspection()).install(monkeypatch)
+    result = analyze(example_request(**{"dataset.mapping": {"prompt": "system"}}), ctx)
+    assert terminal_status(result) is JobStatus.NEEDS_INPUT
+    (choice,) = result.needs_input.choices
+    assert "prompt" in choice.reason
+    assert choice.suggested == "system=system, prompt=question, chosen=chosen, rejected=rejected"
+
+
+def test_role_kinds_match_the_inspector() -> None:
+    from vramforge_estimator.inspection.dataset_mapping import ROLE_KINDS
+
+    assert pipeline._ROLE_KINDS == ROLE_KINDS
 
 
 def test_missing_split_and_multiple_configs_need_input(

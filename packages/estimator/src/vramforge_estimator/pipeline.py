@@ -16,6 +16,11 @@ Stopping rules:
   format, denied access) halts with that issue instead of asking.
 - A split without rows (the reader's EMPTY_DATASET, or a scan that read to the end without a row)
   halts with EMPTY_DATASET after the scan, before validation and batch planning.
+- Column mapping (plan §7.2): `format=auto` — including a mapping with only some role hints or only
+  the empty-system policy — and no mapping use the inspection's suggestion, which the inspector
+  computed with those hints (the requested policy is applied to it); an explicit format is checked
+  against the inspected columns. A missing column or a column of the wrong kind asks for the
+  mapping (COLUMN_MAPPING_REQUIRED) instead of scanning with a mapping that fails every row.
 - An unsupported architecture/combination is a result, not a failure: the scan still runs (data
   statistics are useful), batch planning and memory estimation are skipped, and the estimate
   evidence is `metadata_only`.
@@ -149,6 +154,17 @@ _NEEDS_INPUT_CODES = frozenset(
     }
 )
 _ROLE_FIELDS = ("system", "prompt", "chosen", "rejected", "completion", "messages", "text")
+# Column kinds (`DatasetColumn.kind`) each role accepts; "other" (e.g. all-null preview) passes.
+# Same rule as the inspector's mapping analysis (inspection.dataset_mapping.ROLE_KINDS).
+_ROLE_KINDS: dict[str, frozenset[str]] = {
+    "system": frozenset({"string"}),
+    "prompt": frozenset({"string", "messages"}),
+    "chosen": frozenset({"string", "messages"}),
+    "rejected": frozenset({"string", "messages"}),
+    "completion": frozenset({"string", "messages"}),
+    "messages": frozenset({"messages"}),
+    "text": frozenset({"string"}),
+}
 
 
 def inventory_summary(inventory: ModelInventory) -> ModelInventorySummary:
@@ -376,6 +392,81 @@ def _choice_from_issue(issue: Issue) -> NeedsInputChoice:
         options=[str(o) for o in options] if isinstance(options, list) else [],
         suggested=suggested if isinstance(suggested, str) else None,
         reason=issue.user_message,
+    )
+
+
+def _inspection_issue(
+    ds: DatasetInspection, code: ErrorCode, field_name: str | None
+) -> Issue | None:
+    """The inspector's needs-input error with `code` (for `field_name` when it names one)."""
+    for issue in ds.issues:
+        if issue.code is not code or issue.severity is not Severity.ERROR:
+            continue
+        named = issue.details.get("field")
+        if field_name is None or named in (None, field_name):
+            return issue
+    return None
+
+
+def _with_issue(choice: NeedsInputChoice, issue: Issue | None) -> NeedsInputChoice:
+    """Prefer the inspector's wording and suggestion for the same question."""
+    if issue is None:
+        return choice
+    from_issue = _choice_from_issue(issue)
+    return choice.model_copy(
+        update={
+            "reason": from_issue.reason,
+            "options": choice.options or from_issue.options,
+            "suggested": choice.suggested or from_issue.suggested,
+        }
+    )
+
+
+def _explicit_mapping_problem(mapping: ColumnMapping, ds: DatasetInspection) -> str | None:
+    """Why an explicit-format mapping cannot be scanned against the inspected columns."""
+    roles = {role: column for role in _ROLE_FIELDS if (column := getattr(mapping, role))}
+    if ds.columns:
+        kinds = {c.name: c.kind for c in ds.columns}
+        missing = sorted({column for column in roles.values() if column not in kinds})
+        if missing:
+            return "지정한 컬럼이 데이터셋에 없습니다: " + ", ".join(missing)
+        wrong = [
+            f"{column}→{role}"
+            for role, column in roles.items()
+            if kinds[column] != "other" and kinds[column] not in _ROLE_KINDS[role]
+        ]
+        if wrong:
+            return "컬럼 값의 형식이 지정한 역할에 맞지 않습니다: " + ", ".join(wrong)
+    # The inspector validated this same mapping (e.g. roles that do not fit the format, or a
+    # format the objective cannot use).
+    reported = _inspection_issue(ds, ErrorCode.COLUMN_MAPPING_REQUIRED, None)
+    return reported.user_message if reported is not None else None
+
+
+def _hint_conflict(requested: ColumnMapping | None, suggested: ColumnMapping) -> str | None:
+    if requested is None:
+        return None
+    differing = [
+        role
+        for role in _ROLE_FIELDS
+        if (hint := getattr(requested, role)) is not None and hint != getattr(suggested, role)
+    ]
+    if not differing:
+        return None
+    return (
+        f"지정한 컬럼 역할({', '.join(differing)})이 데이터셋에서 찾은 매핑과 맞지 않습니다. "
+        "사용할 매핑을 선택해 주세요."
+    )
+
+
+def _mapping_choice(
+    candidates: list[ColumnMapping], suggested: ColumnMapping | None, reason: str
+) -> NeedsInputChoice:
+    return NeedsInputChoice(
+        field="dataset.mapping",
+        options=[_mapping_label(m) for m in candidates],
+        suggested=_mapping_label(suggested) if suggested is not None else None,
+        reason=reason,
     )
 
 
@@ -742,20 +833,19 @@ class _Run:
         if extra_issue is not None:
             self.note(extra_issue)
         for choice in choices:
-            self.note(
-                make_issue(
-                    codes.get(choice.field, ErrorCode.COLUMN_MAPPING_REQUIRED),
-                    choice.reason,
-                    stage=Stage.INSPECTING,
-                    field=choice.field,
-                )
-            )
+            code = codes.get(choice.field, ErrorCode.COLUMN_MAPPING_REQUIRED)
+            if any(e.code is code and e.user_message == choice.reason for e in self.result.errors):
+                continue  # the inspector already reported this question
+            self.note(make_issue(code, choice.reason, stage=Stage.INSPECTING, field=choice.field))
         self.halted_status = JobStatus.NEEDS_INPUT
         raise _Halt
 
     def choose_dataset(self, ds: DatasetInspection) -> None:
         ref = self.request.dataset
         choices: list[NeedsInputChoice] = []
+        # The inspector's own questions carry its wording, options and suggestion.
+        config_issue = _inspection_issue(ds, ErrorCode.DATASET_CONFIG_REQUIRED, "dataset.config")
+        split_issue = _inspection_issue(ds, ErrorCode.DATASET_SPLIT_REQUIRED, "dataset.split")
         config = ref.config or ds.selected_config
         if ref.config and ds.configs and ref.config not in ds.configs:
             choices.append(
@@ -766,12 +856,15 @@ class _Run:
                     reason="요청한 config가 데이터셋에 없습니다. config를 다시 선택하세요.",
                 )
             )
-        elif config is None and len(ds.configs) > 1:
+        elif config is None and (len(ds.configs) > 1 or config_issue is not None):
             choices.append(
-                NeedsInputChoice(
-                    field="dataset.config",
-                    options=list(ds.configs),
-                    reason="데이터셋에 config가 여러 개 있어 분석할 config를 선택해야 합니다.",
+                _with_issue(
+                    NeedsInputChoice(
+                        field="dataset.config",
+                        options=list(ds.configs),
+                        reason="데이터셋에 config가 여러 개 있어 분석할 config를 선택해야 합니다.",
+                    ),
+                    config_issue,
                 )
             )
         split_names = [s.name for s in ds.splits]
@@ -787,31 +880,20 @@ class _Run:
             )
         elif split is None:
             choices.append(
-                NeedsInputChoice(
-                    field="dataset.split",
-                    options=split_names,
-                    reason="학습에 사용할 split을 자동으로 정할 수 없어 선택이 필요합니다.",
+                _with_issue(
+                    NeedsInputChoice(
+                        field="dataset.split",
+                        options=split_names,
+                        reason="학습에 사용할 split을 자동으로 정할 수 없어 선택이 필요합니다.",
+                    ),
+                    split_issue,
                 )
             )
-        mapping = ref.mapping
-        if mapping is None:
-            if ds.mapping_ambiguous or ds.suggested_mapping is None:
-                choices.append(
-                    NeedsInputChoice(
-                        field="dataset.mapping",
-                        options=[_mapping_label(m) for m in ds.mapping_candidates],
-                        suggested=_mapping_label(ds.suggested_mapping)
-                        if ds.suggested_mapping
-                        else None,
-                        reason=(
-                            "컬럼 매핑을 자동으로 확정할 수 없어 학습에 쓸 컬럼을 선택해야 합니다."
-                        ),
-                    )
-                )
-            else:
-                mapping = ds.suggested_mapping
+        mapping, mapping_choice, candidates = self.resolve_mapping(ds)
+        if mapping_choice is not None:
+            choices.append(mapping_choice)
         if choices:
-            self.ask_for_input(choices, None)
+            self.ask_for_input(choices, None, candidates=candidates)
         assert mapping is not None
         self.config, self.split, self.mapping = config, split, mapping
         if ref.eval_split and self.request.scope.include_evaluation:
@@ -842,6 +924,46 @@ class _Run:
                     format=fmt.value,
                 )
             )
+
+    def resolve_mapping(
+        self, ds: DatasetInspection
+    ) -> tuple[ColumnMapping | None, NeedsInputChoice | None, list[ColumnMapping]]:
+        """The column mapping to scan with, or the question to ask (plan §7.2).
+
+        - An explicit `format` is used as given once it is checked against the inspected columns:
+          a missing column or a column holding the wrong kind of value would fail every row, so
+          it is COLUMN_MAPPING_REQUIRED instead of a scan.
+        - `format=auto` (also a mapping carrying only some role hints or only the empty-system
+          policy) and no mapping use the inspection's suggestion, which the inspector computed
+          with those hints; the requested empty-system policy is applied to it. Ambiguity, no
+          candidate or a suggestion that contradicts a hint asks the user.
+
+        Returns (mapping, choice, candidates offered in NEEDS_INPUT).
+        """
+        requested = self.request.dataset.mapping
+        candidates = list(ds.mapping_candidates)
+        if requested is not None and requested.format is not DatasetFormat.AUTO:
+            problem = _explicit_mapping_problem(requested, ds)
+            if problem is None:
+                return requested, None, candidates
+            candidates = [m for m in candidates if m != requested]
+            return None, _mapping_choice(candidates, None, problem), candidates
+        suggested = ds.suggested_mapping
+        if suggested is not None and not ds.mapping_ambiguous:
+            conflict = _hint_conflict(requested, suggested)
+            if conflict is None:
+                if requested is not None:
+                    policy = requested.empty_system_policy
+                    suggested = suggested.model_copy(update={"empty_system_policy": policy})
+                return suggested, None, candidates
+            return None, _mapping_choice(candidates, suggested, conflict), candidates
+        reported = _inspection_issue(ds, ErrorCode.COLUMN_MAPPING_REQUIRED, None)
+        reason = (
+            reported.user_message
+            if reported is not None
+            else "컬럼 매핑을 자동으로 확정할 수 없어 학습에 쓸 컬럼을 선택해야 합니다."
+        )
+        return None, _mapping_choice(candidates, suggested, reason), candidates
 
     def context_limit(self) -> int | None:
         facts = self.inventory.facts if self.inventory is not None else None
@@ -943,9 +1065,12 @@ class _Run:
                         issues=tuple(issues),
                     ),
                 )
-        # The scanner cannot know whether the split was chosen by the user (plan §7.1).
+        # The scanner cannot know whether the split was chosen by the user (plan §7.1); the
+        # inspector does (a split named in a dataset viewer URL is a user choice too).
+        ds = self.ds_inspection
+        auto_split = self.request.dataset.split is None and (ds is None or ds.split_auto_selected)
         self.result.dataset_scan = outcome_result.model_copy(
-            update={"split_auto_selected": self.request.dataset.split is None}
+            update={"split_auto_selected": auto_split}
         )
         self.scan_issues = issues
         self.write_artifacts_manifest(pkey)
@@ -1424,12 +1549,24 @@ def _revision_changed(old: str | None, new: str | None, resolved: str | None) ->
 
 
 def _mapping_changed(applied: ColumnMapping | None, new: ColumnMapping | None) -> str | None:
+    """Why the request's mapping would tokenize differently from `applied`, the resolved mapping
+    the stored scan used.
+
+    `format=auto` holds role hints that detection completed: only the hinted roles are compared
+    (a hint that agrees with the applied mapping resolves to the same mapping again). An explicit
+    format is compared role by role. No mapping means auto-detection, which gives the applied
+    mapping again for the same data.
+    """
     if new is None or applied is None:
         return None
+    hinted = new.format is DatasetFormat.AUTO
     for role in _ROLE_FIELDS:
-        if getattr(new, role) != getattr(applied, role):
+        value = getattr(new, role)
+        if hinted and value is None:
+            continue
+        if value != getattr(applied, role):
             return "컬럼 매핑이 바뀌어 전체 데이터를 다시 토큰화해야 합니다."
-    if new.format is not DatasetFormat.AUTO and new.format is not applied.format:
+    if not hinted and new.format is not applied.format:
         return "데이터 형식 지정이 바뀌어 전체 데이터를 다시 토큰화해야 합니다."
     if new.empty_system_policy is not applied.empty_system_policy:
         return "빈 system 메시지 처리 방식이 바뀌어 전체 데이터를 다시 토큰화해야 합니다."
