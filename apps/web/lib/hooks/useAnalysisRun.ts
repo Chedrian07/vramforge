@@ -110,18 +110,27 @@ export function useAnalysisRun() {
     streamRef.current = null;
   }, []);
 
-  const fetchStatus = useCallback(
-    async (id: string): Promise<AnalysisStatus | null> => {
+  const fetchStatusOrError = useCallback(
+    async (id: string): Promise<AnalysisStatus | ApiError | null> => {
       try {
         const status = await api.getAnalysis(id);
         dispatch({ type: "status", status });
         return status;
       } catch (error) {
-        if (error instanceof ApiError) dispatch({ type: "error", error, fatal: true });
-        return null;
+        if (!(error instanceof ApiError)) return null;
+        dispatch({ type: "error", error, fatal: true });
+        return error;
       }
     },
     [api],
+  );
+
+  const fetchStatus = useCallback(
+    async (id: string): Promise<AnalysisStatus | null> => {
+      const outcome = await fetchStatusOrError(id);
+      return outcome instanceof ApiError ? null : outcome;
+    },
+    [fetchStatusOrError],
   );
 
   const follow = useCallback(
@@ -181,11 +190,15 @@ export function useAnalysisRun() {
     async (id: string) => {
       closeStream();
       dispatch({ type: "resume", id });
-      const status = await fetchStatus(id);
-      if (status && !isTerminalStatus(status.status)) follow(id, status.last_event_id ?? null);
-      if (!status) writeAnalysisParam(null);
+      const outcome = await fetchStatusOrError(id);
+      if (outcome instanceof ApiError) {
+        // Gone or not ours: forget the id. Transient failures keep it so a refresh can reconnect.
+        if (outcome.status === 403 || outcome.status === 404) writeAnalysisParam(null);
+        return;
+      }
+      if (outcome && !isTerminalStatus(outcome.status)) follow(id, outcome.last_event_id ?? null);
     },
-    [closeStream, fetchStatus, follow],
+    [closeStream, fetchStatusOrError, follow],
   );
 
   const cancel = useCallback(async () => {

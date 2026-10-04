@@ -91,6 +91,16 @@ describe("useAnalysisRun", () => {
     expect(result.current.state.phase).toBe("error");
   });
 
+  it("keeps ?analysis= after a transient failure so a refresh can reconnect", async () => {
+    window.history.replaceState(null, "", `/?analysis=${ID}`);
+    const getAnalysis = vi.fn(async () => {
+      throw new ApiError(0, { code: "INTERNAL_ERROR", severity: "error", retryable: true, user_message: "연결 실패" });
+    });
+    const { result } = setup({ getAnalysis });
+    await waitFor(() => expect(result.current.state.phase).toBe("error"));
+    expect(window.location.search).toBe(`?analysis=${ID}`);
+  });
+
   it("keeps running when only the cancel request fails", async () => {
     const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
     const cancelAnalysis = vi.fn(async () => {
