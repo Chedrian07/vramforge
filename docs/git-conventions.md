@@ -259,3 +259,17 @@ git diff --cached | grep -nE 'hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKI
 - [ ] 해당 영역의 lint/test를 실행했다 (또는 `Not verified:` 사유 기재)
 - [ ] 비밀정보·대용량·개인 경로가 없다
 - [ ] 금지 명령(§5.1)을 쓰지 않았다
+
+## 12. Docker·호스트 안전 규칙
+
+이 호스트에는 **다른 프로젝트의 컨테이너·볼륨·이미지**가 함께 있다. 2026-10-04 조사 단계에서 원인 미상의 일괄 볼륨 삭제가 관측되었으므로 아래 규칙을 예외 없이 지킨다.
+
+| 금지 | 허용되는 대안 |
+|---|---|
+| `docker system prune`, `docker volume prune`, `docker image prune`, `docker container prune`, `docker network prune`, `docker builder prune`(필터 없음), `docker buildx prune`(필터 없음) | 자기가 만든 리소스만 이름·ID로 지정해 삭제 |
+| 다른 compose 프로젝트·이름 모를 볼륨/컨테이너/이미지 삭제 (`docker volume rm`, `docker rm`, `docker rmi`) | `docker compose -p <자기 프로젝트> down -v` |
+| OrbStack/Docker Desktop 설정·데몬 재시작, `~/OrbStack` 등 Docker 데이터 경로 직접 조작 | 문제가 있으면 오케스트레이터에게 보고 |
+
+- 이 저장소의 compose 프로젝트 이름은 `vramforge`다. 실험용 스택은 `vramforge-<label>` 같은 고유 프로젝트 이름과 기본값이 아닌 포트를 쓴다.
+- 작업을 마치면 자기가 띄운 스택을 `docker compose -p <프로젝트> down -v`로 내린다 (자기 프로젝트의 볼륨만 지워진다).
+- 삭제 명령을 실행하기 전에 대상 목록을 먼저 출력해 자기 리소스인지 확인한다.
