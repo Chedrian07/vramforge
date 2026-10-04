@@ -13,6 +13,7 @@ import type { FormValues } from "@/lib/form/values";
 import { isRunActive, type RunState } from "@/lib/hooks/useAnalysisRun";
 import { jobTone } from "@/lib/result/status";
 
+import { resetConfigSelections } from "./dataset-selection";
 import { applyMapping } from "./MappingEditor";
 
 type StepState = "done" | "current" | "pending" | "stopped";
@@ -201,7 +202,7 @@ function RowsProgress({ progress, active }: { progress: NonNullable<RunState["pr
 
 /** NEEDS_INPUT: pick config / split / mapping inline, then run again (plan.md §4.1). */
 function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRerun: () => void }) {
-  const { setValue } = useFormContext<FormValues>();
+  const { setValue, getValues } = useFormContext<FormValues>();
   const candidates = needsInput.mapping_candidates ?? [];
   // Mapping options are candidate indices; the server names its suggestion by the candidate's
   // label (choice.options lists the labels in candidate order).
@@ -218,10 +219,14 @@ function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRe
 
   const apply = () => {
     const opts = { shouldDirty: true, shouldValidate: true };
-    for (const choice of needsInput.choices) {
+    // The config first: another config starts the split choice over, then the split answer applies.
+    const ordered = [...needsInput.choices].sort((a, b) => Number(b.field === "dataset.config") - Number(a.field === "dataset.config"));
+    for (const choice of ordered) {
       const value = choices[choice.field] ?? "";
-      if (choice.field === "dataset.config") setValue("datasetConfig", value, opts);
-      else if (choice.field === "dataset.split") setValue("datasetSplit", value, opts);
+      if (choice.field === "dataset.config") {
+        if (value !== getValues("datasetConfig")) resetConfigSelections(setValue, getValues);
+        setValue("datasetConfig", value, opts);
+      } else if (choice.field === "dataset.split") setValue("datasetSplit", value, opts);
       else if (choice.field === "dataset.mapping") {
         const candidate = candidates[Number(value)];
         if (candidate) applyMapping(setValue, candidate);

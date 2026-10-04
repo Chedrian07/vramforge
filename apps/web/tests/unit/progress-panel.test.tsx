@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UseFormReturn } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
@@ -126,6 +126,31 @@ describe("progress panel", () => {
     await user.click(screen.getByRole("button", { name: "선택 적용 후 다시 분석" }));
     expect(form().getValues("mapPrompt")).toBe("instruction");
     expect(onRerun).toHaveBeenCalled();
+  });
+
+  it("starts the split over when a NEEDS_INPUT answer picks another config", async () => {
+    const user = userEvent.setup();
+    const result = needsInputStatus.result!;
+    const ask = (choices: NonNullable<typeof result.needs_input>["choices"]) =>
+      terminal({ ...needsInputStatus, result: { ...result, needs_input: { ...result.needs_input!, choices } } });
+    const config = { field: "dataset.config", options: ["default", "extended"], suggested: "extended", reason: "config가 두 개입니다." };
+    const split = { field: "dataset.split", options: ["train", "train_extra"], suggested: "train_extra", reason: "split이 두 개입니다." };
+
+    // Split listed before config: the chosen split must survive the config change.
+    const first = renderPanel(ask([split, config]));
+    act(() => first.form().setValue("datasetSplit", "old_split"));
+    await user.click(screen.getByRole("button", { name: "선택 적용 후 다시 분석" }));
+    expect([first.form().getValues("datasetConfig"), first.form().getValues("datasetSplit")]).toEqual(["extended", "train_extra"]);
+    cleanup();
+
+    // Only the config is asked: the split made for the previous config goes back to auto.
+    const second = renderPanel(ask([config]));
+    act(() => {
+      second.form().setValue("datasetConfig", "default");
+      second.form().setValue("datasetSplit", "old_split");
+    });
+    await user.click(screen.getByRole("button", { name: "선택 적용 후 다시 분석" }));
+    expect([second.form().getValues("datasetConfig"), second.form().getValues("datasetSplit")]).toEqual(["extended", ""]);
   });
 
   it("resolves NEEDS_INPUT inline and runs again", async () => {
