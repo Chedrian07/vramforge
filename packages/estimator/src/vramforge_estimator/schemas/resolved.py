@@ -33,6 +33,7 @@ class EffectiveDtypes(VFModel):
     loss: str
     kv_cache: str
     recurrent_state: str
+    conv_state: str | None = None  # linear-attention conv cache during rollout
 
 
 class QuantizationResolved(VFModel):
@@ -78,6 +79,7 @@ class DpoResolved(VFModel):
     loss_type: str
     precompute_batch_size: int | None = None
     sync_ref_model: bool = False
+    reference_model: str | None = None  # standalone reference identity; None = policy checkpoint
 
 
 class GrpoResolved(VFModel):
@@ -91,6 +93,7 @@ class GrpoResolved(VFModel):
     reference_needed: bool
     reward_kind: RewardKind
     reward_model_reference: str | None = None
+    reward_on_training_gpu: bool = True
     rollout_backend: RolloutBackend
     live_sequences: int  # C
     update_microbatch: int  # B_update
@@ -129,6 +132,11 @@ class ResolvedConfig(VFModel):
     accumulation: int
     pad_to_multiple_of: int | None = None
     gradient_checkpointing: bool
+    # accelerate native AMP mode; 'none' = no autocast (e.g. fp32 training).
+    mixed_precision: Literal["bf16", "fp16", "none"] = "bf16"
+    packing: bool = False
+    assistant_only_loss: bool = False
+    completion_only_loss: bool | None = None  # None = TRL default for the dataset format
     checkpointing_granularity: Literal["none", "per_decoder_layer"]
     # e.g. {"full_attention": "sdpa", "linear_attention": "torch_fallback"}
     attention_path_by_layer_type: dict[str, str] = Field(default_factory=dict)

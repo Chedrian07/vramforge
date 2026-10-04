@@ -15,6 +15,8 @@ class SequenceShape(VFModel):
     batch: int  # sequences in the forward (DPO: 2 × pairs)
     seq_len: int  # padded length T
     logits_positions_per_sequence: int | None = None  # logits_to_keep; None = all positions
+    # True when the batch carries padding (attention mask path); None = unknown/possible.
+    has_padding: bool | None = None
 
 
 class BatchShape(VFModel):
