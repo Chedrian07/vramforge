@@ -155,6 +155,7 @@ alpha, rsLoRA, dropout은 파라미터 수를 바꾸지 않는다
 - 그룹은 (이름, dtype, 실행 여부)와 tensor shape별로 나눈다. `numel / tensor_count`가 tensor 하나의 크기라서 8-bit optimizer의 크기 기준(4096)과 step scalar를 정확히 셀 수 있다. full FT의 `nn.Embedding`은 `:embedding:` 그룹으로 분리한다(8-bit optimizer가 32-bit state를 쓰는 대상, LQ §8.3).
 - `ArchTrainableGroup.receives_grad=False`: vision tower처럼 텍스트 전용 데이터에서 실행되지 않는 파라미터. 가중치는 상주하지만 gradient와 optimizer state는 생기지 않는다(LQ §Q8.4, E5d/V6). MiMo all-linear: 51,265,024 중 43,278,336만 gradient를 받는다.
 - `modules_to_save`는 점 경계 없는 `endswith`로 고르고(예: `"norm"`은 `input_layernorm`, `q_norm`도 고름), 그 안의 모듈은 LoRA 대상에서 빠진다(점 경계 정규식). 서로 포함되는 선택, 4-bit 모듈을 가리키는 선택(LQ 미확정 7)은 거절한다. tied `lm_head`는 자기 tensor가 없어도 embedding shape의 복사본을 만든다.
+- full fine-tune에서 `trainable_full_patterns`는 모듈 이름 정규식(`re.fullmatch`)이다. 비어 있거나 `.*`/`*`면 로드된 모든 파라미터가 학습된다(resolver 기본 `[".*"]`).
 - 4-bit + full fine-tune은 거절한다(`validate_quantization_for_training`).
 
 <a id="act-layers"></a>

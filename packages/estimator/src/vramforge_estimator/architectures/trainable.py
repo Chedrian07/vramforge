@@ -116,15 +116,18 @@ def resolve_lora_targets(
 class Trainability:
     """Which parameters train in this configuration (shared by the activation formulas)."""
 
-    full: bool  # strategy FULL: every loaded parameter trains
+    full: bool  # strategy FULL
     lora_ranks: Mapping[str, int] = field(default_factory=dict)  # module -> rank
     saved_modules: frozenset[str] = frozenset()  # modules_to_save matches (outermost)
     dora: bool = False
+    full_patterns: tuple[str, ...] = ()  # FULL: module-name regexes (fullmatch); () = all
 
     def module_trainable(self, module: str) -> bool:
         """The module's own weights train (full FT or inside a modules_to_save copy)."""
         if self.full:
-            return True
+            return not self.full_patterns or any(
+                matching.peft_regex_match(module, p) for p in self.full_patterns
+            )
         return any(module == m or module.startswith(m + ".") for m in self.saved_modules)
 
     def lora_rank(self, module: str) -> int | None:
@@ -164,7 +167,9 @@ def saved_module_names(structure: ModelStructure, cfg: ResolvedConfig) -> list[s
 
 def build_trainability(structure: ModelStructure, cfg: ResolvedConfig) -> Trainability:
     if cfg.strategy is Strategy.FULL:
-        return Trainability(full=True)
+        # `trainable_full_patterns` (resolver: [".*"]) narrows full fine-tuning to some modules.
+        patterns = tuple(p for p in cfg.trainable_full_patterns if p not in (".*", "*"))
+        return Trainability(full=True, full_patterns=patterns)
     lora = cfg.lora
     if lora is None:
         raise config_error("LoRA/QLoRA 전략인데 해석된 LoRA 설정이 없습니다.")
@@ -265,7 +270,10 @@ def trainable_group_list(structure: ModelStructure, cfg: ResolvedConfig) -> list
     if cfg.strategy is Strategy.FULL:
         if cfg.quantization.enabled:
             raise config_error("4-bit로 로드한 모델은 adapter 없이 전체 학습할 수 없습니다.")
+        full = build_trainability(structure, cfg)
         for t in structure.loaded_tensors(cfg.loading_scope):
+            if not full.module_trainable(t.module):
+                continue
             label = _label(t.component)
             role = "embedding:" if t.role is TensorRole.EMBEDDING else ""
             builder.add(

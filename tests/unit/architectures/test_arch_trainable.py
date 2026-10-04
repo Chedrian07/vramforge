@@ -196,6 +196,19 @@ def test_full_finetune_groups(st: ModelStructure) -> None:
     assert {g.kind for g in groups} == {"full"}
 
 
+def test_full_finetune_patterns(st: ModelStructure) -> None:
+    every = trainable_group_list(
+        st, make_cfg(strategy=Strategy.FULL, trainable_full_patterns=[".*"])
+    )
+    assert sum(g.numel for g in every) == 9_409_813_744
+    mlp_only = make_cfg(strategy=Strategy.FULL, trainable_full_patterns=[r".*\.mlp\..*"])
+    groups = trainable_group_list(st, mlp_only)
+    assert sum(g.numel for g in groups if g.receives_grad) == 32 * 3 * 4096 * 12288
+    tr = build_trainability(st, mlp_only)
+    assert tr.module_trainable("model.language_model.layers.0.mlp.up_proj")
+    assert not tr.module_trainable("model.language_model.layers.0.input_layernorm")
+
+
 def test_full_finetune_with_4bit_is_rejected(st: ModelStructure) -> None:
     with pytest.raises(EstimatorError):
         trainable_group_list(st, make_cfg(strategy=Strategy.FULL, quant=True))
