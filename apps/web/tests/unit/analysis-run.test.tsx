@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient } from "@/lib/api/client";
 import { ApiProvider } from "@/lib/api/context";
-import { useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
+import type { AnalysisStatus } from "@/lib/api/types";
+import { isRunActive, useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
 
-import { completedGrpoStatus, runningStatus } from "../fixtures/analysis-states";
+import { completedGrpoStatus, partialStatus, runningStatus } from "../fixtures/analysis-states";
 import { grpoRequest } from "../fixtures/analysis-grpo";
 import { FakeEventSource } from "../utils/fake-event-source";
 import { makeEvent } from "../utils/events";
@@ -209,6 +210,55 @@ describe("useAnalysisRun", () => {
     await act(() => result.current.start(grpoRequest));
     expect(result.current.state.phase).toBe("error");
     expect(result.current.state.error?.issue.user_message).toBeTruthy();
+  });
+
+  it("takes the end from the event status and the final GET, not from the event type", async () => {
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    let answer: (status: AnalysisStatus) => void = () => {};
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(() => new Promise((resolve) => (answer = resolve)));
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const issue = { code: "SCAN_PARTIAL", severity: "error" as const, user_message: "처리 시간 한도로 일부만 확인했습니다." };
+    act(() => FakeEventSource.latest().emit("failed", makeEvent({ event_id: 4, analysis_id: ID, type: "failed", status: "PARTIAL", issue })));
+    // Until the stored status arrives: the event's status, its issue, and nothing left to cancel.
+    expect(result.current.state.jobStatus).toBe("PARTIAL");
+    expect(result.current.state.endIssue?.user_message).toBe(issue.user_message);
+    expect(isRunActive(result.current.state)).toBe(false);
+    expect(getAnalysis).toHaveBeenCalledWith(ID);
+
+    await act(async () => answer({ ...partialStatus, analysis_id: ID }));
+    expect(result.current.state.phase).toBe("terminal");
+    expect(result.current.state.jobStatus).toBe("PARTIAL");
+    expect(result.current.state.status?.status).toBe("PARTIAL");
+  });
+
+  it("keeps the ending event's status and issue when the final GET fails", async () => {
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => {
+      throw new ApiError(0, { code: "INTERNAL_ERROR", severity: "error", retryable: true, user_message: "연결 실패" });
+    });
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const issue = { code: "TOKENIZER_REQUIRED", severity: "error" as const, user_message: "tokenizer가 없습니다." };
+    act(() => FakeEventSource.latest().emit("failed", makeEvent({ event_id: 3, analysis_id: ID, type: "failed", status: "FAILED", issue })));
+    await waitFor(() => expect(result.current.state.phase).toBe("error"));
+    expect(result.current.state.jobStatus).toBe("FAILED");
+    expect(result.current.state.endIssue?.code).toBe("TOKENIZER_REQUIRED");
+    expect(window.location.search).toBe(`?analysis=${ID}`);
+  });
+
+  it("follows again after the last event when the final GET says the job still runs", async () => {
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => ({ ...runningStatus, analysis_id: ID, last_event_id: 2 }));
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const first = FakeEventSource.latest();
+    act(() => first.emit("completed", makeEvent({ event_id: 5, analysis_id: ID, type: "completed", status: "COMPLETED" })));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events?after=5`);
+    expect(result.current.state.phase).toBe("running");
+    expect(result.current.state.jobStatus).toBe("TOKENIZING");
   });
 
   it("requests cancellation", async () => {

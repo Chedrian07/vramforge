@@ -4,6 +4,7 @@
 // already ended; otherwise we open a new stream with exponential backoff. Events are deduplicated
 // by event_id because a fresh EventSource replays from the start.
 import { EVENT_TYPES, TERMINAL_EVENT_TYPES, parseEventData, type AnalysisEvent } from "./events";
+import { isTerminalStatus } from "./types";
 
 export interface EventSourceLike {
   readonly readyState: number;
@@ -34,9 +35,20 @@ export interface AnalysisStreamOptions {
   maxBackoffMs?: number;
 }
 
+/**
+ * The stream is over after this event. The status decides, not the type alone: `failed` also
+ * carries PARTIAL, and a terminal status on any event type means no more events will follow.
+ */
+export function endsStream(event: AnalysisEvent): boolean {
+  return isTerminalStatus(event.status) || TERMINAL_EVENT_TYPES.has(event.type);
+}
+
 export interface AnalysisStreamHandlers {
   onEvent: (event: AnalysisEvent) => void;
-  /** Terminal event, or null when the end was detected through the status endpoint. */
+  /**
+   * The stream ended: the last event (read its `status`, never just its type), or null when the
+   * end was detected through the status endpoint. Callers confirm with a final GET.
+   */
   onTerminal: (event: AnalysisEvent | null) => void;
   onConnection?: (state: ConnectionState) => void;
   onStop?: () => void;
@@ -79,7 +91,7 @@ export function openAnalysisStream(
     lastId = event.event_id;
     backoff = initial;
     handlers.onEvent(event);
-    if (TERMINAL_EVENT_TYPES.has(event.type)) finish(event);
+    if (endsStream(event)) finish(event);
   };
 
   const scheduleReconnect = () => {
@@ -89,13 +101,36 @@ export function openAnalysisStream(
     backoff = Math.min(backoff * 2, max);
   };
 
+  /** The browser gave up (or never got a stream): did the job end, retry, or stop for good? */
+  const resolveClosed = () => {
+    options.resolveClosed().then(
+      (resolution) => {
+        if (done) return;
+        if (resolution === "terminal") finish(null);
+        else if (resolution === "stop") {
+          shutdown();
+          handlers.onStop?.();
+        } else scheduleReconnect();
+      },
+      () => scheduleReconnect(),
+    );
+  };
+
   function connect() {
     if (done) return;
     timer = null;
     handlers.onConnection?.(attempts === 0 ? "connecting" : "reconnecting");
     attempts += 1;
     const url = typeof options.url === "function" ? options.url(lastId >= 0 ? lastId : null) : options.url;
-    const es = options.factory(url);
+    let es: EventSourceLike;
+    try {
+      es = options.factory(url);
+    } catch {
+      // e.g. the constructor refused the URL: handled like a stream the browser closed.
+      source = null;
+      resolveClosed();
+      return;
+    }
     source = es;
     for (const type of EVENT_TYPES) es.addEventListener(type, onMessage);
     es.addEventListener("message", onMessage);
@@ -112,17 +147,7 @@ export function openAnalysisStream(
       }
       es.close();
       source = null;
-      options.resolveClosed().then(
-        (resolution) => {
-          if (done) return;
-          if (resolution === "terminal") finish(null);
-          else if (resolution === "stop") {
-            shutdown();
-            handlers.onStop?.();
-          } else scheduleReconnect();
-        },
-        () => scheduleReconnect(),
-      );
+      resolveClosed();
     };
   }
 

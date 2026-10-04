@@ -44,6 +44,48 @@ describe("analysis stream", () => {
     expect(es.closed).toBe(true);
   });
 
+  it("ends on a terminal status whatever the event type is", () => {
+    const { onTerminal } = start();
+    const es = FakeEventSource.latest();
+    // `failed` also reports a partial stop: the status, not the type, says what happened.
+    es.emit("failed", makeEvent({ event_id: 1, type: "failed", status: "PARTIAL", issue: { code: "SCAN_PARTIAL", severity: "error", user_message: "일부만 확인" } }));
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ type: "failed", status: "PARTIAL" }));
+    expect(es.closed).toBe(true);
+
+    const second = start();
+    const es2 = FakeEventSource.latest();
+    es2.emit("progress", makeEvent({ event_id: 2, type: "progress", status: "CANCELLED" }));
+    expect(second.onTerminal).toHaveBeenCalledWith(expect.objectContaining({ status: "CANCELLED" }));
+    expect(es2.closed).toBe(true);
+  });
+
+  it("treats an EventSource that cannot be created like a closed stream", async () => {
+    vi.useFakeTimers();
+    let refuse = true;
+    const resolveClosed = vi.fn(async (): Promise<ClosedResolution> => "retry");
+    const onEvent = vi.fn();
+    openAnalysisStream(
+      {
+        url: "/events",
+        factory: (url) => {
+          if (refuse) {
+            refuse = false;
+            throw new SyntaxError("bad url");
+          }
+          return fakeEventSourceFactory(url);
+        },
+        resolveClosed,
+        initialBackoffMs: 50,
+      },
+      { onEvent, onTerminal: vi.fn() },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolveClosed).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60);
+    FakeEventSource.latest().emit("progress", makeEvent({ event_id: 1, type: "progress", status: "TOKENIZING" }));
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("drops replayed and malformed events", () => {
     const { onEvent } = start();
     const es = FakeEventSource.latest();

@@ -21,10 +21,13 @@ export type RunPhase = "idle" | "creating" | "running" | "terminal" | "error";
 export interface RunState {
   phase: RunPhase;
   analysisId: string | null;
+  /** Latest known job status: from events while running, from GET /analyses/{id} at the end. */
   jobStatus: JobStatus | null;
   progress: JobProgress | null;
   partial: Record<string, number | string | null> | null;
   liveIssues: EventIssue[];
+  /** The issue of the event that ended the stream; shown until (or unless) the final GET answers. */
+  endIssue: EventIssue | null;
   status: AnalysisStatus | null;
   error: ApiError | null;
   connection: ConnectionState | "idle";
@@ -32,19 +35,30 @@ export interface RunState {
   cancelling: boolean;
 }
 
-const INITIAL: RunState = {
+export const INITIAL_RUN_STATE: RunState = {
   phase: "idle",
   analysisId: null,
   jobStatus: null,
   progress: null,
   partial: null,
   liveIssues: [],
+  endIssue: null,
   status: null,
   error: null,
   connection: "idle",
   submittedRequest: null,
   cancelling: false,
 };
+
+const INITIAL = INITIAL_RUN_STATE;
+
+/**
+ * Work is still going on: creating, or running without a terminal status yet. After a terminal
+ * event the run waits only for its final GET, so cancel and re-run are no longer blocked.
+ */
+export function isRunActive(run: Pick<RunState, "phase" | "jobStatus">): boolean {
+  return run.phase === "creating" || (run.phase === "running" && !isTerminalStatus(run.jobStatus));
+}
 
 type Action =
   | { type: "create"; request: AnalysisRequest }
@@ -68,13 +82,18 @@ function reducer(state: RunState, action: Action): RunState {
       return { ...INITIAL, phase: "running", analysisId: action.id };
     case "event": {
       const e = action.event;
-      if (e.analysis_id !== state.analysisId) return state;
+      if (e.analysis_id !== state.analysisId || state.phase === "terminal") return state;
+      // The status says what happened (a `failed` event may carry PARTIAL); the type only names
+      // the frame. The final GET then replaces this with the stored state.
+      const ended = isTerminalStatus(e.status);
       return {
         ...state,
         jobStatus: e.status,
         progress: (e.progress as JobProgress | null | undefined) ?? state.progress,
         partial: e.partial ?? state.partial,
         liveIssues: e.type === "warning" && e.issue ? [...state.liveIssues, e.issue] : state.liveIssues,
+        endIssue: ended ? (e.issue ?? null) : state.endIssue,
+        cancelling: ended ? false : state.cancelling,
       };
     }
     case "status": {
@@ -185,6 +204,22 @@ export function useAnalysisRun() {
     [fetchStatusOrError],
   );
 
+  const followRef = useRef<(id: string, lastEventId: number | null) => void>(() => undefined);
+
+  /**
+   * The stream ended. The stored status decides what the page shows (an event's type alone never
+   * does); should the job in fact still be running, follow it again after the last seen event.
+   */
+  const settle = useCallback(
+    async (id: string, lastSeen: number | null) => {
+      const outcome = await fetchStatusOrError(id);
+      if (outcome == null || outcome instanceof ApiError || isTerminalStatus(outcome.status)) return;
+      const after = Math.max(outcome.last_event_id ?? -1, lastSeen ?? -1);
+      followRef.current(id, after >= 0 ? after : null);
+    },
+    [fetchStatusOrError],
+  );
+
   const follow = useCallback(
     (id: string, lastEventId: number | null) => {
       closeStream();
@@ -212,15 +247,18 @@ export function useAnalysisRun() {
             dispatch({ type: "event", event });
             if (event.type === "partial_result") refreshPartial(id);
           },
-          onTerminal: () => {
-            void fetchStatus(id);
+          onTerminal: (event) => {
+            void settle(id, event?.event_id ?? lastEventId);
           },
           onConnection: (connection) => dispatch({ type: "connection", state: connection }),
         },
       );
     },
-    [api, eventSourceFactory, closeStream, fetchStatus, refreshPartial],
+    [api, eventSourceFactory, closeStream, settle, refreshPartial],
   );
+  useEffect(() => {
+    followRef.current = follow;
+  }, [follow]);
 
   const start = useCallback(
     async (request: AnalysisRequest) => {

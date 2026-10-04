@@ -5,25 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ProgressPanel, stepStates } from "@/components/calculator/ProgressPanel";
 import type { FormValues } from "@/lib/form/values";
-import type { RunState } from "@/lib/hooks/useAnalysisRun";
+import { INITIAL_RUN_STATE, type RunState } from "@/lib/hooks/useAnalysisRun";
 
 import { cancelledStatus, completedGrpoStatus, failedStatus, needsInputStatus, partialStatus } from "../fixtures/analysis-states";
 import { FormHarness } from "../utils/form-harness";
 import { renderWithProviders } from "../utils/render";
 
-const BASE: RunState = {
-  phase: "idle",
-  analysisId: null,
-  jobStatus: null,
-  progress: null,
-  partial: null,
-  liveIssues: [],
-  status: null,
-  error: null,
-  connection: "idle",
-  submittedRequest: null,
-  cancelling: false,
-};
+const BASE: RunState = INITIAL_RUN_STATE;
 
 function renderPanel(run: Partial<RunState>, handlers: { onCancel?: () => void; onRerun?: () => void } = {}) {
   let form: UseFormReturn<FormValues> | null = null;

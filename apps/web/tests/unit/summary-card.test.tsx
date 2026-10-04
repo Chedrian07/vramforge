@@ -6,26 +6,14 @@ import { ExportMenu } from "@/components/results/ExportMenu";
 import { SummaryCard, type SummaryCardProps } from "@/components/results/SummaryCard";
 import type { AnalysisResult, JobStatus } from "@/lib/api/types";
 import { formatPercent } from "@/lib/format/bytes";
-import type { RunState } from "@/lib/hooks/useAnalysisRun";
+import { INITIAL_RUN_STATE, type RunState } from "@/lib/hooks/useAnalysisRun";
 
 import { dpoFit, dpoResult, sftResult } from "../fixtures/analysis-dpo-sft";
 import { grpoResult } from "../fixtures/analysis-grpo";
 import { completedDpoStatus, completedGrpoStatus, completedSftStatus, partialStatus, unknownPeakStatus } from "../fixtures/analysis-states";
 import { renderWithProviders } from "../utils/render";
 
-const IDLE_RUN: RunState = {
-  phase: "idle",
-  analysisId: null,
-  jobStatus: null,
-  progress: null,
-  partial: null,
-  liveIssues: [],
-  status: null,
-  error: null,
-  connection: "idle",
-  submittedRequest: null,
-  cancelling: false,
-};
+const IDLE_RUN: RunState = INITIAL_RUN_STATE;
 
 function terminalRun(status: typeof completedGrpoStatus): RunState {
   return { ...IDLE_RUN, phase: "terminal", analysisId: status.analysis_id, jobStatus: status.status, status };
