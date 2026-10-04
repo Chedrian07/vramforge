@@ -162,3 +162,23 @@ def test_owner_survives_malformed_foreign_cookies(client: TestClient) -> None:
     )
     assert resp.status_code == 200
     assert "set-cookie" not in resp.headers  # the existing owner was recognized
+
+
+def test_chunked_json_body_over_the_cap_is_413(
+    settings_factory: Callable[..., Settings], client_factory: Callable[..., TestClient]
+) -> None:
+    """Without Content-Length the cap is enforced while reading; FastAPI's body parsing must not
+    turn that into a generic 400."""
+    client = client_factory(settings_factory(max_json_body_bytes=2048))
+    body = b'{"schema_version": "1.0"' + b" " * 4096 + b"}"
+
+    def chunks():
+        for i in range(0, len(body), 512):
+            yield body[i : i + 512]
+
+    resp = client.post(
+        "/api/v1/analyses", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "INVALID_REQUEST"
+    assert resp.json()["error"]["user_message"] == "요청 본문이 너무 큽니다."

@@ -306,3 +306,37 @@ def test_large_upload_is_streamed_in_batches(
     assert resp.json()["sha256"] == hashlib.sha256(data).hexdigest()
     too_big = _upload(client, "bigger.jsonl", data * 2)
     assert too_big.status_code == 413
+
+
+def test_chunked_upload_over_the_total_cap_is_413(
+    settings_factory: Callable[..., Settings], client_factory: Callable[..., TestClient]
+) -> None:
+    """Many small extra fields can pass the whole-request cap before the file part does; the
+    answer is still UPLOAD_TOO_LARGE (413), not a multipart parse error."""
+    settings = settings_factory(max_upload_bytes=1024)
+    client = client_factory(settings)
+    boundary = "vfboundary"
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="f{i}"\r\n\r\n{"a" * 4000}\r\n'
+        for i in range(40)
+    ]
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="d.jsonl"'
+        '\r\n\r\n{"a": 1}\n\r\n'
+    )
+    parts.append(f"--{boundary}--\r\n")
+    body = "".join(parts).encode()
+
+    def chunks():
+        for i in range(0, len(body), 4096):
+            yield body[i : i + 4096]
+
+    resp = client.post(
+        "/api/v1/uploads",
+        content=chunks(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
+    owner_dir = settings.uploads_dir / _owner_key(client)
+    assert not owner_dir.exists() or not any(owner_dir.rglob("*"))

@@ -25,9 +25,9 @@ from starlette.requests import cookie_parser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from vramforge_estimator.errors import make_issue
-from vramforge_estimator.schemas import ErrorCode, Stage
+from vramforge_estimator.schemas import ErrorCode, Issue, Stage
 
-from .errors import error_response
+from .errors import BodyTooLarge, error_response
 from .settings import Settings
 
 API_PREFIX = "/api/v1"
@@ -95,10 +95,6 @@ def parse_cookies(headers: Headers) -> dict[str, str]:
     return cookie_parser("; ".join(headers.getlist("cookie")))
 
 
-class _BodyTooLarge(Exception):
-    pass
-
-
 class SecurityMiddleware:
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
         self.app = app
@@ -140,7 +136,7 @@ class SecurityMiddleware:
         )
         declared = headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > limit:
-            await self._too_large(path, scope, receive, send)
+            await error_response(413, self._too_large_issue(path))(scope, receive, send)
             return
 
         new_cookie: str | None = None
@@ -165,7 +161,7 @@ class SecurityMiddleware:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > limit:
-                    raise _BodyTooLarge
+                    raise BodyTooLarge(self._too_large_issue(path))
             return message
 
         started = False
@@ -182,23 +178,19 @@ class SecurityMiddleware:
 
         try:
             await self.app(scope, limited_receive, send_with_cookie)
-        except _BodyTooLarge:
+        except BodyTooLarge as exc:  # normally answered by the app's handler; fallback only
             if not started:
-                await self._too_large(path, scope, receive, send)
+                await error_response(413, exc.issue)(scope, receive, send)
 
-    async def _too_large(self, path: str, scope: Scope, receive: Receive, send: Send) -> None:
+    def _too_large_issue(self, path: str) -> Issue:
         if path == UPLOAD_PATH:
-            issue = make_issue(
+            return make_issue(
                 ErrorCode.UPLOAD_TOO_LARGE,
                 "업로드 파일이 허용 크기를 넘었습니다.",
                 stage=Stage.API,
                 max_bytes=self.settings.max_upload_bytes,
             )
-        else:
-            issue = make_issue(
-                ErrorCode.INVALID_REQUEST, "요청 본문이 너무 큽니다.", stage=Stage.API
-            )
-        await error_response(413, issue)(scope, receive, send)
+        return make_issue(ErrorCode.INVALID_REQUEST, "요청 본문이 너무 큽니다.", stage=Stage.API)
 
 
 __all__ = [

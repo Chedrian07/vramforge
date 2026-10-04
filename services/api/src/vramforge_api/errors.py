@@ -55,6 +55,18 @@ class ApiError(Exception):
         self.headers = headers or {}
 
 
+class BodyTooLarge(StarletteHTTPException):
+    """A request body read past its cap (raised by the security middleware while streaming).
+
+    An `HTTPException`, so FastAPI's body parsing re-raises it instead of answering 400, and
+    route code that streams the body itself must let it propagate.
+    """
+
+    def __init__(self, issue: Issue) -> None:
+        super().__init__(status_code=413)
+        self.issue = issue
+
+
 def api_error(
     status_code: int,
     code: ErrorCode,
@@ -111,6 +123,11 @@ def _validation_fields(exc: RequestValidationError) -> list[dict[str, Any]]:
 async def _api_error_handler(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ApiError)
     return error_response(exc.status_code, exc.issue, exc.issues, exc.headers)
+
+
+async def _body_too_large_handler(_request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, BodyTooLarge)
+    return error_response(413, exc.issue)
 
 
 async def _estimator_error_handler(_request: Request, exc: Exception) -> JSONResponse:
@@ -182,6 +199,7 @@ async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
 
 def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiError, _api_error_handler)
+    app.add_exception_handler(BodyTooLarge, _body_too_large_handler)
     app.add_exception_handler(EstimatorError, _estimator_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
@@ -193,6 +211,7 @@ __all__ = [
     "NO_STORE",
     "STATUS_BY_CODE",
     "ApiError",
+    "BodyTooLarge",
     "api_error",
     "error_response",
     "install_error_handlers",

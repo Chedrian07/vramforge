@@ -23,7 +23,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from vramforge_estimator.errors import make_issue
 from vramforge_estimator.schemas import ErrorCode, Stage
 
-from .errors import ApiError
+from .errors import ApiError, BodyTooLarge
 
 ALLOWED_EXTENSIONS: dict[str, str] = {
     ".json": "json",
@@ -299,7 +299,7 @@ async def receive_upload(
             if sink.error is None:
                 parser.finalize()
         return await anyio.to_thread.run_sync(sink.finish)
-    except ApiError:
+    except (ApiError, BodyTooLarge):  # BodyTooLarge: the whole request passed its cap
         await anyio.to_thread.run_sync(sink.discard)
         raise
     except Exception as exc:
