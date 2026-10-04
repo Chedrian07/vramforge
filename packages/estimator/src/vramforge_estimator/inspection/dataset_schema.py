@@ -1,6 +1,8 @@
 """Schema preview of one split: at most `ReaderLimits.preview_rows` rows read within a byte budget
-(`SourceAccess.max_metadata_bytes`), never the full scan (plan §7.1). Columns get an Arrow dtype
-string and a coarse kind used for mapping detection:
+(`SourceAccess.max_metadata_bytes`), never the full scan (plan §7.1). When the preview reaches the
+EOF of every file of the split (`Preview.exhausted`) its counts cover the whole split, which is how
+an empty split is recognized before the scan. Columns get an Arrow dtype string and a coarse kind
+used for mapping detection:
 
 - `string`: every non-null value is a str
 - `messages`: every non-null value is a non-empty list of dicts with a `role` (or ShareGPT `from`)
@@ -50,6 +52,13 @@ class Preview:
     file_formats: dict[str, str] = field(default_factory=dict)
     failed_rows: int = 0
     issues: list[Issue] = field(default_factory=list)
+    # Every data file of the split was read to EOF: `rows`/`failed_rows` then describe all of it.
+    exhausted: bool = False
+
+    @property
+    def split_is_empty(self) -> bool:
+        """The whole split was read and holds no record (not even an undecodable one)."""
+        return self.exhausted and not self.rows and not self.failed_rows
 
 
 def read_preview(
@@ -64,6 +73,7 @@ def read_preview(
     schema = SchemaState.declared(config.features)
     remaining = budget
     quota_hit = False
+    files_read = 0  # files read to EOF
     for data_file in split.files[:_PREVIEW_FILES]:
         if remaining <= 0:
             break
@@ -83,6 +93,8 @@ def read_preview(
                 preview.rows.append(item)
                 if len(preview.rows) >= limits.preview_rows:
                     break
+            else:
+                files_read += 1
         except QuotaExceeded:
             quota_hit = True  # the budget only bounds the preview; what was read stays valid
         except (ShardBroken, UnsupportedFormat) as exc:
@@ -112,6 +124,7 @@ def read_preview(
                 remaining -= source.bytes_read
         if len(preview.rows) >= limits.preview_rows or quota_hit:
             break
+    preview.exhausted = files_read == len(split.files)
     preview.features = schema.features
     if preview.failed_rows:
         preview.issues.append(

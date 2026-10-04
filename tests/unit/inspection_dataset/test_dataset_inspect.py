@@ -400,3 +400,46 @@ def test_columns_follow_readme_features(tmp_path: Path) -> None:
         ("completion", "string", "string"),
         ("system", "string", "string"),  # declared, absent from the file: None like datasets
     ]
+
+
+def test_an_empty_only_split_cannot_be_analyzed(tmp_path: Path) -> None:
+    path = tmp_path / "train.jsonl"
+    path.write_bytes(b"")
+    with pytest.raises(EstimatorError) as excinfo:
+        inspect(local_source(path), Objective.SFT)
+    issue = excinfo.value.issue
+    assert issue.code == ErrorCode.EMPTY_DATASET
+    assert issue.details == {"reason": "no_rows", "config": "default", "split": "train"}
+    assert "다른 split" not in issue.user_message  # there is nothing else to choose
+
+
+def test_an_empty_split_among_others_is_reported_not_raised(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    root.mkdir()
+    (root / "train.jsonl").write_bytes(b"")
+    write_jsonl(root / "test.jsonl", [{"prompt": "t", "completion": "c"}])
+    result = inspect(local_source(root), Objective.SFT)
+    assert result.selected_split == "train" and result.split_auto_selected
+    issue = next(i for i in result.issues if i.code == ErrorCode.EMPTY_DATASET)
+    assert issue.details["split"] == "train"
+    assert "다른 split" in issue.user_message
+    other = inspect(local_source(root), Objective.SFT, split="test")
+    assert ErrorCode.EMPTY_DATASET not in codes(other)
+
+
+def test_a_preview_that_stops_early_never_claims_an_empty_split(tmp_path: Path) -> None:
+    # Blank lines beyond the byte budget, then a record: the preview cannot know.
+    late = tmp_path / "late"
+    late.mkdir()
+    (late / "train.jsonl").write_text("\n" * 50_000 + '{"text": "late"}\n', encoding="utf-8")
+    tight = inspect(local_source(late), Objective.SFT, access=SourceAccess(max_metadata_bytes=4096))
+    assert ErrorCode.EMPTY_DATASET not in codes(tight)
+    # Only the first files are previewed: four empty shards do not make the split empty.
+    many = tmp_path / "many"
+    many.mkdir()
+    for index in range(4):
+        (many / f"train-{index}.jsonl").write_bytes(b"")
+    write_jsonl(many / "train-4.jsonl", [{"text": "fifth"}])
+    result = inspect(local_source(many), Objective.SFT)
+    assert ErrorCode.EMPTY_DATASET not in codes(result)
+    assert result.columns == []  # nothing previewed, nothing guessed

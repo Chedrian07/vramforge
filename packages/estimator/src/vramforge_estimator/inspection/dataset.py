@@ -5,8 +5,9 @@ selects them only when the choice is unambiguous (otherwise DATASET_CONFIG_REQUI
 DATASET_SPLIT_REQUIRED with the options), previews at most 100 rows within
 `SourceAccess.max_metadata_bytes` (`dataset_schema`) and ranks column-mapping candidates for the
 objective (`dataset_mapping`). It raises `EstimatorError` only when there is nothing the user could
-choose to analyze (no loadable layout, or the config that would be analyzed is unsupported); every
-other problem is an issue of the returned inspection.
+choose to analyze (no loadable layout, the config that would be analyzed is unsupported, or the
+preview read the only split of the only config to its end without a row: EMPTY_DATASET); every
+other problem is an issue of the returned inspection (an empty split among others included).
 
 The requested config/split are the request fields, or, when a field is empty, the
 `/viewer/<config>/<split>` path of a dataset viewer URL (`requested_selection`). A viewer value is
@@ -19,7 +20,8 @@ contract (see `dataset_stream`): undecodable records arrive as `FailedSourceRow`
 with an empty `row`, `error_code`, `reason`, Korean `message` and its line/element position;
 import it from the dependency-free `dataset_rows` module); quotas, broken shards, manifest
 mismatches and download failures end the stream with an entry in `stream.issues`;
-`stream.complete` is True only after a clean EOF of every shard with no failed record.
+`stream.complete` is True only after a clean EOF of every shard with no failed record. A split
+without any record is complete and reports EMPTY_DATASET in `stream.issues`.
 
 Heavy libraries (datasets, pyarrow, pandas, huggingface_hub) are imported lazily so that importing
 the package stays cheap and works without the `analysis` extra.
@@ -181,6 +183,12 @@ def inspect_dataset_details(
         if preview_split is not None:
             preview = read_preview(files, config, preview_split, access.max_metadata_bytes, limits)
             issues.extend(preview.issues)
+            if selected_split is not None and preview.split_is_empty:
+                others = len(layout.configs) > 1 or len(config.splits) > 1
+                empty = _empty_split_issue(config.name, selected_split, others)
+                if not others:
+                    raise EstimatorError(empty)  # nothing else the user could choose
+                issues.append(empty)
     columns = preview_columns(preview) if preview is not None else []
     mapping = None
     if columns:
@@ -415,6 +423,13 @@ def _check_eval_split(
             options=[name for name in names if name != train_split],
         )
     return None
+
+
+def _empty_split_issue(config: str, split: str, others: bool) -> Issue:
+    message = f"선택한 split '{split}'의 데이터 파일에 row가 하나도 없어 분석할 데이터가 없습니다."
+    if others:
+        message += " 다른 split이나 설정을 선택해 주세요."
+    return _required(ErrorCode.EMPTY_DATASET, message, reason="no_rows", config=config, split=split)
 
 
 def _required(code: ErrorCode, message: str, **details: Any) -> Issue:
