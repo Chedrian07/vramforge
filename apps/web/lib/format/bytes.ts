@@ -93,10 +93,16 @@ export function gibInputToBytes(text: string): number | null {
   return Math.round(value * GIB);
 }
 
-/** Integer bytes -> compact GiB input text (up to 3 decimals, no grouping). */
+/**
+ * Integer bytes -> GiB input text that converts back to exactly the same bytes: compact (up to 3
+ * decimals) when that is exact, otherwise the full value. A lossy text would make a request
+ * restored after a reload differ from the analysed one and trigger a spurious recompute.
+ */
 export function bytesToGibInput(bytes: number | null | undefined): string {
   if (bytes == null) return "";
-  return String(Math.round((bytes / GIB) * 1000) / 1000);
+  const compact = String(Math.round((bytes / GIB) * 1000) / 1000);
+  // bytes / 2^30 is exact in binary, and String() round-trips a double exactly.
+  return gibInputToBytes(compact) === bytes ? compact : String(bytes / GIB);
 }
 
 /** Shortens digests/ids for display; the full value stays available via copy/tooltip. */

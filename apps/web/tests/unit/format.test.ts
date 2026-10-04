@@ -54,6 +54,13 @@ describe("byte formatting", () => {
     expect(gibInputToBytes("-1")).toBeNull();
     expect(bytesToGibInput(80 * GIB)).toBe("80");
     expect(bytesToGibInput(null)).toBe("");
+    expect(bytesToGibInput(gibInputToBytes("23.65"))).toBe("23.65");
+    // More precision than 3 decimals must survive a reload round trip byte for byte.
+    for (const text of ["1.23456", "0.0001", "22.4567"]) {
+      const bytes = gibInputToBytes(text)!;
+      expect(gibInputToBytes(bytesToGibInput(bytes))).toBe(bytes);
+    }
+    expect(gibInputToBytes(bytesToGibInput(1_234_567_890))).toBe(1_234_567_890);
   });
 
   it("shortens digests", () => {
