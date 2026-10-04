@@ -340,6 +340,45 @@ def test_missing_split_and_multiple_configs_need_input(
     assert result.needs_input.choices[1].options == ["x", "y"]
 
 
+def test_only_answerable_questions_are_asked(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Several configs and none chosen: the inspector knows no split or column yet, so the run
+    asks for the config only (with the inspector's options) instead of empty split/mapping
+    questions."""
+    config_issue = issue(
+        ErrorCode.DATASET_CONFIG_REQUIRED,
+        "데이터셋에 설정(config)이 여러 개 있습니다. 분석할 설정을 선택해 주세요.",
+        stage=Stage.INSPECTING,
+        field="dataset.config",
+        options=["en", "ko"],
+        suggested="en",
+    )
+    FakeModules(
+        inspect_dataset=lambda *a, **k: dataset_inspection(
+            configs=["en", "ko"],
+            selected_config=None,
+            splits=[],
+            selected_split=None,
+            columns=[],
+            detected_format=None,
+            mapping_candidates=[],
+            suggested_mapping=None,
+            issues=[config_issue],
+        )
+    ).install(monkeypatch)
+    result = analyze(example_request(**{"dataset.split": None, "dataset.mapping": None}), ctx)
+    assert terminal_status(result) is JobStatus.NEEDS_INPUT
+    (choice,) = result.needs_input.choices
+    assert (choice.field, choice.options, choice.suggested) == (
+        "dataset.config",
+        ["en", "ko"],
+        "en",
+    )
+    assert choice.reason == config_issue.user_message
+    assert [e.user_message for e in result.errors] == [config_issue.user_message]  # once
+
+
 def test_requested_split_must_exist(ctx: CachingContext, monkeypatch: pytest.MonkeyPatch) -> None:
     FakeModules().install(monkeypatch)
     result = analyze(example_request(**{"dataset.split": "validation"}), ctx)

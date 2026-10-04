@@ -962,7 +962,8 @@ class _Run:
                     reason="요청한 split이 데이터셋에 없습니다. 학습 split을 다시 선택하세요.",
                 )
             )
-        elif split is None:
+        elif split is None and (split_names or not choices):
+            # Splits are unknown until the config is chosen: ask for the config first.
             choices.append(
                 _with_issue(
                     NeedsInputChoice(
@@ -974,7 +975,8 @@ class _Run:
                 )
             )
         mapping, mapping_choice, candidates = self.resolve_mapping(ds)
-        if mapping_choice is not None:
+        if mapping_choice is not None and (ds.columns or not choices):
+            # Columns are unknown until the config/split is chosen: the mapping comes after.
             choices.append(mapping_choice)
         if choices:
             self.ask_for_input(choices, None, candidates=candidates)
