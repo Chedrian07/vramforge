@@ -14,19 +14,20 @@
 | 실험 코드 | `/tmp/vf-research/scratch/trl-grpo/` (저장소 밖). 실험 목록은 부록 A |
 | 증거 태그 | **VERIFIED** = 소스에서 확인했거나 실측함 / **INFERRED** = 소스 기반 추론(CUDA 전용 등, 이 머신에서 실행 불가) / **UNKNOWN** = 확인 불가 |
 | 경로 표기 | 인용 경로는 site-packages 기준이다. `trl/…` = trl==1.14.1, `transformers/…` = transformers==5.18.0, `accelerate/…` = accelerate==1.15.0, `peft/…` = peft==0.21.2, `torch/…` = torch==2.14.1 |
+| 검증 | 2026-10-04 `verify-trl-grpo`가 적대적으로 재검증했다(소스 재독 + 독립 실험 V1–V6). 본문의 **[검증 수정]**/**[검증 보강]** 표시가 바뀐 곳이다. 판정과 근거는 문서 끝 "검증 로그"에 있다 |
 
 기호는 plan.md §8.3을 따른다. `G` = `num_generations`, `U` = generation 1회의 unique prompt 수(전체 process 합), `C` = device 하나에서 동시에 생성하는 sequence 수, `B_update` = `per_device_train_batch_size`, `K` = `gradient_accumulation_steps`, `spg` = `steps_per_generation`, `gbs` = `generation_batch_size`, `W` = process 수, `N` = 데이터셋 row 수, `P` = generation batch 안에서 패딩된 prompt 길이, `L` = generation batch 안에서 패딩된 completion 길이, `V` = vocab size(예시 248,320).
 
 ## 0. 핵심 결론
 
-1. TRL 1.14.1 GRPO에는 **`max_prompt_length` 필드가 없다.** 넘기면 `TypeError`가 나고, 프롬프트 토큰화 경로에 truncation 호출도 없다. 프롬프트는 어떤 설정으로도 잘리지 않는다. VERIFIED (E5, §9)
+1. TRL 1.14.1 GRPO에는 **`max_prompt_length` 필드가 없다.** 넘기면 `TypeError`가 나고, 기본 설정의 프롬프트 토큰화 경로에는 truncation이 없다. VERIFIED (E5, §9, 검증 V1·V2). **[검증 수정]** "어떤 설정으로도 잘리지 않는다"는 과장이다. `chat_template_kwargs`가 `apply_chat_template(**chat_template_kwargs)`로 그대로 전달되므로 `chat_template_kwargs={"truncation": True, "max_length": N}`을 주면 프롬프트가 잘린다(검증 V4-trunc: 98-token 프롬프트가 생성 입력에서 16 token이 됨). VERIFIED
 2. `RepeatSampler`는 epoch마다 **`N mod U`개 프롬프트를 버린다** (`U = gbs / G`). 예시 설정(G=4, gbs=4)은 U=1이라 4,656개를 모두 쓴다. VERIFIED (E2, E3c-H)
 3. Rollout은 device의 generation batch 전체를 **`generate` 한 번**으로 처리한다. `C = B_update × spg = gbs / W`이고 예시는 C=4다. 같은 프롬프트의 G개 복사본은 각자 KV cache를 갖는다(prefix sharing 없음). VERIFIED (E3c)
 4. 기본 정렬 설정(`spg = K`, `num_iterations = 1`, `beta = 0`, vLLM 끔)에서는 old/ref log-prob 패스가 **없다.** 조건은 `K % (spg × num_iterations) != 0` 또는 vLLM IS 보정(old)과 `beta != 0`(ref)이다. VERIFIED (E3c-A/B/D/E)
-5. 학습 forward의 logits는 accelerate의 mixed-precision wrapper 때문에 항상 **fp32 `(B_update, L+1, V)`**로 돌아온다. CUDA fused kernel 경로에서 logits 관련 피크는 약 **8 B × B_update × (L+1) × V**다(CPU 할당 에뮬레이션 실측 8.2–9.2, L이 작을수록 다른 activation 비중 때문에 큼). old/ref no-grad 패스는 chunk가 2개 이상이면 약 **10 B × B_update × (L+1) × V**다. VERIFIED(에뮬레이션) / INFERRED(CUDA) (E4)
+5. 학습 forward의 logits는 accelerate native AMP wrapper 때문에 **fp32 `(B_update, L+1, V)`**로 돌아온다(기본값 `bf16=True`, 단일 GPU·DDP). **[검증 수정]** "항상"은 아니다. accelerate는 bf16 native AMP를 DeepSpeed·Megatron에서 켜지 않고(`accelerate/accelerator.py:586-593`), mixed precision을 끄면 wrapper 자체가 없다. 이 경우 logits는 모델 dtype이다. CUDA fused kernel 경로에서 logits 관련 피크는 약 **8 B × B_update × (L+1) × V**다(CPU 할당 에뮬레이션 실측 8.2–9.2, L이 작을수록 다른 activation 비중 때문에 큼). old/ref no-grad 패스는 chunk가 2개 이상이면 약 **10 B × B_update × (L+1) × V**다. VERIFIED(에뮬레이션) / INFERRED(CUDA) (E4)
 6. TRL은 문자열 모델을 **float32로 로드**한다. PEFT/QLoRA의 rollout은 accelerate autocast **밖에서** 실행되므로 이 기본값에서는 KV cache와 conv state도 fp32가 된다. 내보내는 설정에는 `model_init_kwargs={"dtype": "bfloat16"}`을 명시해야 한다. VERIFIED (E3c-C/G/Q/R, E7)
 7. reward source가 없으면 `GRPOTrainer` 생성 자체가 `ValueError`다. memory-only 분석은 Trainer 객체 없이 해야 한다. VERIFIED (E5)
-8. `gradient_checkpointing_kwargs`에 `every_n_layers`(그리고 같은 이유로 `offload`)를 넣으면 rollout 이후 첫 학습 forward에서 `ValueError`가 난다. TRL이 원본 dict로 checkpointing을 다시 켜기 때문이다. VERIFIED(`every_n_layers`, E3c-J) / INFERRED(`offload`)
+8. `gradient_checkpointing_kwargs`의 `every_n_layers`·`offload`는 GRPO에서 제대로 동작하지 않는다. TRL이 rollout 뒤 원본 dict를 `torch.utils.checkpoint.checkpoint` kwargs로 넘겨 checkpointing을 다시 켜기 때문이다. **[검증 수정]** 결과는 `use_reentrant`에 따라 다르다. 미지정(torch가 True로 간주)이거나 True면 첫 학습 forward에서 `ValueError: Unexpected keyword arguments: every_n_layers`(또는 `offload`)가 난다(E3c-J, 검증 V4-gcA/gcC). `use_reentrant=False`면 오류 없이 학습되지만 모든 layer가 checkpoint되고(`every_n_layers`→1) offload는 꺼진다(검증 V4-gcB/gcD). 어느 경우든 두 옵션은 효과가 없다. VERIFIED(CPU)
 9. 예시 모델의 기본 processing class(`AutoProcessor` → `Qwen3VLProcessor`)는 Pillow와 torchvision을 요구한다. pinned 환경에는 둘 다 없어서 `processing_class`를 생략하면 생성이 실패한다. tokenizer를 직접 넘기면 4,656개 프롬프트 모두 같은 token id가 나온다. VERIFIED (E3a, E3b)
 
 ---
@@ -43,7 +44,7 @@
 | `gradient_accumulation_steps` | 1 (TrainingArguments) | K | E1 |
 | `generation_batch_size` | None → `B_update × W × spg` (기본 8) | **전체 process 합** 단위 | `grpo_config.py:516-522, 1083-1103`, E1 |
 | `steps_per_generation` | None → `K` (기본 1) | rollout 1회를 몇 micro-step에 나눠 쓰는지 | `grpo_config.py:523-526, 1085-1087` |
-| `max_prompt_length` | **필드 없음** (`TypeError: GRPOConfig.__init__() got an unexpected keyword argument 'max_prompt_length'`) | 프롬프트 truncation 기능이 없다(§9) | E5 |
+| `max_prompt_length` | **필드 없음** (`TypeError: GRPOConfig.__init__() got an unexpected keyword argument 'max_prompt_length'`) | 전용 truncation 기능이 없다. 단 `chat_template_kwargs`에 `truncation`/`max_length`를 넣으면 잘린다(§9) | E5, 검증 V1·V4-trunc |
 | truncation side | 필드 없음. `processing_class`를 넘기지 않아 TRL이 직접 로드할 때만 `truncation_side="left", padding_side="left"`를 지정하고, truncation 호출은 없다 | 실효 없음 | `grpo_trainer.py:372-379, 1769-1846` |
 | `max_completion_length` | 512 | `max_new_tokens`로 전달. `None`이면 무제한이 아니다(§9) | `grpo_config.py:493-496`, `grpo_trainer.py:1105-1106` |
 | `num_iterations` | 1 | μ. 같은 rollout을 재사용하는 횟수 | `grpo_config.py:684-687` |
@@ -52,20 +53,20 @@
 | `scale_rewards` | `"group"` (`True`→`"group"`, `False`→`"none"`) | | `grpo_config.py:784-795, 1065` |
 | `epsilon` / `epsilon_high` / `delta` | 0.2 / None → `epsilon` / None | | `grpo_config.py:688-708`, `grpo_trainer.py:934-935` |
 | `importance_sampling_level` | `"token"` | | `grpo_config.py:755-764` |
-| `temperature` / `top_p` / `top_k` / `min_p` / `repetition_penalty` | 1.0 / 1.0 / 0 / None / 1.0 | 모델 `generation_config.json`의 0.6 / 0.95 / 20을 **덮어쓴다** | `grpo_config.py:527-575`, `grpo_trainer.py:1105-1122`, E3c(`gen_cfg`) |
+| `temperature` / `top_p` / `top_k` / `min_p` / `repetition_penalty` | 1.0 / 1.0 / 0 / None / 1.0 | 모델 `generation_config.json`의 0.6 / 0.95 / 20을 **덮어쓴다**. transformers 5.18은 넘긴 config에서 `None`인 값만 모델 값으로 채우기 때문이다(`transformers/generation/utils.py:2085-2086`, `generation/configuration_utils.py:1364`) | `grpo_config.py:527-575`, `grpo_trainer.py:1105-1122`, E3c(`gen_cfg`), 검증 V4(MiMo `generation_config.json`을 넣은 tiny 모델에서 `_sample` 안의 실효값 1.0 / 0 / 1.0, eos 248046, logits processor 0개) |
 | `use_vllm` / `vllm_mode` | False / `"colocate"` | | `grpo_config.py:582-598` |
 | `vllm_gpu_memory_utilization` / `vllm_tensor_parallel_size` / `vllm_max_model_length` / `vllm_enable_sleep_mode` / `vllm_model_impl` | 0.3 / 1 / None / False / `"vllm"` | colocate 전용 | `grpo_config.py:599-673` |
 | `use_transformers_paged` | False (deprecated, v2.0 제거 예정) | True면 `use_transformers_continuous_batching=True`로 바뀜 | `grpo_config.py:1030-1033, 1046-1053` |
 | `use_transformers_continuous_batching` / `transformers_continuous_batching_config` | False / None | 켜면 TRL이 `max_memory_percent=0.5`를 기본으로 넣음 | `grpo_config.py:1017-1027`, `grpo_trainer.py:766-780` |
 | `cache_implementation` | None | Transformers 생성에서 `DynamicCache` 사용 | `grpo_config.py:576-579`, E3c |
 | `generation_kwargs` | None | `GenerationConfig` 인자를 덮어씀(충돌 시 우선) | `grpo_config.py:552-560`, `grpo_trainer.py:1118-1120` |
-| `chat_template_kwargs` | None → `{}` | `apply_chat_template`에 전달 | `grpo_config.py:561-567`, `grpo_trainer.py:759` |
+| `chat_template_kwargs` | None → `{}` | `apply_chat_template`에 전달. **[검증 보강]** `truncation`/`max_length` key는 tokenizer 인자로 들어가 프롬프트를 자른다(검증 V4-trunc) | `grpo_config.py:561-567`, `grpo_trainer.py:759` |
 | `mask_truncated_completions` | False | 잘린 completion도 loss에 포함 | `grpo_config.py:831-838` |
 | `shuffle_dataset` | True | `RepeatSampler(shuffle=True, seed=args.seed)` | `grpo_config.py:506-509`, `grpo_trainer.py:1260-1267` |
 | `pad_to_multiple_of` | None | prompt·completion 패딩 배수(§6.4) | `grpo_config.py:510-513` |
 | `gradient_checkpointing` | **True** (TRL override) | | `trl/trainer/base_config.py:61-66` |
-| `gradient_checkpointing_kwargs` | None → transformers 기본 `{"use_reentrant": False}` | `every_n_layers`/`offload`는 GRPO에서 실패(§4.3) | `transformers/modeling_utils.py:3138-3139` |
-| `model_init_kwargs` | None → **`dtype=float32`**, GPU면 `device_map="auto"` | 문자열 모델에만 적용 | `trl/trainer/utils.py:1292-1305 (create_model_from_path)`, E3c-A, E7 |
+| `gradient_checkpointing_kwargs` | None → transformers 기본 `{"use_reentrant": False}` | `every_n_layers`/`offload`는 GRPO에서 오류(`use_reentrant` 미지정/True)이거나 조용히 무시(`use_reentrant=False`)된다(§4.3) | `transformers/modeling_utils.py:3138-3139` |
+| `model_init_kwargs` | None → **`dtype=float32`**, 단일 GPU면 `device_map="auto"`(MULTI_GPU·DeepSpeed면 TRL이 None으로 바꿈, `grpo_trainer.py:343-344`) | 문자열 모델에만 적용 | `trl/trainer/utils.py:1292-1305 (create_model_from_path)`, E3c-A, E7 |
 | `disable_dropout` | False | | `grpo_config.py:452-458` |
 | `cast_lm_head_to_fp32` | False | True면 lm_head 가중치 fp32 | `grpo_config.py:459-467` |
 | `sync_ref_model` / `ref_model_mixup_alpha` / `ref_model_sync_steps` | False / 0.6 / 512 | §8 제약 | `grpo_config.py:839-860` |
@@ -188,7 +189,7 @@ for chunk in indexes:
 ```
 
 - 마지막 불완전 chunk를 버리므로 **epoch마다 `N mod U`개 프롬프트가 빠진다.** `__len__ = (N // U) × U × G × repeat_count` (utils.py:911-912). VERIFIED (E2, E3c-H)
-- generator는 한 번만 seed되고 `__iter__`마다 새 `randperm`을 뽑는다. 그래서 `N mod U != 0`이면 epoch마다 **다른** 무작위 프롬프트가 빠진다(E2: 10개, U=3에서 1 epoch에는 7번, 2 epoch에는 2번이 빠짐). VERIFIED
+- generator는 한 번만 seed되고 `__iter__`마다 새 `randperm`을 뽑는다. 그래서 `N mod U != 0`이면 epoch마다 **다른** 무작위 프롬프트가 빠진다(E2: 10개, U=3에서 1 epoch에는 7번, 2 epoch에는 2번이 빠짐). VERIFIED. **[검증 보강]** 정확히는 epoch마다 새로 뽑을 뿐이라 같은 row가 우연히 다시 빠질 수 있다(검증 V3: 4 epoch 누락 row 7, 2, 2, 6). `RepeatSampler`에는 `set_epoch`가 없어 Trainer의 `set_epoch` 호출(`transformers/trainer.py:1816-1823`)도 영향을 주지 않는다. VERIFIED
 - DataLoader batch 크기는 `B_update × spg`다(`grpo_trainer.py:1223-1229`). micro-step마다 batch 하나를 소비하고, 생성은 `_step % (spg × num_iterations) == 0`일 때만 하며 나머지 batch(반복 복사본)는 버린다(`grpo_trainer.py:1621-1631`). VERIFIED
 - 다중 process: accelerate `BatchSamplerShard`가 연속된 batch를 rank에 나눈다. process마다 같은 seed의 sampler를 만들어 같은 순서를 공유한다. `gbs`가 `B_update × W × spg`로 정의되므로 rank당 batch 수가 W로 나누어떨어지고 `even_batches` 보충(중복)은 생기지 않는다. VERIFIED (E2 시뮬레이션, W=2·3에서 누락 0)
 - `IterableDataset`: `repeat_iterable_dataset`이 같은 순서를 stream으로 재현하고, 마지막 불완전 batch를 똑같이 버린다(utils.py:915-978의 `repeat_batch` 주석). 셔플은 buffered shuffle이다. VERIFIED(소스)
@@ -259,18 +260,28 @@ completion_ids = prompt_completion_ids[:, prompt_length:]
 - `GenerationConfig` (1104-1122): `max_new_tokens=max_completion_length, do_sample=True, pad_token_id=tokenizer.pad, bos_token_id, eos_token_id=tokenizer.eos_token_id(단일 값), temperature, top_p, top_k, min_p, repetition_penalty, cache_implementation`과 `generation_kwargs`, `disable_compile=True`. 예시 tokenizer는 eos=`<|im_end|>`(248046), pad=`<|endoftext|>`(248044)라 모델 generation_config의 eos 목록 `[248046, 248044]` 대신 248046만 쓴다. VERIFIED (E3c `gen_cfg`)
 - 생성 뒤 첫 EOS(포함)까지만 남기고 나머지를 마스킹해 Python list로 옮긴다(1946-1954). 이후 다시 GPU tensor로 패딩한다(§5.4).
 - prefill: transformers가 `logits_to_keep=1`을 넣어 prefill logits는 `(C, 1, V)`다(`transformers/generation/utils.py:2920-2924`). decode마다 `outputs.logits[:, -1].to(copy=True, dtype=float32)`로 `(C, V)` fp32 복사본을 만든다(`generation/utils.py:3216`). 기본 sampling 설정(top_k=0, top_p=1.0, temperature=1.0)이면 추가 warper 텐서가 거의 없다. VERIFIED (E3c: prefill `logits_to_keep=1`, logits `(4,1,248320)`)
-- forward 횟수: `max_new_tokens=8`이면 prefill 1회 + decode 7회 = 8회이고 최종 KV 길이는 `P + L − 1`이다(E3c-A: P=48, L=8 → K/V 길이 55). 끝난 sequence도 batch에서 빠지지 않고 pad를 생성하며 계속 돈다(`transformers/generation/utils.py:3160, 3198, 3251-3257`). 따라서 cache 길이는 batch에서 가장 늦게 끝나는 sequence가 정한다. VERIFIED
+- forward 횟수: `max_new_tokens=8`이면 prefill 1회 + decode 7회 = 8회이고 최종 KV 길이는 `P + L − 1`이다(E3c-A: P=48, L=8 → K/V 길이 55). 끝난 sequence도 batch에서 빠지지 않고 pad를 생성하며 계속 돈다(`transformers/generation/utils.py:3160, 3198, 3251-3257`). 따라서 cache 길이는 batch에서 가장 늦게 끝나는 sequence가 정한다. VERIFIED (검증 V4: P=98, `max_new_tokens=6` → DynamicLayer K 길이 103 = P + L − 1). **[검증 보강]** 정지 판정을 한 step 늦추고 마지막 forward를 되돌리는 `DeferredStopCheck`는 MPS 전용이다(`transformers/generation/utils.py:432-441 (DeferredStopCheck.is_supported)`). 그래서 CUDA·CPU에는 추가 forward가 없고 `P + L − 1`이 그대로 맞다. VERIFIED(소스)
 
 ### 4.3 gradient checkpointing·train mode·unwrap
 
 - 생성 동안 gradient checkpointing을 끄고(`trl/models/utils.py:133-135`), 끝나면 **인자 없이** `gradient_checkpointing_enable()`로 다시 켠다(150-151). transformers 5.18에서 인자 없음 = `{"use_reentrant": False}`, `every_n_layers=1`, `offload=False`다. VERIFIED (E3c: prefill 시 `gc=False`, 직후 `gc_after=True`)
-- 이어서 `_generate_and_score_completions`가 old/ref 계산이 없어도 **항상** `with torch.no_grad(), disable_gradient_checkpointing(self.model, self.args.gradient_checkpointing_kwargs)` 블록에 들어간다(2686). 블록을 나올 때 `model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)`로 **원본 dict**를 그대로 넘긴다(`trl/models/utils.py:388-405`). Trainer는 처음에 `every_n_layers`/`offload`를 dict에서 빼서 쓰지만(`transformers/trainer.py:1490-1501`), 이 재활성화는 빼지 않으므로 그 key가 `torch.utils.checkpoint.checkpoint`로 들어간다. E3c-J: `gradient_checkpointing_kwargs={"every_n_layers": 2}` → 첫 학습 forward에서 `ValueError: Unexpected keyword arguments: every_n_layers`. `use_reentrant=True`는 정상 유지된다(E3c-I). VERIFIED. `offload`도 같은 경로라 같은 오류가 날 것이다. INFERRED
+- 이어서 `_generate_and_score_completions`가 old/ref 계산이 없어도 **항상** `with torch.no_grad(), disable_gradient_checkpointing(self.model, self.args.gradient_checkpointing_kwargs)` 블록에 들어간다(2686). 블록을 나올 때 `model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)`로 **원본 dict**를 그대로 넘긴다(`trl/models/utils.py:388-405`). Trainer는 처음에 `every_n_layers`/`offload`를 dict에서 빼서 쓰지만(`transformers/trainer.py:1490-1501`), 이 재활성화는 빼지 않으므로 그 key가 `torch.utils.checkpoint.checkpoint`로 들어간다. E3c-J: `gradient_checkpointing_kwargs={"every_n_layers": 2}` → 첫 학습 forward에서 `ValueError: Unexpected keyword arguments: every_n_layers`. `use_reentrant=True`는 정상 유지된다(E3c-I). VERIFIED.
+- **[검증 수정]** 이 `ValueError`는 torch `_checkpoint_impl`이 reentrant 경로에서만 extra kwargs를 거부해서 생긴다. `use_reentrant`가 None이면 경고 뒤 True로 바꾸고, `kwargs and use_reentrant`면 raise한다(`torch/utils/checkpoint.py:635-649`). decoder layer는 자기 인자를 `partial(super().__call__, **kwargs)`로 묶으므로(`transformers/modeling_layers.py:81-110 (GradientCheckpointingLayer.__call__)`) `checkpoint`의 kwargs에는 GC dict의 extra key만 남는다. 실측(검증 V4, tiny Qwen3.5, 실제 `GRPOTrainer.train()`):
+
+| `gradient_checkpointing_kwargs` | 결과 | 첫 학습 forward 시점의 layer 상태 |
+|---|---|---|
+| `{"every_n_layers": 2}` | `ValueError: Unexpected keyword arguments: every_n_layers` | 4/4 layer checkpoint, partial kwargs `{every_n_layers: 2}` |
+| `{"offload": True}` | `ValueError: Unexpected keyword arguments: offload` (원 문서의 INFERRED를 확인) | 4/4 layer checkpoint |
+| `{"use_reentrant": False, "every_n_layers": 2}` | 오류 없이 2 step 학습 | 4/4 layer checkpoint(**every_n_layers 무시**). extra key는 layer 호출 kwargs로 흘러가 버려진다 |
+| `{"use_reentrant": False, "offload": True}` | 오류 없이 2 step 학습 | 4/4 layer checkpoint, checkpoint 함수가 offload wrapper가 아닌 plain `checkpoint`(**offload 꺼짐**) |
+
+  rollout의 `_unwrap_model_for_generation`이 먼저 인자 없이 다시 켜고(`every_n_layers=1`, `offload=False`), 이어서 `disable_gradient_checkpointing`이 원본 dict를 `gradient_checkpointing_kwargs` 자리에만 넘긴다. 그래서 첫 학습 forward 전에 이미 두 옵션이 사라진다. 메모리 추정에서 두 옵션의 절감 효과를 반영하면 안 된다. VERIFIED(CPU)
 - 모델은 생성 중에도 `train()` 상태다(E3c: prefill 시 `training=True`). dropout 확률이 0이 아니면 rollout에도 dropout이 걸린다(LoRA dropout 포함). VERIFIED
 - `unwrap_model_for_generation`: DDP는 `accelerator.unwrap_model`만 한다. DeepSpeed ZeRO-3 + `ds3_gather_for_generation=True`는 **모든 파라미터를 `GatheredParameters`로 모아** 생성한다. FSDP v1은 `summon_full_params(recurse=False)`를 쓰고 FSDP v2는 no-op이다(`trl/models/utils.py:106-152`, `trl/distributed.py:74-91`). VERIFIED(소스) / 다중 GPU 메모리 영향은 INFERRED
 
 ### 4.4 생성 시 dtype: PEFT 여부에 따라 autocast가 다르다
 
-- accelerate는 `bf16=True`일 때 `prepare_model`에서 **`model.forward`를 autocast로 감싸고 출력을 fp32로 바꾸는 wrapper로 교체**한다(`accelerate/accelerator.py:1824-1835`, `accelerate/utils/operations.py:889-948 ConvertOutputsToFp32`). Trainer 자체는 autocast를 걸지 않는다(`transformers/trainer.py:2178-2183`). ref·reward 모델도 `prepare_model(evaluation_mode=True)`로 같은 wrapper를 받는다(wrapper 적용이 evaluation_mode 분기보다 앞, `accelerator.py:1824-1882`). VERIFIED (E3c-B: ref `_original_forward` 존재, E5: reward 모델도)
+- accelerate는 native AMP일 때 `prepare_model`에서 **`model.forward`를 autocast로 감싸고 출력을 fp32로 바꾸는 wrapper로 교체**한다(`accelerate/accelerator.py:1824-1835`, `accelerate/utils/operations.py:889-948 ConvertOutputsToFp32`). **[검증 보강]** native AMP는 `bf16=True`(또는 `fp16=True`)이고 DeepSpeed·Megatron이 아닐 때만 켜진다(`accelerate/accelerator.py:564-593`). 아래 dtype 결론은 모두 이 전제(1차 범위인 단일 GPU 기본 설정)에서만 성립한다. Trainer 자체는 autocast를 걸지 않는다(`transformers/trainer.py:2178-2183`). ref·reward 모델도 `prepare_model(evaluation_mode=True)`로 같은 wrapper를 받는다(wrapper 적용이 evaluation_mode 분기보다 앞, `accelerator.py:1824-1882`). VERIFIED (E3c-B: ref `_original_forward` 존재, E5: reward 모델도)
 - 비-PEFT 정책: `generate`가 `self(...)`를 부르면 감싼 forward가 실행되어 rollout도 bf16 autocast 아래에서 돈다. VERIFIED (E3c-A: conv state bf16)
 - PEFT 정책: `PeftModel.generate` → 내부 transformers 모델의 `generate` → **감싸지 않은 forward**라 autocast가 없다(`peft/peft_model.py:1009-1012, 2229-2250`). VERIFIED (E3c-C: fp32 로드 + LoRA에서 conv state fp32, E3c-G: bf16 로드면 prefill logits bf16)
 - 결과 cache dtype (E3c, E7, 모두 CPU 실측):
@@ -340,7 +351,7 @@ old를 계산하지 않으면 `_compute_loss`가 `per_token_logps.detach()`를 o
 
 ### 5.3 temperature, dtype, 커널
 
-- 반환 logits는 accelerate wrapper 때문에 **fp32**다. lm_head 출력(autocast bf16)의 fp32 복사본이 만들어진다(§4.4). VERIFIED (E3c-C/G/Q/R: 내부 모듈 출력 bf16, wrapper 출력 fp32)
+- 반환 logits는 accelerate native AMP wrapper 때문에 **fp32**다(DeepSpeed·Megatron이거나 mixed precision을 끄면 모델 dtype, §4.4 [검증 보강]). lm_head 출력(autocast bf16)의 fp32 복사본이 만들어진다(§4.4). VERIFIED (E3c-C/G/Q/R: 내부 모듈 출력 bf16, wrapper 출력 fp32)
 - `selective_log_softmax(logits, completion_ids, temperature, row_mask)`: CUDA/XPU이고 dtype과 stride 조건을 만족하면 TRL Triton kernel을 쓴다(`trl/trainer/utils.py:500-532, 535-598`). kernel 안에서 `logits / TEMPERATURE`를 계산하므로 **logits 사본을 만들지 않는다**("Scale inside the kernel", `grpo_trainer.py:1571`; `trl/kernels/logprob_entropy.py:64`). Triton이 없으면(fallback) `temperature != 1.0`일 때만 `logits / temperature` 사본(+4 B/elem)이 생긴다(utils.py:573-574). VERIFIED(소스) / CUDA 실행 INFERRED
 - 출력: `(rows, L)` fp32.
 
@@ -424,10 +435,12 @@ TRL 소스와 같은 할당(출력 fp32 `(B,L)` 4개, logits 저장, backward의
 
 ## 9. 프롬프트 무절단과 completion 상한 (Q9)
 
-- **프롬프트**: TRL 1.14.1 GRPO에는 프롬프트 길이 제한이 없다. `max_prompt_length`는 존재하지 않고(`TypeError`, E5) `_tokenize_prompts`(1769-1846)에는 truncation 인자가 없으며 tokenizer 기본도 `truncation=False`다. 따라서 **엄격 무절단에 필요한 GRPO 설정은 없다(기본 동작이 무절단).** E3b에서 최대 272-token 프롬프트가 그대로 남았다. VERIFIED
+- **프롬프트**: TRL 1.14.1 GRPO에는 프롬프트 길이 제한이 없다. `max_prompt_length`는 존재하지 않고(`TypeError`, E5) `_tokenize_prompts`(1769-1846)에는 truncation 인자가 없으며 tokenizer 기본도 `truncation=False`다. 따라서 **기본 설정에서는 프롬프트가 잘리지 않는다.** E3b에서 최대 272-token 프롬프트가 그대로 남았다(검증 V2: 4,656행 재계산, 최대 272 token(row 2355), user만 매핑하면 268, 빈 system은 모든 행에서 +4). VERIFIED
+- **[검증 수정]** 그러나 무절단이 설정과 무관하게 보장되지는 않는다. `_tokenize_prompts`는 `**self.chat_template_kwargs`를 `apply_chat_template`에 그대로 넘기고(`grpo_trainer.py:1822-1831`), 이 함수는 `truncation`·`max_length`를 이름 있는 인자로 받는다(`transformers/tokenization_utils_base.py:2990-3005`). `chat_template_kwargs={"truncation": True, "max_length": 16}`이면 tokenizer 단독 호출에서 268 → 16 token이 됐고(검증 V2), 실제 `GRPOTrainer` 학습에서도 생성 입력 폭이 98 → 16이 됐다(검증 V4-trunc). 이때 사용자가 넘긴 tokenizer는 `truncation_side="right"`가 기본이라 생성 프롬프트 접미사까지 잘린다. 엄격 무절단 계약에는 "`chat_template_kwargs`에 `truncation`/`max_length` key가 없을 것"이라는 조건이 필요하다. VERIFIED
 - 다만 Transformers 경로는 `P + max_completion_length`가 모델 context를 넘는지 검사하지 않는다. tool loop만 `max_position_embeddings`를 본다(2115-2123). 그래서 context 검사는 우리 쪽(plan.md §7.5)에서 해야 한다. vLLM 경로는 `vllm_max_model_length`가 `최대 프롬프트 + max_completion_length` 이상이어야 한다(`grpo_config.py:659-665` 도움말). VERIFIED(소스)
 - **completion**: `max_completion_length`가 `max_new_tokens`다. 상한에 닿은 completion은 EOS 없이 끝나고 `completions/clipped_ratio`로 기록되며, 기본(`mask_truncated_completions=False`)이면 loss에 **포함**된다. `True`면 해당 행의 `completion_mask`를 0으로 만든다. tensor shape는 그대로라 메모리는 같다(2353-2357, 2539-2547). VERIFIED
 - `max_completion_length=None`은 무제한이 아니다. E3c-L: `max_new_tokens=None`인데 20 token만 생성됐다(transformers 기본 길이). `loss_type="dr_grpo"`에서는 `None × int`라 실패한다(3225). 우리 config는 항상 유한 정수를 써야 한다. VERIFIED
+- **[검증 보강]** 20 token의 코드 경로(미확정 사항 7 해결): TRL이 `max_new_tokens=None`을 넘기고 모델 `generation_config`에도 `max_length`가 없으면 `has_default_max_length=True`다(`transformers/generation/utils.py:2758-2762`). `_prepare_generation_config`가 전역 기본 `max_length=20`(`generation/configuration_utils.py:615`)을 None 자리에 채우고(`generation/utils.py:2085-2086`), `_prepare_generated_length`의 `elif has_default_max_length:  # by default let's always generate 20 new tokens` 분기가 `max_length = 20 + 프롬프트 길이`로 바꾼다(`generation/utils.py:2023-2027`, `max_position_embeddings`로 상한). 검증 V4-none: 입력 98 token → 출력 118 token(+20). VERIFIED. 모델 `generation_config.json`에 `max_length`가 있으면(예시 모델은 없음) 그 절대 길이가 상한이 된다. INFERRED(소스)
 - `pad_to_multiple_of`는 데이터를 자르지 않지만 P와 L을 늘려 메모리를 키운다(§6.4). 기본 None을 유지한다. VERIFIED
 
 ## 10. optimizer step당 phase 타임라인 (Q10)
@@ -439,10 +452,12 @@ TRL 소스와 같은 할당(출력 fp32 `(B,L)` 4개, logits 저장, backward의
 | 0 | 상주 | — | 정책 가중치(+LoRA), (beta≠0 비-PEFT) ref 모델, reward 모델, optimizer state(첫 step 이후), `_buffered_inputs`(작음) | §5.4, §7, §8 |
 | 1 | `ROLLOUT_PREFILL_AND_DECODE` (prefill) | no_grad, GC 끔, train mode. 입력 `(C, P)` 왼쪽 패딩 | prefill activation(no-grad, layer별 순간값), 생성 중 cache, prefill logits `(C,1,V)` | §4.2–4.5 |
 | 2 | 같은 phase (decode) | `L − 1`회 decode | KV `(C, n_kv, T, d)` × n_full이 `T = P + L − 1`까지 증가(cat 순간 +1 layer분), linear state `C × 49.5–51 MiB`, step별 `(C, V)` fp32 logits 사본 | §4.2, §4.5 |
-| 3 | `REWARD` | 텍스트 decode(host), reward 함수 | reward 모델 forward `C × T_reward`(no-grad) 또는 host 계산 | §7 |
-| 4 | (logprob, 조건부) | old: `K % generate_every != 0` 또는 vLLM. ref: `beta != 0` | chunk(B_update행) no-grad forward activation + logits 약 10 B × B_update × (L+1) × V | §5 |
+| 3 | (logprob, 조건부) | old: `K % generate_every != 0` 또는 vLLM. ref: `beta != 0` | chunk(B_update행) no-grad forward activation + logits 약 10 B × B_update × (L+1) × V | §5 |
+| 4 | `REWARD` | 텍스트 decode(host), reward 함수 | reward 모델 forward `C × T_reward`(no-grad) 또는 host 계산. old/ref logp `(C, L)` fp32는 살아 있음(작음) | §7 |
 | 5 | `POLICY_FORWARD_BACKWARD` × K | slice별 `compute_loss` + backward | GC 경계 activation, logits fp32 4 B → backward 8 B × B_update × (L+1) × V, grad(첫 backward부터 window 끝까지 누적) | §6 |
 | 6 | `OPTIMIZER_STEP` | grad clip(`max_grad_norm=1.0`), AdamW fused step, `zero_grad` | grad + optimizer state(첫 step에 생성) + optimizer 임시값 | `transformers/trainer.py:1890-1908` |
+
+**[검증 수정]** 원래 표는 `REWARD`(3)를 조건부 logprob(4)보다 앞에 두었다. 실제 `_generate_and_score_completions`의 순서는 generate(`grpo_trainer.py:2488`) → old/ref logprob(`2686-2791`) → 텍스트 decode(`2793`) → reward(`2809`)다. 위 표는 이 순서로 고쳤다. VERIFIED(소스)
 
 - 정렬 설정에서는 rollout 시점에 **grad가 없다**(None). optimizer state는 두 번째 rollout부터 있다(E3c-T: rollout마다 grad 0, 두 번째 rollout에 state 168개). `generate_every % K != 0`이면 window 중간에 rollout이 일어나 **grad가 살아 있다**(E3c-S: spg=2, K=4 → micro-step 2, 6 rollout 때 grad 56개). VERIFIED
 - 비-PEFT full FT에서 텍스트 전용 데이터면 vision tower 파라미터는 grad를 받지 않고 AdamW state도 생기지 않았다(E3c-S/T: 77개 중 56개만 grad, state 56×3). VERIFIED(CPU)
@@ -488,6 +503,8 @@ b_kv, b_conv:  PEFT/QLoRA → 로드 dtype의 byte(TRL 기본 fp32=4, dtype=bflo
 decode logits: C · V · 4 (+ prefill (C,1,V)); top_k/top_p를 켜면 (C,V) 임시값 추가
 ```
 
+**[검증 보강]** b_kv·b_conv 규칙은 accelerate native AMP(`bf16=True`, 단일 GPU·DDP) 전제에서 검증했다. 검증 V4에서 A(full FT, fp32 로드: K/V fp32, conv bf16), F(full FT, bf16: K/V·conv bf16), C(LoRA, fp32: 전부 fp32, prefill logits fp32), G(LoRA, bf16: K/V·conv bf16, prefill logits bf16)를 다시 재현했다. recurrent state는 모든 경우 fp32였다. DeepSpeed 등 native AMP가 꺼진 경로는 이 규칙을 쓰지 않는다. 표의 수치(161.875 / 323.75 MiB, `C × 49.5 / 51.0 MiB` 등)는 다시 계산해 일치를 확인했다.
+
 공식 적용 예시(예시 모델, C=4, P=272, GPU 실측 아님):
 
 | L (budget) | T_kv | KV bf16 | KV fp32 | linear state (C=4) |
@@ -508,14 +525,14 @@ old/ref no-grad 패스     : 10 · E bytes  (chunk 2개 이상; 1개면 6 · E)
 Triton 없음(fallback)    : backward 16 · E bytes로 profile을 바꾼다
 ```
 
-8E는 logits 관련 항만이다(E4에서 0.2–1.2 B/elem의 나머지는 작은 모델의 다른 activation). 공식 적용 예시(B_update=1, V=248,320, GPU 실측 아님): L=1,024 → 8E = 1.896 GiB, L=2,048 → 3.791 GiB, L=4,096 → 7.580 GiB, L=8,192 → 15.158 GiB. 긴 completion budget에서 가장 큰 항목이다. evidence는 `measured(CPU emulation)`, CUDA는 `analytic`으로 표시하고 M5 GPU 보정 대상에 넣는다.
+전제는 accelerate native AMP(fp32 출력 wrapper)와 Linux CUDA의 Triton 경로다. **[검증 보강]** 독립 tracker로 다시 측정했다(검증 V6: 실제 `GRPOTrainer._full_logits_logps` + accelerate `prepare_model` wrapper + kernel 할당 에뮬레이션, vocab 크기 파라미터는 freeze). forward peak 6.29–6.68, forward 뒤 보관 4.29–4.68, backward peak 8.28–8.67, no-grad 4행·chunk 1은 10.00–10.13 B/elem이었다. 8E는 logits 관련 항만이다(E4에서 0.2–1.2 B/elem의 나머지는 작은 모델의 다른 activation). 공식 적용 예시(B_update=1, V=248,320, GPU 실측 아님): L=1,024 → 8E = 1.896 GiB, L=2,048 → 3.791 GiB, L=4,096 → 7.580 GiB, L=8,192 → 15.158 GiB. 긴 completion budget에서 가장 큰 항목이다. evidence는 `measured(CPU emulation)`, CUDA는 `analytic`으로 표시하고 M5 GPU 보정 대상에 넣는다.
 
 ### R5. 모델 로딩 기본값과 내보내기 config
 
 - 문자열 모델은 `model_init_kwargs.dtype`이 없으면 fp32다. 예시 QLoRA에서는 embedding·lm_head·norm·conv1d·A_log·vision 비양자화 모듈이 모두 fp32이고 rollout KV/conv도 fp32다(E7, E3c-Q). **기본 product preset은 `model_init_kwargs={"dtype": "bfloat16"}`을 명시**하고 requested/resolved에 dtype을 기록한다.
 - QLoRA면 TRL이 trainable 파라미터(LoRA)를 bf16으로 바꾼다(506-513). 비양자화 LoRA는 PEFT 기본으로 fp32 adapter다(E3c-G). `target_modules="all-linear"`는 vision tower Linear에도 adapter를 붙인다(E7: Linear4bit 37개 모두 대상).
 - 예시 모델은 `processing_class=AutoTokenizer.from_pretrained(<id>, revision=<rev>, padding_side="left")`를 명시해서 내보낸다(pinned 환경에 torchvision/Pillow 없음). 그러면 `_is_vlm=False`가 되고 token id는 같다(E3b).
-- `gradient_checkpointing_kwargs`는 `None` 또는 `{"use_reentrant": bool}`만 허용한다. `every_n_layers`/`offload`는 GRPO profile에서 `UNSUPPORTED_OPTION`으로 막는다(§4.3).
+- `gradient_checkpointing_kwargs`는 `None` 또는 `{"use_reentrant": bool}`만 허용한다. `every_n_layers`/`offload`는 GRPO profile에서 `UNSUPPORTED_OPTION`으로 막는다(§4.3). **[검증 수정]** 막는 이유는 "항상 오류"가 아니다. `use_reentrant` 미지정/True면 오류이고, `use_reentrant=False`면 조용히 무시되어 `every_n_layers=1`, offload 없음으로 학습된다. 사용자 config를 그대로 해석해야 하는 경우에도 두 옵션의 메모리 절감은 0으로 계산한다.
 - `cache_implementation`은 None(DynamicCache)만 1차 지원한다. `"quantized"`는 Qwen3.5에서 오류다. `use_vllm`, `use_transformers_continuous_batching`은 1차에서 unsupported로 표시한다(CB는 free memory 50% 예약, vLLM은 별도 엔진).
 - `max_completion_length`는 항상 유한 정수 budget으로 넣고, `None`은 거부한다.
 
@@ -538,7 +555,8 @@ GRPOConfig(
 ### R6. 데이터 변환·coverage 검사
 
 - GRPO 전처리 parity는 `GRPOTrainer._tokenize_prompts`와 같아야 한다(`apply_chat_template(add_generation_prompt=True, tokenize=True)`, special token 추가 없음, truncation 없음). 예시의 빈 `system` 메시지는 4 token을 더한다(272 vs 268). mapping 결정은 화면에 표시한다.
-- coverage 검사기는 `N mod U`, `max_steps`, `num_train_epochs`로 판정하고, 누락이 있으면 `dropped_per_epoch`와 "epoch마다 다른 무작위 프롬프트"라는 사실을 함께 보고한다.
+- **[검증 보강]** 엄격 무절단 검사: `chat_template_kwargs`에 `truncation` 또는 `max_length` key가 있으면 GRPO 무절단 계약 위반으로 거부한다(§9 [검증 수정], 검증 V4-trunc). 우리 전처리 parity 구현도 `chat_template_kwargs`를 TRL과 똑같이 `apply_chat_template`에 넘겨야 같은 token id가 나온다.
+- coverage 검사기는 `N mod U`, `max_steps`, `num_train_epochs`로 판정하고, 누락이 있으면 `dropped_per_epoch`와 "epoch마다 새로 뽑히는 무작위 프롬프트(같은 row가 다시 빠질 수도 있음)"라는 사실을 함께 보고한다.
 
 ### R7. reward·reference ledger
 
@@ -547,7 +565,7 @@ GRPOConfig(
 
 ### R8. phase 스케줄 (TrainerAdapter 출력)
 
-§10 표를 그대로 phase 목록으로 쓴다. `peak = max(phase별 합)`이고 상주분(가중치, optimizer state, ref/reward 모델)은 모든 phase에 더한다. `grads_alive_during_rollout`이 참이면 rollout phase에 grad를 더한다.
+§10 표를 그대로 phase 목록으로 쓴다(검증 후 순서: rollout → 조건부 old/ref logprob → reward → policy forward/backward → optimizer step). `peak = max(phase별 합)`이고 상주분(가중치, optimizer state, ref/reward 모델)은 모든 phase에 더한다. `grads_alive_during_rollout`이 참이면 rollout phase에 grad를 더한다.
 
 ## 미확정 사항 (Open questions)
 
@@ -557,8 +575,8 @@ GRPOConfig(
 4. **decode 중 sampling 임시값**: 모델 권장값(top_k=20, top_p=0.95)을 `generation_kwargs`로 켜면 `(C, V)` 정렬·인덱스 임시값이 생긴다. C가 작을 때는 무시할 수 있지만 정확한 배수는 측정하지 않았다. INFERRED
 5. **vLLM colocate / continuous batching**: 별도 엔진 가중치, KV pool, CUDA graph, `gpu_memory_utilization`/`max_memory_percent` 예약이 학습 phase와 어떻게 겹치는지(sleep mode 포함)는 조사하지 않았다. 1차 범위 밖. UNKNOWN
 6. **다중 GPU**: ZeRO-3의 `ds3_gather_for_generation=True`에서 생성 시 전체 파라미터 gather, FSDP1 `summon_full_params`의 순간 메모리. 소스에서 경로만 확인했다. INFERRED
-7. **`max_completion_length=None`이 20 token이 되는 정확한 원인**: transformers 5.18 `GenerationConfig` 기본 길이 규칙에서 온 것으로 보이지만 정확한 코드 줄은 확인하지 않았다(관측만 VERIFIED).
-8. **`offload` 키 실패**: `every_n_layers`와 같은 경로라 실패할 것으로 추론했고 직접 실행하지는 않았다. INFERRED
+7. ~~**`max_completion_length=None`이 20 token이 되는 정확한 원인**~~ → **검증에서 해결.** `transformers/generation/utils.py:2758-2762, 2085-2086, 2023-2027`과 `generation/configuration_utils.py:615`가 원인이다(§9 [검증 보강]). VERIFIED
+8. ~~**`offload` 키 실패**~~ → **검증에서 해결.** `{"offload": True}`는 `ValueError`이고, `use_reentrant=False`를 함께 주면 오류 없이 offload만 꺼진다(§4.3 [검증 수정] 표, 검증 V4-gcC/gcD). VERIFIED(CPU)
 9. **reward model의 `C × T_reward` activation**: reward tokenizer의 chat template과 모델 구조에 의존한다. local reward model 지원 시 별도 architecture adapter가 필요하다. UNKNOWN
 
 ---
@@ -579,3 +597,55 @@ GRPOConfig(
 | E4b | `e4b_nograd.py bf16 1024`, `ROWS=4` | old/ref 패스(`batch_size=1` chunk) live byte | peak 10.13 B/elem, 출력 `(4, 1024) float32` |
 | E5 | `e5_reward_ref.py` | `max_prompt_length` 거부, reward 없음, `sync_ref_model` 제약, reward 모델 id 로딩(tiny `LlamaForSequenceClassification`, bf16 저장) | §7, §8 메시지와 dtype |
 | E7 | `e7_qlora.py <none\|bfloat16>` | 실제 `GRPOTrainer` QLoRA(nf4, double quant, compute bf16) 로드와 1 step 학습(bitsandbytes CPU backend) | dtype 없음: 비양자화 40개 fp32, Linear4bit 37개(vision 포함), LoRA bf16. 1 step 성공 |
+
+---
+
+## 검증 로그 (Verification log)
+
+검증자는 `verify-trl-grpo`이고 날짜는 2026-10-04다. 원 문서에서 구현에 직접 들어가는 주장(기본값, 배치 공식, coverage, 무절단, cache·logits byte 공식, dtype, phase 순서, 호환성 결론)을 골라 설치된 소스를 다시 읽었다. 원 실험 스크립트(E1–E7)는 쓰지 않고 독립 실험 V1–V6으로 재현했다.
+
+- VERIFIED: 소스를 다시 읽었거나 독립 실험으로 재현했다.
+- CORRECTED: 틀렸거나 과장되어 본문을 고쳤다(**[검증 수정]** 표시).
+- UNVERIFIABLE: 이 머신(macOS arm64, CPU)에서 확인할 수 없다.
+
+| # | 원 문서 주장 | 판정 | 근거 (한 줄) |
+|---|---|---|---|
+| 1 | `GRPOConfig`에 `max_prompt_length`가 없어 `TypeError`가 난다 | VERIFIED | V1: `TypeError: GRPOConfig.__init__() got an unexpected keyword argument 'max_prompt_length'`. 이름에 `prompt`가 들어간 필드는 `log_unique_prompts` 하나다 |
+| 2 | 프롬프트는 어떤 설정으로도 잘리지 않는다 | CORRECTED | `grpo_trainer.py:1822-1831`이 `**chat_template_kwargs`를 `apply_chat_template`(`tokenization_utils_base.py:2990-3005`의 `truncation`/`max_length` 인자)에 넘긴다. V2에서 268 → 16 token, V4-trunc의 실제 학습에서 생성 입력 폭 98 → 16. 기본값에서 무절단인 것은 맞다 |
+| 3 | gbs/spg 해석, `gbs % (B·W)`, `gbs % G`, `G >= 2`, `auto_find_batch_size` 금지 | VERIFIED | `grpo_config.py:1076-1128`을 다시 읽었다. V1에서 원 E1 표 9가지를 같은 메시지로 재현했다. 추가로 G=4, gbs=4, B=1, K=3 → spg=4가 허용됐다(K는 G와 무관) |
+| 4 | 기본값: G=8, B=8, K=1 → gbs=8·spg=1, `max_completion_length=512`, `beta=0`, `dapo`, `scale_rewards="group"`, ε=0.2, 1.0/1.0/0, vLLM 끔, `cache_implementation=None`, GC 켬, bf16 켬, `adamw_torch_fused`, 3 epoch, seed 42, lr 1e-6 | VERIFIED | V1 `GRPOConfig` dump가 모두 일치했다. `trl/trainer/base_config.py:61-74, 104-105` |
+| 5 | TRL의 1.0/1.0/0이 모델 `generation_config.json`의 0.6/0.95/20을 덮어쓴다 | VERIFIED | transformers 5.18 `_prepare_generation_config`는 넘긴 config의 None 값만 모델 값으로 채운다(`generation/utils.py:2085-2086`, `generation/configuration_utils.py:1364`). TRL의 override는 transformers 5 이상에서 no-op이다(`trl/models/utils.py:174-180`). V4: MiMo `generation_config.json`을 넣은 tiny 모델에서 `_sample` 안의 실효값은 1.0/0/1.0, eos 248046 하나, logits processor 0개였다 |
+| 6 | `RepeatSampler`가 epoch마다 `N mod U`개를 버리고, epoch마다 다른 무작위 프롬프트가 빠진다 | VERIFIED (표현 보강) | `trl/trainer/utils.py:890-912`를 다시 읽었다. generator는 `__init__`에서만 seed되고 `set_epoch`가 없다. V3: N=4,656, U=5/7/32에서 누락 1/1/16. N=10, U=3, 4 epoch의 누락 row는 7, 2, 2, 6이었다. 매 epoch 새로 뽑지만 같은 row가 다시 빠질 수 있다 |
+| 7 | 예시(G=4, gbs=4, B=1, K=4, W=1): spg=4, U=1, C=4, 누락 0, micro-step 18,624, optimizer step 4,656/epoch, 3 epoch 13,968 | VERIFIED | V3(실제 `RepeatSampler` + `BatchSampler`): unique 4,656, micro-step 18,624. `transformers/trainer.py:2466-2475`가 `ceil(len_dataloader / K)`이므로 4,656이고, `max_steps = ceil(3 × 4,656) = 13,968`이다 |
+| 8 | rollout은 C = B·spg행을 left-pad해 `generate` 1회로 처리한다. train mode, GC 끔, prefill `logits_to_keep=1`, 최종 KV 길이 P + L − 1 | VERIFIED | `grpo_trainer.py:1895-1944`, `generation/utils.py:2920-2924`를 다시 읽었다. V4: `training=True`, GC 꺼짐, prefill logits `(2,1,248320)`, P=98·L=6 → K 길이 103. 한 step을 더 도는 `DeferredStopCheck`는 MPS 전용이다(`generation/utils.py:432-441`) |
+| 9 | Qwen3.5 cache = DynamicCache(full → DynamicLayer, linear → LinearAttentionLayer), conv `(C, 8192, 4)`, recurrent `(C, 32, 128, 128)` fp32, `"quantized"`는 오류, R3 수치 | VERIFIED | `cache_utils.py:1249-1258, 1961-1966`, `modeling_qwen3_5.py:520(conv_dim), 406(fp32 state)`를 다시 읽었다. MiMo config로 conv_dim 8,192를 확인했다. V4 tiny: conv `(2,128,4)`, rec `(2,4,16,16)` fp32. R3 표의 수치(161.875 MiB 등)와 `C × 49.5/51.0 MiB`를 다시 계산했다 |
+| 10 | TRL은 문자열 모델을 fp32로 로드하고, PEFT `generate`는 autocast wrapper를 우회한다. dtype 표 A/F/C/G/Q/R | VERIFIED (Q/R은 소스만) | `trl/trainer/utils.py:1292-1296`(dtype 기본 `"float32"`), `peft/peft_model.py:1009-1012, 2229-2250`, accelerate `unwrap_model(keep_fp32_wrapper=True)` 기본값(`accelerate/accelerator.py:3254`, 그래서 비-PEFT 정책의 `generate`는 wrapper를 유지한다). V4에서 A·F·C·G 행이 모두 일치했다. QLoRA Q/R은 다시 실행하지 않았다. `bitsandbytes` `Linear4bit.forward`가 출력을 `inp_dtype`으로 되돌리는 코드와는 맞는다 |
+| 11 | old logp는 `K % (spg·μ) != 0` 또는 vLLM IS일 때, ref는 `beta != 0`일 때 계산한다. chunk = B_update, `logits_to_keep = L`, 모델에는 L + 1 | VERIFIED (소스) | `grpo_trainer.py:2686-2791, 2556-2557, 1551-1569`를 다시 읽었다. 호출 횟수는 재실행하지 않았다 |
+| 12 | 학습 logits는 항상 fp32다 | CORRECTED | accelerate의 bf16 native AMP 분기는 DeepSpeed·Megatron을 제외하고(`accelerate/accelerator.py:586-593`), mixed precision을 끄면 wrapper가 없다. 기본 단일 GPU 설정에서는 fp32가 맞다 |
+| 13 | fused kernel의 logits 항: forward 6E, 보관 4E, backward 8E, no-grad 2개 이상 chunk 10E | VERIFIED (CPU emulation) / INFERRED (CUDA) | `trl/kernels/logprob_entropy.py:165-168, 192, 210`, `trl/trainer/utils.py:507-532`를 다시 읽었다. V6 독립 tracker 결과는 6.29–6.68 / 4.29–4.68 / 8.28–8.67 / 10.00–10.13 B/elem이다. torch 2.14.1 metadata가 Linux에 `triton~=3.8.0`을 요구하므로 Linux CUDA에서는 fused 경로가 기본이다 |
+| 14 | micro-batch 폭 = generation batch 전체의 최대 P·L, `pad_to_multiple_of`는 둘 다 올린다 | VERIFIED (소스) | `grpo_trainer.py:2492-2514`(prompt는 left, completion은 right, 둘 다 `pad_to_multiple_of` 적용), `1621-1631`(split만 하고 다시 자르지 않음) |
+| 15 | 정렬 설정이면 rollout 때 grad가 없고 아니면 살아 있다. optimizer state는 2번째 rollout부터 있다. vision 파라미터는 grad·state가 없다 | VERIFIED | V5-S(spg=2, K=4): micro-step 2·6의 rollout 때 grad 56개, 4에서는 grad 0개 + state 56개. V5-T(spg=K=2): 매번 grad 0개, 2번째부터 state 56개. vision 파라미터 21개는 `requires_grad=True`지만 state가 없었다. `trainer.py:1908`, `torch/nn/modules/module.py:2957` |
+| 16 | reward 모델은 `AutoModelForSequenceClassification(num_labels=1, **model_init_kwargs)`로 로드한다. dtype 미지정이면 `"auto"`, GPU 상주, C행을 한 번에 `inference_mode`로 처리, reward source가 없으면 init에서 ValueError | VERIFIED (소스) | `grpo_trainer.py:515-537, 705-711, 1159-1167, 1690-1705`, `transformers/modeling_utils.py:4106-4107`. 원 E5는 재실행하지 않았다 |
+| 17 | `every_n_layers`는 첫 학습 forward에서 ValueError가 나고, `offload`도 같을 것이다(INFERRED) | CORRECTED | 오류는 torch reentrant 경로에서만 난다(`torch/utils/checkpoint.py:635-649`). V4: `{"every_n_layers": 2}`, `{"offload": True}`는 ValueError였다(offload도 이제 VERIFIED). `use_reentrant=False`를 함께 주면 오류 없이 학습되며 `every_n_layers`는 1이 되고 offload는 꺼진다 |
+| 18 | `max_completion_length=None`이면 약 20 token이 생성되고 `dr_grpo`는 실패한다 | VERIFIED (원인 확정) | V4-none: 98 → 118 token. 코드 경로는 `generation/utils.py:2758-2762, 2085-2086, 2023-2027`과 `configuration_utils.py:615`다. `dr_grpo` 실패 위치는 `grpo_trainer.py:3225` |
+| 19 | phase 순서: REWARD 다음에 조건부 logprob | CORRECTED | 실제 순서는 generate(2488) → old/ref logprob(2686-2791) → decode(2793) → reward(2809)다. §10 표와 R8을 고쳤다 |
+| 20 | 기본 processing class(`AutoProcessor`)는 Pillow·torchvision이 필요하고 pinned venv에는 둘 다 없다 | VERIFIED | `importlib.metadata`로 공용 venv를 확인했다. pillow, torchvision, triton, fla, causal-conv1d, kernels, liger-kernel, vllm이 모두 없다. 공용 venv에서 `AutoProcessor.from_pretrained` → `ValueError: Could not load any image processor class ...` |
+
+### 검증 실험 (V1–V6)
+
+모두 공용 venv를 수정 없이 사용했다. 명령은 `HF_HOME=/tmp/vf-research/hf HF_HUB_OFFLINE=1 /tmp/vf-research/.venv/bin/python <script>`이고, 스크립트는 저장소 밖 `/tmp/vf-research/scratch/verify-trl-grpo/`에 있다. tokenizer를 직접 넘겨서 overlay venv(Pillow·torchvision)가 필요 없었다.
+
+| ID | 스크립트 (인자) | 내용 | 핵심 출력 |
+|---|---|---|---|
+| V1 | `v1_config.py` | `GRPOConfig` 기본값 dump, 검증 규칙 12가지 | §1 기본값 일치, `max_prompt_length` `TypeError` |
+| V2 | `v2_prompts.py` | MiMo tokenizer로 4,656행 GRPO 프롬프트 길이 재계산, `chat_template_kwargs` truncation | system+user 최대 272(row 2355), user만 268, 차이는 모든 행에서 4. `{"truncation": True, "max_length": 16}` → 16 |
+| V3 | `v3_sampler.py` | 실제 `RepeatSampler` + `BatchSampler` + accelerate `BatchSamplerShard` coverage | 예시는 unique 4,656, micro-step 18,624, step 4,656/epoch. 다중 epoch에서 누락 row를 새로 뽑음 |
+| V4 | `make_tiny_v.py`, `v4_trainer_probe.py <base\|fullF\|loraC\|loraG\|gcA\|gcB\|gcC\|gcD\|trunc\|none>` | 독자 tiny `Qwen3_5ForConditionalGeneration`(hidden 64, linear 3 + full 1, head_dim 64, kv 1, linear k/v heads 2/4·dim 16, vocab 248,320, vision depth 1, MiMo `generation_config.json` 복사, 32,125,320 params)로 실제 `GRPOTrainer.train()`을 실행하고 `_sample`·`_prefill`·layer pre-hook으로 probe | 실효 샘플링 값, cache class·shape·dtype, GC 상태, GC kwargs 4가지 결과, truncation, `None` budget |
+| V5 | `v5_grad_probe.py <S\|T>` | rollout 시점의 grad 수와 optimizer state 수, vision 파라미터 state | S: 0/56/0(+state 56)/56, T: 0/0/0(state는 2번째부터 56), vision state 0 |
+| V6 | `v6_logits_mem.py <L> <bf16\|fp32> [rows]` | 독자 `TorchDispatchMode` + `StorageWeakRef` live-storage tracker. 실제 `GRPOTrainer._full_logits_logps`, accelerate `prepare_model`(bf16 native AMP, CPU), kernel 할당 에뮬레이션 | L=256/1024: forward 6.68/6.29, 보관 4.68/4.29, backward 8.67/8.28 B/elem. no-grad 4행·chunk 1: 10.13(bf16)/10.00(fp32) |
+
+### 남은 위험
+
+- CUDA 실측이 없다. 6E/8E/10E와 KV·linear state 공식은 CPU 재현과 소스에 근거한다. CUDA caching allocator의 반올림과 fragmentation은 M5에서 확인해야 한다.
+- QLoRA dtype 행(Q/R), reward 모델 dtype, old/ref 호출 횟수는 다시 실행하지 않았다(소스 재독만 했다).
+- `use_reentrant=False`일 때 남는 `every_n_layers`/`offload` key는 decoder layer kwargs로 흘러간다. CPU SDPA 경로에서는 무시됐지만 CUDA attention backend(flash-attn 등)에서도 무시되는지는 실행하지 않았다. INFERRED
