@@ -122,7 +122,11 @@ export function ProgressPanel({
       ) : null}
 
       {progress && (progress.processed_rows != null || progress.shard_progress) ? <RowsProgress progress={progress} active={active} /> : null}
-      {progress?.message ? <p className="mt-2 text-[13px] text-ink-2">{progress.message}</p> : null}
+      {/* At the end the panel writes its own note for these; the server's closing message would
+          repeat it ("분석을 마쳤습니다." twice). */}
+      {progress?.message && !(status === "COMPLETED" || status === "PARTIAL" || status === "CANCELLED") ? (
+        <p className="mt-2 text-[13px] text-ink-2">{progress.message}</p>
+      ) : null}
 
       <div aria-live="polite" className="mt-2 flex flex-col gap-2">
         {active && run.connection === "reconnecting" ? (

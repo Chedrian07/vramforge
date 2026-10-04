@@ -90,6 +90,9 @@ describe("progress panel", () => {
     renderPanel(terminal(cancelled));
     const steps = within(screen.getByRole("list", { name: "분석 단계" })).getAllByRole("listitem");
     expect(steps.map((s) => s.textContent)).toEqual(["✓구조 확인완료", "!데이터 토큰화중단", "3배치 분석대기", "4메모리 산정대기"]);
+    // The panel's own note replaces the server's closing message instead of repeating it.
+    expect(screen.getByText("분석을 취소했습니다.")).toBeInTheDocument();
+    expect(screen.queryByText("사용자 요청으로 취소되었습니다.")).not.toBeInTheDocument();
 
     // An issue without a pipeline stage (worker stopped): the furthest stage seen on this page.
     const stopped = { ...cancelled, error: { ...cancelled.error, stage: "api" as const } };
@@ -106,6 +109,13 @@ describe("progress panel", () => {
       "pending",
       "pending",
     ]);
+  });
+
+  it("says once that the analysis finished", () => {
+    // The API's closing progress (store.finish) carries the same sentence the panel writes.
+    renderPanel(terminal({ ...completedGrpoStatus, progress: { stage: "COMPLETED", message: "분석을 마쳤습니다." } }));
+    expect(screen.getAllByText(/분석을 마쳤습니다/)).toHaveLength(1);
+    expect(screen.getByText("분석을 마쳤습니다. 결과는 요약 카드와 아래 탭에 있습니다.")).toBeInTheDocument();
   });
 
   it("shows the ending event's status and issue while the final status is missing", () => {
