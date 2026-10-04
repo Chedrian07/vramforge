@@ -35,7 +35,10 @@ export interface paths {
         get: operations["get_analysis_api_v1_analyses__analysis_id__get"];
         put?: never;
         post?: never;
-        /** Delete Analysis */
+        /**
+         * Delete Analysis
+         * @description Delete the analysis, its events and artifacts, and uploads only it referenced.
+         */
         delete: operations["delete_analysis_api_v1_analyses__analysis_id__delete"];
         options?: never;
         head?: never;
@@ -69,6 +72,13 @@ export interface paths {
         /**
          * Analysis Events
          * @description Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.
+         *
+         *     Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:
+         *     `progress` (stage changes and coalesced scan progress), `partial_result` (refetch the
+         *     analysis for the result so far), `warning`, and the terminal types `completed`, `failed`
+         *     (status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`
+         *     and `needs_input`. The stream ends after a terminal event; reconnecting with the last id
+         *     of a finished analysis returns 204. `after` resumes without the header (first connect).
          */
         get: operations["analysis_events_api_v1_analyses__analysis_id__events_get"];
         put?: never;
@@ -193,6 +203,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Status
+         * @description Whether an access token is required and whether this browser already has access.
+         */
+        get: operations["session_status_api_v1_session_get"];
+        put?: never;
+        /**
+         * Login
+         * @description Exchange the access token for the httpOnly `vf_access` cookie (EventSource-friendly).
+         */
+        post: operations["login_api_v1_session_post"];
+        /**
+         * Logout
+         * @description Forget the access cookie.
+         */
+        delete: operations["logout_api_v1_session_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/inspect": {
         parameters: {
             query?: never;
@@ -225,6 +263,9 @@ export interface paths {
         /**
          * Upload Dataset
          * @description Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.
+         *
+         *     Streams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap; the
+         *     extension must match the content. Use the returned `reference` as the dataset reference.
          */
         post: operations["upload_dataset_api_v1_uploads_post"];
         delete?: never;
@@ -1974,6 +2015,21 @@ export interface components {
              */
             include_evaluation: boolean;
         };
+        /** SessionLogin */
+        SessionLogin: {
+            /** Token */
+            token: string;
+        };
+        /**
+         * SessionStatus
+         * @description Whether the deployment requires an access token and whether this browser has one.
+         */
+        SessionStatus: {
+            /** Auth Required */
+            auth_required: boolean;
+            /** Authenticated */
+            authenticated: boolean;
+        };
         /**
          * Severity
          * @enum {string}
@@ -2357,6 +2413,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Job queue unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_analysis_api_v1_analyses__analysis_id__get: {
@@ -2614,7 +2679,10 @@ export interface operations {
     };
     analysis_events_api_v1_analyses__analysis_id__events_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Resume after this event id */
+                after?: number | null;
+            };
             header?: {
                 "Last-Event-ID"?: string | null;
             };
@@ -2633,6 +2701,13 @@ export interface operations {
                 content: {
                     "text/event-stream": unknown;
                 };
+            };
+            /** @description Finished analysis with no events after Last-Event-ID */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Invalid request */
             400: {
@@ -3148,6 +3223,259 @@ export interface operations {
             };
         };
     };
+    session_status_api_v1_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionStatus"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Access token required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden (owner mismatch or CSRF header missing) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation or compatibility error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Concurrency limit */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    login_api_v1_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionLogin"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionStatus"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Access token required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden (owner mismatch or CSRF header missing) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation or compatibility error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Concurrency limit */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logout_api_v1_session_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionStatus"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Access token required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden (owner mismatch or CSRF header missing) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation or compatibility error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Concurrency limit */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     inspect_sources_api_v1_sources_inspect_post: {
         parameters: {
             query?: never;
@@ -3295,6 +3623,24 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Upload too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description File type not allowed */
+            415: {
                 headers: {
                     [name: string]: unknown;
                 };
