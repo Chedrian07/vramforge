@@ -1,4 +1,8 @@
+import { readFile } from "node:fs/promises";
+
 import { expect, test } from "@playwright/test";
+
+import type { AnalysisResult } from "../../lib/api/types";
 
 import { ANALYSIS_TIMEOUT, isDevMock, loadExample, startAnalysis, summary, waitForCompletion } from "./helpers";
 
@@ -26,4 +30,17 @@ test("changing LoRA r recomputes from cached lengths without a new scan", async 
   expect(newAnalyses).toHaveLength(0);
   await page.getByRole("tab", { name: "비교" }).click();
   await expect(page.getByRole("table", { name: "기준 분석 대비 변경별 차이" })).toContainText("LoRA r 16 → 64");
+
+  // Exports follow the screen: the recomputed scenario's request is posted (plan.md §12.4).
+  await page.getByRole("button", { name: "결과 내보내기" }).click();
+  const menu = page.getByRole("dialog", { name: "결과 내보내기" });
+  await expect(menu.getByRole("note")).toContainText("재계산 시나리오 (LoRA r 16 → 64)");
+  const exportRequest = page.waitForRequest((r) => r.method() === "POST" && new URL(r.url()).pathname.endsWith("/scenarios/export"));
+  const downloadPromise = page.waitForEvent("download");
+  await menu.getByRole("button", { name: /analysis.json/ }).click();
+  expect((await exportRequest).postDataJSON()).toMatchObject({ format: "json", request: { training: { lora: { r: 64 } } } });
+  const download = await downloadPromise;
+  const exported = JSON.parse(await readFile((await download.path())!, "utf8")) as AnalysisResult;
+  expect(exported.resolved_config?.lora?.r).toBe(64);
+  expect(newAnalyses).toHaveLength(0);
 });
