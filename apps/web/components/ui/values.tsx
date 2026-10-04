@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
 import { exactBytes, exactBytesRange, formatGiBRange, formatSize, formatSizeRange } from "@/lib/format/bytes";
@@ -23,7 +23,7 @@ export function NotComputed({ reason, compact = false }: { reason?: string | nul
 export function Bytes({ value, reason, className }: { value: number | null | undefined; reason?: string | null; className?: string }) {
   if (value == null) return <NotComputed reason={reason} compact />;
   return (
-    <InfoTip label={<span className={cn("num", className)}>{formatSize(value)}</span>}>
+    <InfoTip label={<span className={cn("num whitespace-nowrap", className)}>{formatSize(value)}</span>}>
       <span className="num">{exactBytes(value)}</span>
     </InfoTip>
   );
@@ -46,9 +46,28 @@ export function BytesRange({
   const text = unit === "gib" ? formatGiBRange(low, high) : formatSizeRange(low, high);
   if (text == null) return <NotComputed reason={reason} compact />;
   return (
-    <InfoTip label={<span className={cn("num", className)}>{text}</span>}>
+    <InfoTip label={<span className={cn("num", className)}>{keepBoundsWhole(text)}</span>}>
       <span className="num">{exactBytesRange(low, high)}</span>
     </InfoTip>
+  );
+}
+
+/**
+ * "9.2 GiB – 9.9 GiB" may wrap only before the dash: a bound ("9.9 GiB") never splits from its
+ * unit, also in a narrow table column. The text content stays exactly the formatted string.
+ */
+function keepBoundsWhole(text: string): ReactNode {
+  const [first, ...rest] = text.split(" – ");
+  return (
+    <>
+      <span className="whitespace-nowrap">{first}</span>
+      {rest.map((bound, i) => (
+        <Fragment key={i}>
+          {" "}
+          <span className="whitespace-nowrap">– {bound}</span>
+        </Fragment>
+      ))}
+    </>
   );
 }
 

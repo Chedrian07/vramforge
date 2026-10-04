@@ -4,7 +4,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CopyButton, Segmented, SwitchField } from "@/components/ui/controls";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Ident, identParts } from "@/components/ui/primitives";
 import { Bytes, BytesRange, IssueList } from "@/components/ui/values";
 
 import { renderWithProviders } from "../utils/render";
@@ -57,6 +57,45 @@ describe("ui primitives", () => {
     );
     expect(screen.getAllByText("산정 불가")).toHaveLength(2);
     expect(screen.queryByText(/0\.0/)).not.toBeInTheDocument();
+  });
+
+  it("keeps short badge labels on one line and lets long ones wrap only between words", () => {
+    renderWithProviders(
+      <>
+        <Badge tone="info">분석식</Badge>
+        <Badge tone="ok">GRPO · QLoRA — 정적 추정 · 준비됨 (선택)</Badge>
+      </>,
+    );
+    expect(screen.getByText("분석식")).toHaveClass("whitespace-nowrap");
+    const long = screen.getByText("GRPO · QLoRA — 정적 추정 · 준비됨 (선택)");
+    expect(long).toHaveClass("break-keep", "wrap-break-word");
+    expect(long).not.toHaveClass("whitespace-nowrap");
+  });
+
+  it("breaks identifiers at their separators and long runs, keeping the text intact", () => {
+    expect(identParts("MODEL_LOAD_AND_QUANTIZE:policy_device_map_check")).toEqual([
+      "MODEL_",
+      "LOAD_",
+      "AND_",
+      "QUANTIZE:",
+      "policy_",
+      "device_",
+      "map_",
+      "check",
+    ]);
+    expect(identParts("2367e865d009c13ac81713a2878291d33ab28177")).toEqual(["2367e865d009c13a", "c81713a2878291d3", "3ab28177"]);
+    expect(identParts("—")).toEqual(["—"]);
+    const { container } = renderWithProviders(<Ident>weights.base.q4_payload</Ident>);
+    const ident = screen.getByText("weights.base.q4_payload");
+    expect(ident).toHaveTextContent(/^weights\.base\.q4_payload$/);
+    expect(container.querySelectorAll("wbr")).toHaveLength(3);
+  });
+
+  it("keeps each bound of a size range with its unit", () => {
+    renderWithProviders(<BytesRange low={9_908_669_550} high={10_660_288_827} />);
+    const bounds = screen.getAllByText(/GiB/).filter((el) => el.classList.contains("whitespace-nowrap"));
+    expect(bounds.map((el) => el.textContent)).toEqual(["9.2 GiB", "– 9.9 GiB"]);
+    expect(bounds[0]!.parentElement).toHaveTextContent(/^9\.2 GiB – 9\.9 GiB$/);
   });
 
   it("limits issue lists and points to the evidence tab", () => {

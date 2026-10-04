@@ -121,11 +121,17 @@ export function LegendSwatch({ color, shape = "rect" }: { color: string; shape?:
   );
 }
 
-/** Simple accessible data table shell with a caption and horizontal scroll inside the card only. */
+/**
+ * Simple accessible data table shell with a caption and horizontal scroll inside the card only.
+ * The table is as wide as its content needs: Korean words stay whole (keep-all), identifiers
+ * wrap at their separators (`Ident`) and sizes keep their unit, so no column is squeezed to one
+ * character per line. When that minimum is wider than the card (phones), the table scrolls
+ * sideways inside its frame and the page never does.
+ */
 export function DataTable({ caption, head, children, captionHidden = false }: { caption: string; head: ReactNode; children: ReactNode; captionHidden?: boolean }) {
   return (
     <div className="max-w-full overflow-x-auto rounded-lg border border-line">
-      <table className="w-full min-w-[28rem] border-collapse text-[13px]">
+      <table className="w-full border-collapse break-keep text-[13px]">
         <caption className={cn("px-3 py-2 text-left text-[12px] font-medium text-muted", captionHidden && "sr-only")}>{caption}</caption>
         <thead className="bg-surface-2 text-left text-[12px] text-muted">{head}</thead>
         <tbody>{children}</tbody>
@@ -136,12 +142,20 @@ export function DataTable({ caption, head, children, captionHidden = false }: { 
 
 export function Th({ children, className, align = "left" }: { children: ReactNode; className?: string; align?: "left" | "right" }) {
   return (
-    <th scope="col" className={cn("px-3 py-2 font-medium", align === "right" && "text-right", className)}>
+    <th scope="col" className={cn("px-3 py-2 font-medium whitespace-nowrap", align === "right" && "text-right", className)}>
       {children}
     </th>
   );
 }
 
-export function Td({ children, className, align = "left" }: { children: ReactNode; className?: string; align?: "left" | "right" }) {
-  return <td className={cn("border-t border-line/70 px-3 py-2 align-top", align === "right" && "text-right", className)}>{children}</td>;
+/**
+ * Right-aligned cells hold numbers (sizes, counts) and stay on one line. `prose`: a free-text
+ * column (notes, reasons) that keeps a readable width instead of shrinking to its longest word.
+ */
+export function Td({ children, className, align = "left", prose = false }: { children: ReactNode; className?: string; align?: "left" | "right"; prose?: boolean }) {
+  return (
+    <td className={cn("border-t border-line/70 px-3 py-2 align-top", align === "right" && "text-right whitespace-nowrap", prose && "min-w-48", className)}>
+      {children}
+    </td>
+  );
 }

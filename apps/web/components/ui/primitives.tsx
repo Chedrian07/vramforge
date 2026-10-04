@@ -2,6 +2,7 @@
 
 import { Tooltip } from "radix-ui";
 import {
+  Fragment,
   forwardRef,
   useId,
   type ButtonHTMLAttributes,
@@ -136,8 +137,16 @@ export const TONE_CLASS: Record<Tone, string> = {
 
 const TONE_GLYPH: Record<Tone, string> = { ok: "✓", warn: "!", err: "×", info: "i", neutral: "–" };
 
-/** Status pill: tone colour AND a text label (never colour alone). */
+/** Labels up to this length ("분석식", "판정 안 함", "제외") never wrap. */
+const SHORT_BADGE_LABEL = 12;
+
+/**
+ * Status pill: tone colour AND a text label (never colour alone). A short label stays on one
+ * line and a longer one wraps between words only: in a narrow table cell or flex row a pill is
+ * never broken syllable by syllable (Korean breaks between any two syllables by default).
+ */
 export function Badge({ tone, children, className, title }: { tone: Tone; children: ReactNode; className?: string; title?: string }) {
+  const short = typeof children === "string" && children.length <= SHORT_BADGE_LABEL;
   return (
     <span
       title={title}
@@ -150,7 +159,7 @@ export function Badge({ tone, children, className, title }: { tone: Tone; childr
       <span aria-hidden className="font-mono text-[11px]">
         {TONE_GLYPH[tone]}
       </span>
-      <span className="min-w-0 wrap-anywhere">{children}</span>
+      <span className={cn("min-w-0", short ? "whitespace-nowrap" : "break-keep wrap-break-word")}>{children}</span>
     </span>
   );
 }
@@ -184,6 +193,35 @@ export function SectionTitle({ children, id, aside }: { children: ReactNode; id?
 /** Monospace identifier that wraps instead of overflowing (plan §3.2). */
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={cn("font-mono text-[13px] wrap-anywhere", className)}>{children}</span>;
+}
+
+/** Break points of an identifier: after a separator, and inside long runs without one. */
+const IDENT_SEPARATOR = /(?<=[._:/@,=#-])/;
+const IDENT_RUN = 16;
+
+export function identParts(text: string): string[] {
+  return text
+    .split(IDENT_SEPARATOR)
+    .flatMap((part) => (part.length <= IDENT_RUN ? [part] : (part.match(new RegExp(`.{1,${IDENT_RUN}}`, "gu")) ?? [part])));
+}
+
+/**
+ * Monospace identifier for table cells (allocation names, timepoints, config fields): it wraps
+ * at its separators (`.`, `_`, `:` …), never at an arbitrary character. `Mono` may break
+ * anywhere, and inside an auto-layout table that lets the browser squeeze the column to one
+ * character per line.
+ */
+export function Ident({ children, className }: { children: string; className?: string }) {
+  return (
+    <span className={cn("font-mono text-[13px] wrap-break-word", className)}>
+      {identParts(children).map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 ? <wbr /> : null}
+          {part}
+        </Fragment>
+      ))}
+    </span>
+  );
 }
 
 export function InfoTip({ label, children, className }: { label: ReactNode; children: ReactNode; className?: string }) {
