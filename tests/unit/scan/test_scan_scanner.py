@@ -271,3 +271,17 @@ def test_template_loss_and_system_omission_are_reported(make_stream, adapter, ct
     loss = [i for i in out.issues if i.code is ErrorCode.TEMPLATE_CONTENT_LOSS]
     assert loss and loss[0].details["row_ids"] == ["train:1"]
     assert "2개 row에서 system 메시지를 생략" in out.result.transformation_note
+
+
+def test_reader_decode_failures_keep_their_reason(make_stream, adapter, ctx) -> None:
+    out = scan(make_stream(rows(), decode_fail_at=2), adapter, ctx)
+    res = out.result
+    assert res.rows_seen == 7 and res.rows_failed == 1 and res.rows_ok == 6
+    failed = res.failed_rows_sample[0]
+    assert failed.row_id == "train:2" and failed.error_code is ErrorCode.SCAN_FAILED_ROWS
+    assert failed.message == "JSON으로 해석할 수 없는 레코드입니다"
+    assert "train:2" not in adapter.calls  # nothing to tokenize
+    assert res.coverage is ScanCoverage.PARTIAL  # the reader did not confirm a full read
+    codes = [i.code for i in out.issues]
+    assert codes == [ErrorCode.SCAN_FAILED_ROWS, ErrorCode.SCAN_FAILED_ROWS]
+    assert out.issues[0].user_message.startswith("해석할 수 없는 레코드")  # reader's own issue

@@ -14,7 +14,15 @@ from vramforge_estimator.inspection import SourceRow
 from vramforge_estimator.preprocessing import TokenizedRecord
 from vramforge_estimator.preprocessing.mapping import content_digest
 from vramforge_estimator.scan import ScanLimits
-from vramforge_estimator.schemas import ErrorCode, JobProgress, Objective
+from vramforge_estimator.schemas import ErrorCode, Issue, JobProgress, Objective, Severity
+
+
+@dataclass(frozen=True)
+class DecodeFailedRow(SourceRow):
+    """Shape of inspection's FailedSourceRow: no columns, a code and a Korean message."""
+
+    error_code: ErrorCode = ErrorCode.SCAN_FAILED_ROWS
+    message: str = ""
 
 
 class WorkerDied(RuntimeError):
@@ -34,6 +42,7 @@ class FakeStream:
         stop_early_at: int | None = None,
         fail_at: int | None = None,
         rows_per_shard: int | None = None,
+        decode_fail_at: int | None = None,
     ) -> None:
         self.rows = rows
         self.split = split
@@ -43,11 +52,14 @@ class FakeStream:
         self.stop_early_at = stop_early_at
         self.fail_at = fail_at
         self.rows_per_shard = rows_per_shard
+        self.decode_fail_at = decode_fail_at
+        self.issues: list[Issue] = []
         self._complete = False
         self._shards_done = 0
 
     def __iter__(self) -> Iterator[SourceRow]:
         self._complete = False
+        self.issues = []
         for i, row in enumerate(self.rows):
             if self.fail_at is not None and i == self.fail_at:
                 raise OSError("simulated read failure")
@@ -55,8 +67,25 @@ class FakeStream:
                 return  # quota/cancel inside the reader: EOF not reached
             shard_index = i // self.rows_per_shard if self.rows_per_shard else 0
             self._shards_done = shard_index
+            if i == self.decode_fail_at:
+                yield DecodeFailedRow(
+                    row_index=i,
+                    shard_id=self.shards[shard_index],
+                    row={},
+                    message="JSON으로 해석할 수 없는 레코드입니다",
+                )
+                continue
             yield SourceRow(row_index=i, shard_id=self.shards[shard_index], row=row)
         self._shards_done = len(self.shards)
+        if self.decode_fail_at is not None:
+            self.issues.append(
+                Issue(
+                    code=ErrorCode.SCAN_FAILED_ROWS,
+                    severity=Severity.ERROR,
+                    user_message="해석할 수 없는 레코드가 있어 전체 읽기를 완료로 보지 않습니다.",
+                )
+            )
+            return
         self._complete = True
 
     @property

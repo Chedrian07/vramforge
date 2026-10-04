@@ -406,9 +406,28 @@ def full_scan(
     )
 
 
+def _source_failure(src: SourceRow) -> tuple[ErrorCode, str] | None:
+    """A record the reader could not decode (e.g. inspection's FailedSourceRow): it carries its
+    own error code and display-safe Korean message and has no columns to tokenize."""
+    code = getattr(src, "error_code", None)
+    if not isinstance(code, ErrorCode):
+        return None
+    message = getattr(src, "message", None)
+    return code, message if isinstance(message, str) and message else "레코드를 읽지 못했습니다."
+
+
 def _tokenize(
     adapter: PreprocessingAdapter, src: SourceRow, row_id: str, max_chars: int
 ) -> TokenizedRecord:
+    failure = _source_failure(src)
+    if failure is not None:
+        return TokenizedRecord(
+            row_id=row_id,
+            objective=adapter.objective,
+            ok=False,
+            error_code=failure[0],
+            error_message=failure[1],
+        )
     if _row_chars(src.row, max_chars) > max_chars:
         return TokenizedRecord(
             row_id=row_id,
@@ -530,7 +549,10 @@ def _issues(
     manifest_mismatch: bool,
     limits: ScanLimits,
 ) -> list[Issue]:
-    issues: list[Issue] = []
+    # The reader's own stop/failure reasons (e.g. inspection's DatasetRowStream.issues) are the
+    # most precise explanation of an incomplete stream, so they come first.
+    stream_issues = [i for i in (getattr(stream, "issues", None) or []) if isinstance(i, Issue)]
+    issues: list[Issue] = list(stream_issues)
     seen = {"rows_seen": state.rows_seen, "rows_expected": stream.total_rows}
     if stop_reason == "max_rows":
         issues.append(
@@ -576,13 +598,14 @@ def _issues(
                 **seen,
             )
         )
-    elif coverage is not ScanCoverage.COMPLETE and stop_reason is None:
+    elif coverage is not ScanCoverage.COMPLETE and stop_reason is None and not stream_issues:
         issues.append(
             _issue(
                 ErrorCode.SCAN_PARTIAL,
                 Severity.WARNING,
-                "데이터셋을 끝까지 읽지 못해 부분 스캔으로 표시합니다. 최대 길이와 통계는 읽은 "
-                "row까지의 값이며 전체 최대 길이가 아닙니다.",
+                "데이터셋 reader가 모든 shard를 끝까지 정상적으로 읽었다고 확인하지 못해 부분 "
+                "스캔으로 표시합니다. 최대 길이와 통계는 읽은 row까지의 값이며 전체 최대 길이가 "
+                "아닙니다.",
                 **seen,
             )
         )
@@ -591,8 +614,8 @@ def _issues(
             _issue(
                 ErrorCode.SCAN_FAILED_ROWS,
                 Severity.ERROR,
-                f"토큰화하지 못한 row가 {state.rows_failed:,}개 있습니다. 해당 row는 길이 "
-                "통계에서 빠졌으므로 데이터 보존을 검증할 수 없습니다.",
+                f"읽거나 토큰화하지 못한 row가 {state.rows_failed:,}개 있습니다. 해당 row는 "
+                "길이 통계에서 빠졌으므로 데이터 보존을 검증할 수 없습니다.",
                 rows_failed=state.rows_failed,
                 row_ids=[f["row_id"] for f in state.failed_sample[:ROW_ID_SAMPLE_LIMIT]],
             )
