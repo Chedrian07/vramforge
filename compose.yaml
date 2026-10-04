@@ -134,11 +134,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # The check starts a Python process (~0.8 s CPU); 30 s keeps the idle cost near 2.5 % of a
+    # core while staying well inside the 60 s worker TTL heartbeat window.
     healthcheck:
       test: ["CMD", "vramforge-worker", "healthcheck"]
-      interval: 10s
+      interval: 30s
       timeout: 10s
-      retries: 6
+      retries: 3
       start_period: 60s
     # The first SIGTERM is an RQ warm shutdown; Docker sends SIGKILL after the grace period and
     # an interrupted analysis is recovered through its expired lease (plan.md §16.1-16.2).
