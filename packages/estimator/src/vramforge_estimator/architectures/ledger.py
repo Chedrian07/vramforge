@@ -944,7 +944,7 @@ def generation(
     l_dec = plen + max(new_tokens, 1) - 1  # last token is never fed back: L = P + new - 1
     out: list[AllocationSpec] = []
     per_pos = _ceil(2 * d.kv_heads * d.head_dim * kv_b)  # K+V bytes per layer per position
-    cat_tensor = 0
+    dec_positions: dict[str, int] = {}  # attention layer type -> cached positions at decode
     kv_note = _dtype_note(cfg.effective_dtypes.kv_cache, load, "kv_cache")
     window = d.sliding_window
     for lt in (FULL_ATTENTION, SLIDING_ATTENTION):
@@ -974,7 +974,7 @@ def generation(
                     note=f"{lt} layer {n_layers}개만 K/V를 가집니다 (L={pos}).{kv_note}",
                 )
             )
-        cat_tensor = max(cat_tensor, c * dec_pos * per_pos // 2)
+        dec_positions[lt] = dec_pos
     n_lin = structure.count(LINEAR_ATTENTION)
     if n_lin:
         conv_dtype = conv_state_dtype(cfg)
@@ -1012,19 +1012,9 @@ def generation(
                 + _dtype_note(cfg.effective_dtypes.recurrent_state, "float32", "recurrent_state"),
             )
         )
-    if cat_tensor and new_tokens >= 2:
-        out.append(
-            spec(
-                f"{p}.kv_cat_transient",
-                AllocationCategory.WORKSPACE,
-                cat_tensor,
-                2 * cat_tensor,
-                [tps.decode],
-                ref="gen-kv",
-                note="DynamicLayer torch.cat 성장: layer 1개의 새 K(또는 K+V)가 이전 "
-                "버전과 잠시 공존합니다.",
-            )
-        )
+    if new_tokens >= 2:  # max_new_tokens = 1 ends after the prefill: no decode forward
+        padded = padding_possible(cfg, SequenceShape(batch=c, seq_len=plen))
+        out.append(_decode_step(structure, cfg, tr, c, dec_positions, kv_b, padded, tps.decode, p))
     autocast = cfg.strategy is Strategy.FULL and autocast_on(cfg)
     prefill = no_grad_forward(
         structure,
@@ -1036,17 +1026,107 @@ def generation(
         autocast=autocast,
     )
     out.extend(prefill)
+    return out
+
+
+# Token-sized fp32 temporaries of one recurrent decode step (q/k/v/beta/g upcasts, l2norm, output,
+# delta), bounded per sequence by 8·Hv·(dk+dv) fp32 elements; measured ≤ half of it on CPU.
+_RECURRENT_TOKEN_TEMPS = 8
+
+
+def _decode_step(
+    structure: ModelStructure,
+    cfg: ResolvedConfig,
+    tr: Trainability,
+    c: int,
+    dec_positions: dict[str, int],
+    kv_b: float,
+    padded: bool,
+    decode_tp: str,
+    p: str,
+) -> AllocationSpec:
+    """Working set of one decode step: the layers run one after another, so the largest of their
+    transients counts (not the sum).
+
+    - attention layer: DynamicLayer `torch.cat` growth (old + new K, or K and V), and with a padding
+      mask the GQA `repeat_kv` copies of the whole cached K/V (`use_gqa_in_sdpa` needs mask None,
+      research §3.1 VERIFIED); eager always repeats K/V;
+    - linear layer, torch recurrent path: the cached state is reused but `state * decay`,
+      `k ⊗ delta` and their sum are new [C,Hv,dk,dv] fp32 tensors (3 alive, CPU measured 3.06·S);
+      fla `fused_recurrent` allocates the fp32 final state (INFERRED, §2.5);
+    - bitsandbytes Linear4bit at M = C tokens (`q4_transient`).
+    """
+    d = structure.dims
+    paths = resolve_paths(structure, cfg)
+    parts: dict[str, tuple[int, int] | None] = {}
+    max_pos = max(dec_positions.values(), default=0)
+    if max_pos:
+        k_one = _ceil(c * d.kv_heads * max_pos * d.head_dim * kv_b)
+        parts["cat"] = (k_one, 2 * k_one)
+        if d.heads != d.kv_heads:
+            expand = _ceil(2 * c * d.heads * max_pos * d.head_dim * kv_b)
+            kinds = {paths.attention.get(lt) for lt in dec_positions}
+            if None in kinds:
+                parts["kv_repeat"] = None
+            elif "eager" in kinds:
+                scores = _ceil((act.F + kv_b) * c * d.heads * max_pos)
+                parts["kv_repeat"] = (expand, expand + scores)
+            elif padded:
+                parts["kv_repeat"] = (0, expand)
+    if structure.count(LINEAR_ATTENTION):
+        state = c * 4 * d.lin_value_heads * d.lin_key_dim * d.lin_value_dim
+        tokens = (
+            _RECURRENT_TOKEN_TEMPS * c * 4 * d.lin_value_heads * (d.lin_key_dim + d.lin_value_dim)
+        )
+        if paths.linear == "torch":
+            parts["recurrent_step"] = (3 * state, 3 * state + tokens)
+        elif paths.linear == "fla":
+            parts["recurrent_step"] = (state, 3 * state + tokens)
+        else:
+            parts["recurrent_step"] = None
     q4 = q4_transient(structure, cfg, tr, c, forward=True, backward=False)
     if q4:
-        out.append(
-            spec(
-                f"{p}.decode.q4_dequant",
-                AllocationCategory.WORKSPACE,
-                q4[0],
-                q4[1],
-                [tps.decode],
-                ref="act-q4",
-                note=q4[2],
-            )
+        parts["q4"] = (q4[0], q4[1])
+    name = f"{p}.decode.step_transient"
+    unknown = [k for k, v in parts.items() if v is None]
+    if unknown:
+        what = {
+            "kv_repeat": "attention 경로",
+            "recurrent_step": "linear-attention kernel",
+        }
+        return spec(
+            name,
+            AllocationCategory.WORKSPACE,
+            None,
+            None,
+            [decode_tp],
+            ref="gen-step",
+            note="decode step에서 "
+            + ", ".join(what[k] for k in unknown)
+            + "의 임시값이 검증되지 않았습니다 (경로: "
+            + ", ".join(f"{k}={v}" for k, v in cfg.attention_path_by_layer_type.items())
+            + ").",
         )
-    return out
+    known = {k: v for k, v in parts.items() if v is not None}
+    low = max((v[0] for v in known.values()), default=0)
+    high = max((v[1] for v in known.values()), default=0)
+    labels = {
+        "cat": "K/V torch.cat 성장",
+        "kv_repeat": "GQA repeat_kv 사본(padding mask가 있을 때)",
+        "recurrent_step": "recurrent state fp32 임시값",
+        "q4": "Linear4bit dequant/clone",
+    }
+    detail = ", ".join(f"{labels[k]} {v[0]:,}–{v[1]:,} B" for k, v in known.items())
+    inferred = " fla 경로는 소스 정독 기반 추정(INFERRED)." if paths.linear == "fla" else ""
+    return spec(
+        name,
+        AllocationCategory.WORKSPACE,
+        low,
+        high,
+        [decode_tp],
+        ref="gen-step",
+        shape="max(layer별 decode 임시값)",
+        dims={"C": c, "L": max_pos, **{k: v[1] for k, v in known.items()}},
+        note="decode 한 step에서 layer가 차례로 실행되므로 가장 큰 임시값만 동시에 존재합니다: "
+        f"{detail}. SDPA kernel workspace는 제외(CUDA 미측정).{inferred}",
+    )

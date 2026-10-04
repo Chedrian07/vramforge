@@ -22,6 +22,8 @@ transformers = pytest.importorskip("transformers")
 peft = pytest.importorskip("peft")
 
 from arch_helpers import make_cfg  # noqa: E402
+from torch.multiprocessing.reductions import StorageWeakRef  # noqa: E402
+from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 from vramforge_estimator.architectures import GenerationTimepoints, get_adapter  # noqa: E402
 from vramforge_estimator.architectures import activations as act  # noqa: E402
@@ -431,3 +433,73 @@ def test_generate_cache_matches_ledger(
         if a.category.value in ("generation_cache", "recurrent_state") and "G:decode" in a.live_at
     )
     assert _cache_bytes(out.past_key_values) == expected
+
+
+# ---------------------------------------------------------------- 4. decode step transients
+
+
+class _LiveStorages(TorchDispatchMode):
+    """Peak bytes of storages created inside the mode (freed ones are swept before each op)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.live: dict[int, tuple[Any, int]] = {}
+        self.peak = 0
+
+    def __torch_dispatch__(self, func: Any, types: Any, args: Any = (), kwargs: Any = None) -> Any:
+        for key in [k for k, (ref, _) in self.live.items() if ref.expired()]:
+            del self.live[key]
+        out = func(*args, **(kwargs or {}))
+        for t in out if isinstance(out, tuple | list) else [out]:
+            if isinstance(t, torch.Tensor) and _skey(t) not in self.live:
+                storage = t.untyped_storage()
+                self.live[_skey(t)] = (StorageWeakRef(storage), storage.nbytes())
+        self.peak = max(self.peak, sum(n for _, n in self.live.values()))
+        return out
+
+
+@pytest.mark.parametrize(("c", "hk", "hv", "dk", "dv"), [(2, 3, 9, 24, 28), (4, 16, 32, 128, 128)])
+def test_recurrent_decode_step_peak_is_inside_the_ledger_range(
+    ib: ModuleType, c: int, hk: int, hv: int, dk: int, dv: int
+) -> None:
+    from transformers.models.qwen3_5 import modeling_qwen3_5 as q35
+
+    torch.manual_seed(0)
+    q, k = (torch.randn(c, 1, hv, dk, dtype=torch.bfloat16) for _ in range(2))
+    v = torch.randn(c, 1, hv, dv, dtype=torch.bfloat16)
+    g, beta = -torch.rand(c, 1, hv), torch.rand(c, 1, hv, dtype=torch.bfloat16)
+    state = torch.randn(c, hv, dk, dv)  # the cache's fp32 state is reused, not copied
+    kwargs = {"initial_state": state, "output_final_state": True, "use_qk_l2norm_in_kernel": True}
+    with torch.no_grad(), _LiveStorages() as live:
+        q35.torch_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **kwargs)
+    dims = {"linear_num_key_heads": hk, "linear_num_value_heads": hv}
+    inv = ib.tiny_q35_inventory(**dims, linear_key_head_dim=dk, linear_value_head_dim=dv)
+    tps = GenerationTimepoints("G:p", "G:d")
+    cfg = make_cfg(strategy=Strategy.LORA, targets=[])
+    led = get_adapter("qwen3_5_hybrid").generation_ledger(inv, cfg, c, 1, 2, tps, "g")
+    step = next(a for a in led if a.name == "g.gen.decode.step_transient")
+    state_bytes = c * hv * dk * dv * 4
+    # three new [C,Hv,dk,dv] fp32 states + token-sized temporaries (measured 3.06-3.30 x S)
+    assert 3 * state_bytes <= live.peak <= step.dims["recurrent_step"]
+
+
+def test_padded_gqa_decode_copies_the_whole_kv_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from transformers.integrations import sdpa_attention
+
+    # macOS reports MPS and keeps enable_gqa with a mask; the Linux CUDA rule copies (§3.1)
+    monkeypatch.setattr(sdpa_attention, "_is_torch_mps_available", False)
+    monkeypatch.setattr(sdpa_attention, "_is_torch_xpu_available", False)
+    c, nq, nkv, length, d = 3, 6, 2, 50, 40
+    module = SimpleNamespace(num_key_value_groups=nq // nkv, is_causal=True)
+    q = torch.randn(c, nq, 1, d, dtype=torch.bfloat16)
+    k, v = (torch.randn(c, nkv, length, d, dtype=torch.bfloat16) for _ in range(2))
+    mask = torch.ones(c, 1, 1, length, dtype=torch.bool)
+    mask[0, ..., :3] = False  # one left-padded prompt
+    expand = 2 * c * nq * length * d * 2
+    with torch.no_grad(), _LiveStorages() as padded:
+        sdpa_attention.sdpa_attention_forward(module, q, k, v, mask)
+    with torch.no_grad(), _LiveStorages() as unpadded:
+        sdpa_attention.sdpa_attention_forward(module, q, k, v, None)
+    assert padded.peak >= expand > 10 * unpadded.peak

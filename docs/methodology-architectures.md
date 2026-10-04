@@ -343,13 +343,31 @@ LM head·logits는 제외한다.
 ```text
 KV(full)    = 2 · n_full · nkv · d · bytes(load) · C · L          # prefill: L = P
 KV(sliding) = 같은 식, decode L = min(P + new − 1, W) (new ≥ 2), prefill L = P   # DynamicSlidingWindowLayer는 cat 결과의 view를 남김
-cat 성장     = low: layer 1개의 새 K(또는 V), high: K+V                       # decode
 ```
 
 - K/V dtype = load dtype: PEFT generate는 autocast가 없고, full FT는 autocast여도 RoPE type promotion으로 K가, lazy init으로 V가 load dtype이 된다(GR R3 표 A·C·F·G·Q·R). resolver의 `effective_dtypes.kv_cache`가 다르면 note에 표시하고 이 규칙을 쓴다.
 - KV는 attention layer에만 붙는다. hybrid에서 32개 전부에 KV 식을 쓰면 4배 과대다(plan §19.3).
 - prefill 작업 집합은 §7의 no-grad ledger(`gen.prefill.nograd.*`)를 `B = C`, `T = P`로 쓴다(PEFT면 autocast 없음). C > 1 또는 GRPO면 왼쪽 padding mask 범위가 붙는다.
-- decode 한 step의 작업 집합(token 1개)과 `(C, V)` logits는 무시할 만하거나 trainer 쪽이다. bnb decode(M = C ≤ 4)는 fused kernel이라 clone만 남는다.
+- `(C, V)` logits는 trainer 쪽이다. decode step의 작업 집합은 아래 `gen.decode.step_transient`다.
+
+<a id="gen-step"></a>
+### 8.0 Decode step 작업 집합 (`gen.decode.step_transient`, new ≥ 2일 때)
+
+decode 한 step은 layer를 하나씩 실행하므로 layer별 임시값은 동시에 존재하지 않는다. 그래서 합이 아니라 **최댓값**을 한 allocation으로 낸다(`decode` timepoint, `assumption` 범위).
+
+```text
+cat 성장        = [C·nkv·L·d·b_kv, 2·C·nkv·L·d·b_kv]        # 이전 K(또는 K와 V)가 새 cat 결과와 잠시 공존 (L = 최대 decode position)
+GQA repeat_kv   = [0, 2·C·nq·L·d·b_kv]  (SDPA, padding 가능)  # mask가 있으면 use_gqa_in_sdpa=False → 전체 K/V를 nq head로 복사 (AM §3.1 VERIFIED)
+                  [E, E + (f+b_kv)·C·nq·L]  (eager, 항상), E = 2·C·nq·L·d·b_kv;  nq = nkv면 없음
+recurrent step  = torch: [3·S, 3·S + 8·C·Hv·(dk+dv)·4],  S = C·Hv·dk·dv·4   # state*decay, k⊗delta, 그 합이 새 fp32 state (cache state는 재사용)
+                  fla:   [S, 3·S + 8·C·Hv·(dk+dv)·4]  (INFERRED: fused_recurrent가 fp32 final state 할당)
+Linear4bit      = act-q4의 M = C 값 (M ≤ 4면 fused kernel → clone만)
+step_transient  = max(위 항목)
+```
+
+- CPU 측정(`test_arch_parity.py`): torch recurrent step 피크는 MiMo 차원 C = 4에서 3.06·S, tiny 차원에서 3.17–3.30·S였다(token 크기 임시값이 S에 비해 커지는 작은 차원). padding mask가 있는 GQA decode에서 SDPA wrapper가 만든 새 storage는 `2·C·nq·L·d·b` 사본 + CPU kernel 작업 공간이었다. CUDA SDPA kernel 작업 공간은 측정하지 않았고 포함하지 않는다.
+- 예: MiMo GRPO C = 4, P = 272, new = 1,024 (L = 1,295, bf16): cat 10.1–20.2 MiB, repeat_kv 0–80.9 MiB, recurrent 24.0–25.0 MiB → `[24.0, 80.9]` MiB.
+- attention 경로나 linear kernel이 검증되지 않았으면(FA2, hub kernel 등) 이 allocation은 `unknown`이다.
 
 <a id="gen-linear"></a>
 ### 8.1 Linear-attention state

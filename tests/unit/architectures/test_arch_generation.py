@@ -126,22 +126,58 @@ def test_recurrent_state_stays_fp32_whatever_the_resolver_says(
     assert rec.bytes_low == 24 * 4 * 32 * 128 * 128 and "bfloat16" in (rec.note or "")
 
 
-def test_cat_transient_and_prefill_working_set(mimo: ModelInventory, auto: list[str]) -> None:
+def test_decode_step_and_prefill_working_set(mimo: ModelInventory, auto: list[str]) -> None:
     led = gen(mimo, make_cfg(objective=Objective.GRPO, targets=auto), 4, 272, 1024)
-    cat = led["policy.gen.kv_cat_transient"]
-    one = 4 * 4 * 256 * 2 * (272 + 1023)  # K (or V) of one layer at the last decode step
-    assert (cat.bytes_low, cat.bytes_high) == (one, 2 * one)
-    assert cat.live_at == [TPS.decode]
+    step = led["policy.gen.decode.step_transient"]
+    length = 272 + 1023
+    one = 4 * 4 * 256 * 2 * length  # K (or V) of one layer at the last decode step
+    expand = 2 * 4 * 16 * length * 256 * 2  # left-padded GRPO prompts: repeat_kv to nq=16 heads
+    state = 4 * 32 * 128 * 128 * 4  # one layer's [C,Hv,dk,dv] fp32 state
+    assert step.dims == {
+        "C": 4,
+        "L": length,
+        "cat": 2 * one,
+        "kv_repeat": expand,
+        "recurrent_step": 3 * state + 8 * 4 * 4 * 32 * 256,
+        "q4": 4 * 12288 * 2,  # M = C = 4: fused kernel, only the LoRA wrapper's clone
+    }
+    # layers run one after another: the step holds the largest transient, not the sum
+    assert (step.bytes_low, step.bytes_high) == (3 * state, expand)
+    assert step.live_at == [TPS.decode] and step.evidence is Evidence.ASSUMPTION
+    assert step.category is AllocationCategory.WORKSPACE
     prefill = [a for n, a in led.items() if n.startswith("policy.gen.prefill.")]
     assert prefill and all(a.live_at == [TPS.prefill] for a in prefill)
     assert led["policy.gen.prefill.nograd.hidden"].bytes_low == 4 * 272 * 4096 * 2
     assert led["policy.gen.prefill.nograd.attn_mask.full_attention"].bytes_high == 4 * 272 * 272
-    assert led["policy.gen.decode.q4_dequant"].bytes_low == 4 * 12288 * 2  # fused M=4: clone
 
 
-def test_single_new_token_has_no_decode_growth(mimo: ModelInventory, auto: list[str]) -> None:
+def test_decode_kv_repeat_needs_a_padding_mask_and_gqa(ib: ModuleType) -> None:
+    gqa = ib.tiny_dense_inventory("llama")  # nq = 6, nkv = 2, d = 40
+    lora = make_cfg(strategy=Strategy.LORA)
+    one_seq = gen(gqa, lora, 1, 10, 5, adapter=DENSE)["policy.gen.decode.step_transient"]
+    assert "kv_repeat" not in one_seq.dims  # B = 1, no padding: enable_gqa, no copy
+    padded = gen(gqa, lora, 3, 10, 5, adapter=DENSE)["policy.gen.decode.step_transient"]
+    assert padded.dims["kv_repeat"] == 2 * 3 * 6 * 14 * 40 * 2
+    assert padded.bytes_low == 3 * 2 * 14 * 40 * 2  # cat low: no padding means no copy
+    eager = make_cfg(strategy=Strategy.LORA, paths={"full_attention": "eager"})
+    e = gen(gqa, eager, 1, 10, 5, adapter=DENSE)["policy.gen.decode.step_transient"]
+    assert e.bytes_low == 2 * 1 * 6 * 14 * 40 * 2  # eager always repeats K/V
+    mha = ib.tiny_dense_inventory("llama", num_key_value_heads=6)
+    assert "kv_repeat" not in gen(mha, lora, 3, 10, 5, adapter=DENSE)[
+        "policy.gen.decode.step_transient"
+    ].dims
+
+
+def test_unverified_decode_paths_are_unknown(mimo: ModelInventory, auto: list[str]) -> None:
+    fa2 = make_cfg(objective=Objective.GRPO, targets=auto, paths={"full_attention": "fa2"})
+    step = gen(mimo, fa2, 4, 64, 8)["policy.gen.decode.step_transient"]
+    assert step.bytes_low is None and step.evidence is Evidence.UNKNOWN
+    assert "attention" in (step.note or "")
+
+
+def test_single_new_token_has_no_decode_step(mimo: ModelInventory, auto: list[str]) -> None:
     led = gen(mimo, make_cfg(objective=Objective.GRPO, targets=auto), 2, 64, 1)
-    assert "policy.gen.kv_cat_transient" not in led
+    assert "policy.gen.decode.step_transient" not in led
     assert led["policy.gen.kv_cache.full_attention.decode"].dims["L"] == 64
 
 
