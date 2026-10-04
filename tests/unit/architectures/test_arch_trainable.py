@@ -20,6 +20,7 @@ from vramforge_estimator.architectures.structure import (
 from vramforge_estimator.architectures.trainable import (
     ArchTrainableGroup,
     build_trainability,
+    peft_target_spec,
     resolve_lora_targets,
     trainable_group_list,
 )
@@ -101,6 +102,22 @@ def test_single_regex_in_a_list_is_a_regex(st: ModelStructure) -> None:
     # request schema: `target_modules` list = explicit suffixes or a single regex string
     assert len(_targets(st, [r".*language_model.*\.(q|k|v|o)_proj"])) == 32
     assert len(_targets(st, ["self_attn.q_proj"])) == 8  # dots alone keep suffix semantics
+    assert len(_targets(st, ["all-linear"])) == 358
+
+
+@pytest.mark.parametrize(
+    ("target", "spec"),
+    [
+        ("all-linear", "all-linear"),
+        (["all-linear"], "all-linear"),  # PEFT expands only the plain string
+        ([r".*\.(q|v)_proj"], r".*\.(q|v)_proj"),  # PEFT fullmatches only a plain string
+        (["q_proj", "v_proj"], ["q_proj", "v_proj"]),
+        (["self_attn.q_proj"], ["self_attn.q_proj"]),
+        ("auto_verified", "auto_verified"),
+    ],
+)
+def test_peft_target_spec(target: str | list[str], spec: str | list[str]) -> None:
+    assert peft_target_spec(target) == spec
 
 
 @pytest.mark.parametrize("target", [["conv1d"], ["embed_tokens"], r".*\.mlp"])

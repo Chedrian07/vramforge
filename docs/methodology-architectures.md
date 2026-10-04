@@ -135,7 +135,7 @@ LoRA 대상 해석(`lora_target_modules`)은 inventory 전체(full-checkpoint �
 | `"all-linear"` | PEFT 의미: 출력 embedding을 뺀 모든 Linear, vision 포함 (MiMo 358개) |
 | 그 밖의 문자열 | 정규식 1개, `re.fullmatch(pattern, module_name)` |
 | 리스트 | 이름 일치 또는 `name.endswith("." + entry)` |
-| 원소 1개 리스트 + 정규식 전용 문자(`*+?[](){}\|^$\`) | 그 정규식 1개 (요청 스키마가 "이름 목록 또는 정규식 1개"를 같은 리스트 필드로 받음). 점(`.`)만 있으면 이름 의미 |
+| 원소 1개 리스트 + 정규식 전용 문자(`*+?[](){}\|^$\`), 또는 `["all-linear"]` | 그 문자열 1개 (요청 스키마가 "이름 목록 또는 정규식 1개"를 같은 리스트 필드로 받음). 점(`.`)만 있으면 이름 의미. PEFT는 문자열일 때만 `all-linear` 확장과 `re.fullmatch`를 하고 리스트로 감싸면 `NoMatchingPeftModuleError`이므로, trainer config의 `target_modules`는 `trainable.peft_target_spec()` 값이어야 한다 |
 | `exclude` | 리스트 의미로 마지막에 적용 |
 
 - Linear가 아닌 모듈(embedding, conv, container)이 걸리면 `CONFLICTING_OPTIONS`로 거절한다. 아무것도 안 걸려도 오류다.

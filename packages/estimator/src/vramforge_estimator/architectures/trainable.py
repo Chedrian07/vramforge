@@ -59,6 +59,21 @@ def config_error(message: str, **details: object) -> EstimatorError:
 # ---------------------------------------------------------------- LoRA target resolution
 
 
+def peft_target_spec(target: str | list[str]) -> str | list[str]:
+    """The `LoraConfig.target_modules` value PEFT must receive for a request target.
+
+    PEFT expands "all-linear" and applies `re.fullmatch` only to a plain string; a list holding
+    "all-linear" or one regex is matched as exact names / `.suffix` and finds nothing
+    (`NoMatchingPeftModuleError`, peft==0.21.2). The request schema carries "explicit suffixes or a
+    single regex string" in one list field, so a one-element list with regex-only syntax
+    (`*+?[](){}|^$\\`) is that regex; dots alone keep suffix semantics.
+    """
+    single = isinstance(target, list) and len(target) == 1
+    if single and (target[0] == "all-linear" or _REGEX_SYNTAX.search(target[0])):
+        return target[0]
+    return target
+
+
 def resolve_lora_targets(
     structure: ModelStructure,
     target: str | list[str],
@@ -72,13 +87,12 @@ def resolve_lora_targets(
     - "all-linear": every Linear except the output embedding, vision Linear included
       (tuners_utils.py:2430-2492)
     - other str: one regex, `re.fullmatch` on module names; list: exact name or `.suffix`
-    - a one-element list holding regex-only syntax (`*+?[](){}|^$\\`) is that single regex: the
-      request schema carries "explicit suffixes or a single regex string" in one list field
+    - a one-element list holding regex-only syntax (`*+?[](){}|^$\\`) or "all-linear" is that
+      string (`peft_target_spec`): the request schema carries both in one list field
     - `exclude` (list semantics) is applied last
     Callers apply the loading scope (vision modules do not exist in a text-only load).
     """
-    if isinstance(target, list) and len(target) == 1 and _REGEX_SYNTAX.search(target[0]):
-        target = target[0]
+    target = peft_target_spec(target)
     # MTP modules are never loaded (`^mtp.*` is ignored on load), so PEFT never sees them.
     loadable = [m for m in structure.linear_modules if m.component is not ModelComponent.MTP]
     if target == "auto_verified":

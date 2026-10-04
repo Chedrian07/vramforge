@@ -36,7 +36,10 @@ from vramforge_estimator.architectures.structure import (  # noqa: E402
     LINEAR_ATTENTION,
     ModelStructure,
 )
-from vramforge_estimator.architectures.trainable import build_trainability  # noqa: E402
+from vramforge_estimator.architectures.trainable import (  # noqa: E402
+    build_trainability,
+    peft_target_spec,
+)
 from vramforge_estimator.schemas import ModelInventory, ResolvedConfig, Strategy  # noqa: E402
 
 pytestmark = pytest.mark.parity
@@ -217,6 +220,21 @@ def test_peft_trainable_counts_match(
         if p.requires_grad and ("lora_" in n)
     }
     assert adapter_dtypes <= {g.dtype for g in groups if g.kind == "lora"}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [["all-linear"], [r".*language_model.*\.(q|k|v|o)_proj"], ["q_proj", "in_proj_qkv", "qkv"]],
+)
+def test_peft_target_spec_wraps_the_resolved_modules(ib: ModuleType, target: list[str]) -> None:
+    # what the trainer config must hand PEFT for a request list (a list-wrapped "all-linear" or
+    # regex raises NoMatchingPeftModuleError in peft 0.21.2)
+    model = condgen(["linear_attention", "full_attention"])
+    inv = inventory(ib, model, "Qwen3_5ForConditionalGeneration")
+    resolved = get_adapter("qwen3_5_hybrid").lora_target_modules(inv, target, [])
+    pm = peft.get_peft_model(model, peft.LoraConfig(r=4, target_modules=peft_target_spec(target)))
+    wrapped = {n for n, mod in pm.base_model.model.named_modules() if hasattr(mod, "lora_A")}
+    assert wrapped == {m.name for m in resolved}
 
 
 def test_auto_verified_equals_text_linear_names_in_peft(ib: ModuleType) -> None:
