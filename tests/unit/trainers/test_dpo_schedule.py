@@ -44,10 +44,10 @@ REF_LOAD = [
 ]
 
 
-def build(cfg, shape=None):
+def build(cfg, shape=None, arch=None):
     shape = shape or dpo_shape(pairs=1, length=100)
     return get_trainer(Objective.DPO).build_schedule(
-        INV, cfg, FakeArch(), shape, make_plan(cfg, [shape]), ScopeConfig()
+        INV, cfg, arch or FakeArch(), shape, make_plan(cfg, [shape]), ScopeConfig()
     )
 
 
@@ -161,3 +161,20 @@ def test_frozen_lm_head_saves_no_input() -> None:
     assert "lm_head.input" not in names(sched)
     est = evaluate(sched)
     assert est.scenario_high_bytes is not None and H > 0
+
+
+def test_policy_reference_and_precompute_forwards_carry_padding() -> None:
+    # chosen and rejected rows are padded to the longer branch: the attention-mask path
+    arch = FakeArch()
+    sched = build(cfg_for(ReferenceStrategy.FROZEN_BASE_SWITCH), arch=arch)
+    assert [(p, s.batch, s.has_padding) for p, s in arch.seen] == [
+        ("policy", 2, True),
+        ("reference_forward", 2, True),
+    ]
+    assert any(a.id == "padding" and "rejected" in a.text for a in sched.assumptions)
+    pre = FakeArch()
+    build(cfg_for(ReferenceStrategy.PRECOMPUTED_LOG_PROBS, precompute_batch_size=3), arch=pre)
+    assert [(p, s.batch, s.has_padding) for p, s in pre.seen] == [
+        ("precompute", 6, True),
+        ("policy", 2, True),
+    ]

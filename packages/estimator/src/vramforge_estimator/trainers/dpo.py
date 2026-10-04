@@ -37,6 +37,7 @@ from .common import (
     add_scope_unknowns,
     add_trainable_state,
     add_workspace,
+    batch_has_padding,
     common_assumptions,
     extend_live_at,
     grads_live,
@@ -215,7 +216,13 @@ class DpoTrainer:
             pre_rows = 2 * pairs
             b.add(
                 arch.no_grad_forward_ledger(
-                    inventory, cfg, SequenceShape(batch=pre_rows, seq_len=seq), [pre], "precompute"
+                    inventory,
+                    cfg,
+                    SequenceShape(
+                        batch=pre_rows, seq_len=seq, has_padding=batch_has_padding(cfg, pre_rows)
+                    ),
+                    [pre],
+                    "precompute",
                 ),
                 spec(
                     "logits.precompute",
@@ -229,10 +236,14 @@ class DpoTrainer:
                     note="사전 계산은 accelerate wrapper 이전이라 모델 dtype logits (no-grad).",
                 ),
             )
+        # chosen + rejected rows of one forward; the reference forward reuses the same batch
+        policy_seq = SequenceShape(
+            batch=rows, seq_len=seq, has_padding=batch_has_padding(cfg, rows)
+        )
         acts = arch.train_step_ledger(
             inventory,
             cfg,
-            SequenceShape(batch=rows, seq_len=seq),
+            policy_seq,
             StepTimepoints(forward=fwd, loss=loss, backward=bwd),
             POLICY_PREFIX,
         )
@@ -240,11 +251,7 @@ class DpoTrainer:
         if ref_fwd is not None:
             b.add(
                 arch.no_grad_forward_ledger(
-                    inventory,
-                    cfg,
-                    SequenceShape(batch=rows, seq_len=seq),
-                    [ref_fwd],
-                    "reference_forward",
+                    inventory, cfg, policy_seq, [ref_fwd], "reference_forward"
                 )
             )
         policy_tps = [t for t in (fwd, ref_fwd, loss, loss_bwd) if t]

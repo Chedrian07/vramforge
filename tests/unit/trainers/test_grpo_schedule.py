@@ -190,3 +190,17 @@ def test_missing_lengths_are_reported_as_unknown() -> None:
     est = evaluate(sched)
     assert est.scenario_high_bytes is None
     assert "grpo.shape" in {u.name for u in est.unknown_components}
+
+
+def test_update_and_logprob_passes_carry_padding() -> None:
+    # micro-batches are slices of the generation batch padded to its maxima (left prompts, right
+    # completions masked after EOS): TRL passes cat(prompt_mask, completion_mask)
+    arch = FakeArch()
+    sched = build(cfg_for(beta=0.04, num_iterations=2), arch=arch)
+    assert [(p, s.has_padding) for p, s in arch.seen] == [
+        ("old_logprob", True),
+        ("reference_logprob", True),
+        ("policy", True),
+    ]
+    assert all(s.seq_len == 150 and s.logits_positions_per_sequence == 101 for _, s in arch.seen)
+    assert any(a.id == "padding" and "completion_mask" in a.text for a in sched.assumptions)

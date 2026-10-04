@@ -46,6 +46,7 @@ from .common import (
     add_scope_unknowns,
     add_trainable_state,
     add_workspace,
+    batch_has_padding,
     common_assumptions,
     extend_live_at,
     lm_head_input_saved,
@@ -301,7 +302,10 @@ class GrpoTrainer:
         chunks = g.live_sequences // rows
         factor = 10 if chunks >= 2 else 6
         seq = SequenceShape(
-            batch=rows, seq_len=prompt + completion, logits_positions_per_sequence=completion + 1
+            batch=rows,
+            seq_len=prompt + completion,
+            logits_positions_per_sequence=completion + 1,
+            has_padding=batch_has_padding(cfg, rows),
         )
         for tp, label in ((old_tp, "old_logprob"), (ref_tp, "reference_logprob")):
             if tp is None:
@@ -324,7 +328,10 @@ class GrpoTrainer:
         hidden, vocab = arch.lm_head_dims(inventory)
         rows = g.update_microbatch
         seq = SequenceShape(
-            batch=rows, seq_len=prompt + completion, logits_positions_per_sequence=completion + 1
+            batch=rows,
+            seq_len=prompt + completion,
+            logits_positions_per_sequence=completion + 1,
+            has_padding=batch_has_padding(cfg, rows),
         )
         acts = arch.train_step_ledger(
             inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), POLICY_PREFIX
