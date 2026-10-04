@@ -5,6 +5,7 @@ One sequential pass over the `RowStream`. Only integer lengths are kept in memor
 ``ctx.artifact_dir/lengths/``, including ``token_digest`` (a hash of the token ids the trainer
 sees, never the ids). After every part the checkpoint (last processed ``row_index`` +
 accumulators) is saved; a resumed scan re-reads the stream and skips processed indices.
+
 Coverage (plan §7.7, §19.2 "손상 row"):
 
 * COMPLETE — the reader confirmed EOF on every shard, the manifest row count matches and every
@@ -65,7 +66,7 @@ from .stats import BRANCHES, LengthAccumulator, branch_values, primary_branch
 from .validation import SENTINEL_MIN
 
 CHECKPOINT_KIND = "vramforge.scan"
-CHECKPOINT_VERSION = 2  # 2: omitted system messages are counted per message
+CHECKPOINT_VERSION = 2  # 2: per-message omitted system count and literal-token findings
 FAILED_SAMPLE_LIMIT = 100
 ROW_ID_SAMPLE_LIMIT = 20
 CANCEL_CHECK_ROWS = 16
