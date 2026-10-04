@@ -18,12 +18,12 @@ from vramforge_estimator.schemas import ColumnMapping, DatasetFormat, EmptySyste
 
 from .base import TokenizedRecord
 from .mapping import content_digest
-from .trl_common import TRL_VERSION, TrlAdapterBase, mapping_error
+from .trl_common import TRL_VERSION, TrlAdapterBase, mapping_error, token_digest
 
 
 class TrlGrpoAdapter(TrlAdapterBase):
     name = f"trl-{TRL_VERSION}-grpo"
-    version = "1"
+    version = "2"  # 2: records carry token digests
     objective = Objective.GRPO
 
     def __init__(
@@ -73,6 +73,7 @@ class TrlGrpoAdapter(TrlAdapterBase):
             ids = self.encode_plain(plain)
             preserved, issue = None, None
             extras.update(self.special_token_flags(ids))
+        extras["token_digest"] = token_digest({"prompt_ids": ids})
         if omitted:
             extras["system_omitted"] = omitted
         return TokenizedRecord(

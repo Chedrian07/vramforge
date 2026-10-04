@@ -20,6 +20,12 @@ ROW: dict[str, Any] = {
     "rejected": "몰라요",
     "lang": "c",
 }
+# The generation prompt ends with "x" that the full conversation never renders, so the prompt
+# ids are not a prefix of the prompt+completion ids (TRL warns and slices anyway).
+MISALIGNED = (
+    "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}"
+    "{% if add_generation_prompt %}assistant: x{% endif %}"
+)
 
 
 def ids(tok: Any, messages: list[dict[str, Any]], *, gen: bool = False) -> list[int]:
@@ -59,6 +65,41 @@ def test_sft_text_digest_includes_the_appended_eos(plain) -> None:
     rec = get_adapter(Objective.SFT, plain, ColumnMapping(text="t")).process({"t": "hi"}, "r")
     expected = plain.tokenizer(text="hi</s>")["input_ids"]
     assert rec.extras["token_digest"] == token_digest({"input_ids": expected})
+
+
+def test_dpo_digest_covers_both_branches_as_the_collator_builds_them(mimo) -> None:
+    rec = get_adapter(Objective.DPO, mimo, PREF).process(ROW, "train:0")
+    tok = mimo.tokenizer
+    p = ids(tok, [u(ROW["question"])], gen=True)
+    pc = ids(tok, [u(ROW["question"]), a(ROW["chosen"])])
+    pr = ids(tok, [u(ROW["question"]), a(ROW["rejected"])])
+    assert rec.extras["token_digest"] == token_digest(
+        {"chosen_input_ids": p + pc[len(p) :], "rejected_input_ids": p + pr[len(p) :]}
+    )
+
+
+def test_dpo_digest_follows_trl_slicing_when_the_prompt_boundary_moves(make_handle) -> None:
+    handle = make_handle("mimo_bytelevel", chat_template=MISALIGNED)
+    rec = get_adapter(Objective.DPO, handle, PREF).process(ROW, "train:0")
+    tok = handle.tokenizer
+    p = ids(tok, [u(ROW["question"])], gen=True)
+    pc = ids(tok, [u(ROW["question"]), a(ROW["chosen"])])
+    pr = ids(tok, [u(ROW["question"]), a(ROW["rejected"])])
+    assert pc[: len(p)] != p and rec.extras["prefix_mismatch"] is True
+    sliced = {"chosen_input_ids": p + pc[len(p) :], "rejected_input_ids": p + pr[len(p) :]}
+    assert rec.extras["token_digest"] == token_digest(sliced)
+    rendered = {"chosen_input_ids": pc, "rejected_input_ids": pr}
+    assert rec.extras["token_digest"] != token_digest(rendered)
+
+
+def test_grpo_digest_hashes_the_generation_prompt(mimo) -> None:
+    rec = get_adapter(Objective.GRPO, mimo, PREF).process(ROW, "train:0")
+    prompt = ids(mimo.tokenizer, [u(ROW["question"])], gen=True)
+    assert rec.extras["token_digest"] == token_digest({"prompt_ids": prompt})
+    thinking_off = get_adapter(
+        Objective.GRPO, mimo, PREF, template_kwargs={"enable_thinking": False}
+    ).process(ROW, "train:0")
+    assert thinking_off.extras["token_digest"] != rec.extras["token_digest"]
 
 
 def test_failed_rows_have_no_digest(mimo) -> None:

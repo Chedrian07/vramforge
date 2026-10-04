@@ -22,7 +22,8 @@ def test_prompt_uses_the_generation_prompt(mimo) -> None:
     assert rec.ok and rec.prompt_tokens == len(expected)
     assert rec.completion_tokens is None and rec.sequence_tokens is None
     assert rec.max_sequence_tokens() == rec.prompt_tokens
-    assert rec.extras == {"system_omitted": 1}
+    assert set(rec.extras) == {"system_omitted", "token_digest"}
+    assert rec.extras["system_omitted"] == 1
 
 
 def test_chosen_and_rejected_do_not_affect_grpo(mimo) -> None:

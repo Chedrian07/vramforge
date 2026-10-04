@@ -23,7 +23,7 @@ from vramforge_estimator.schemas import (
 
 from .base import TokenizedRecord
 from .mapping import Message, RowError, content_digest
-from .trl_common import TRL_VERSION, TrlAdapterBase, mapping_error
+from .trl_common import TRL_VERSION, TrlAdapterBase, mapping_error, token_digest
 
 
 def extract_prompt(
@@ -46,7 +46,7 @@ def extract_prompt(
 
 class TrlDpoAdapter(TrlAdapterBase):
     name = f"trl-{TRL_VERSION}-dpo"
-    version = "1"
+    version = "2"  # 2: records carry token digests
     objective = Objective.DPO
 
     def __init__(
@@ -186,9 +186,20 @@ class TrlDpoAdapter(TrlAdapterBase):
         omitted: int,
     ) -> TokenizedRecord:
         p = len(prompt_ids)
-        chosen = len(prompt_chosen_ids[p:])
-        rejected = len(prompt_rejected_ids[p:])
-        extras: dict[str, Any] = {}
+        chosen_ids = prompt_chosen_ids[p:]
+        rejected_ids = prompt_rejected_ids[p:]
+        chosen = len(chosen_ids)
+        rejected = len(rejected_ids)
+        # What the collator feeds the model: prompt_ids + <branch>_ids (dpo_trainer.py:146-170),
+        # which differs from prompt_<branch>_ids when the prompt boundary does not line up.
+        extras: dict[str, Any] = {
+            "token_digest": token_digest(
+                {
+                    "chosen_input_ids": prompt_ids + chosen_ids,
+                    "rejected_input_ids": prompt_ids + rejected_ids,
+                }
+            )
+        }
         if omitted:
             extras["system_omitted"] = omitted
         if prompt_chosen_ids[:p] != prompt_ids or prompt_rejected_ids[:p] != prompt_ids:
