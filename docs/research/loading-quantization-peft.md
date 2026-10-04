@@ -8,6 +8,7 @@
 | 대상 버전 | torch==2.14.1, transformers==5.18.0, trl==1.14.1, peft==0.21.2, bitsandbytes==0.50.2, accelerate==1.15.0 (부수: datasets==5.0.1, huggingface_hub==1.33.0, tokenizers==0.23.2, safetensors==0.8.0) |
 | 작성일 | 2026-10-04 |
 | 작성 | research-loading-quant-peft (Milestone M0) |
+| 검증 | verify-loading-quant-peft (2026-10-04, 적대적 재검증). 소스 재정독 + 독립 실험(V1–V13, scratch `/tmp/vf-research/scratch/verify-loading-quant-peft/`)으로 핵심 주장 22개를 다시 확인했다. 수정한 곳은 본문에 **[검증 보정]** 으로 표시했고, 전체 내역은 문서 끝 "검증 로그"에 있다 |
 | 방법 | ① 설치된 site-packages 소스 정독 ② CPU 실험 E1–E13 (macOS arm64, CUDA 없음, bitsandbytes CPU backend) ③ HF Hub safetensors **header 메타데이터만** 조회 (가중치 미다운로드) |
 | 예시 모델 | `XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B` @ `2367e865d009c13ac81713a2878291d33ab28177` — 760 tensors, 전부 BF16, 9,409,813,744 params (header의 `parameter_count` 확인) |
 | 근거 태그 | **VERIFIED** = 소스에서 확인했거나 실측함 / **INFERRED** = 소스 기반 추론(CUDA 전용 경로 등 이 머신에서 실행 불가) / **UNKNOWN** |
@@ -243,7 +244,7 @@ else:
 
 순서: safetensors slice `tensor[...]`(CPU) → `.to(device=param_device, dtype=_dtype)` (`core_model_loading.py:1236-1241 _materialize_copy`) → `Bnb4bitQuantize.convert`가 `Params4bit(value).to(value.device)` 호출 (`transformers/integrations/bitsandbytes.py:30-61`) → `Params4bit._quantize`가 그 device에서 `quantize_4bit` 실행 후 `self.data`를 packed로 교체 (`bitsandbytes/nn/modules.py:381-395, 424-428`) → full-precision tensor는 `materialize_tensors`의 pop과 `del realized_value`로 해제 (`core_model_loading.py:953-979, 1784`).
 - `_dtype`: 양자화 대상 weight도 **load dtype**으로 materialize한다(meta `Params4bit`가 load dtype을 가짐, `core_model_loading.py:1672-1714`).
-- E7 실측: 41번의 quantize 호출 모두 입력 dtype = load dtype(TRL 기본 fp32 / `dtype=bf16`이면 bf16). 각 호출 시점에 이전 full-precision tensor가 살아 있는 경우는 0번이다.
+- E7 실측: 41번의 quantize 호출 모두 입력 dtype = load dtype(TRL 기본 fp32 / `dtype=bf16`이면 bf16). 각 호출 시점에 이전 full-precision tensor가 살아 있는 경우는 0번이다. [검증 재현 V8: 별도 tiny clone, weakref 계측 — 41회 모두 `MainThread`, 이전 입력 생존 0, 입력 dtype = load dtype]
 - `param_device`: TRL은 `device_map="auto"` → GPU. bnb quantizer는 `device_map=None`이면 `{"": torch.cuda.current_device()}`로 바꾼다 — `quantizer_bnb_4bit.py:102-119`. 따라서 양자화는 **GPU에서** 일어난다 [INFERRED: CUDA kernel 경로 미실행].
 
 **4.3 가장 큰 transient** [INFERRED from 소스, 수치는 공식]
@@ -254,10 +255,16 @@ else:
 비양자화 파라미터(embed/lm_head 등)는 `.to(device, dtype)` 결과가 곧 최종 파라미터이므로 GPU에 추가 복사본이 없다 [INFERRED]. **Host RAM**은 tensor마다 safetensors slice를 CPU로 읽는다. 가장 큰 `embed_tokens`/`lm_head`는 BF16 2,034,237,440 B이고, fp32 변환이 CPU 쪽에서 일어나면 4,068,474,880 B의 임시 tensor가 추가된다 [INFERRED: CPU→CUDA dtype 변환 위치는 ATen copy 구현에 따름, wheel에 C++ 소스 없음].
 
 **4.4 `caching_allocator_warmup`이 로딩 전에 모델 크기만큼 예약한다.** [VERIFIED 소스]
-accelerator device마다 `Σ(numel × element_size)`를 계산한다. 양자화 weight는 0.5 B/param으로 센다(`quantizer_bnb_4bit.py:83-89 param_element_size`, `modeling_utils.py:4991-5022 get_total_byte_count`). 이 크기의 fp16 tensor 하나를 할당했다가 즉시 버린다(상한 `total_device_memory − 1.2 GiB`) — `modeling_utils.py:5025-5106 (caching_allocator_warmup)`, 호출 `:4417-4419`. 해제된 블록은 caching allocator에 **reserved로 남는다** [INFERRED]. 예시 모델 CondGen 4-bit 요청량: fp32 로드 11.032 GiB, bf16 로드 7.232 GiB [E11 계산].
+accelerator device마다 `Σ(numel × element_size)`를 계산한다. 양자화 weight는 0.5 B/param으로 센다(`quantizer_bnb_4bit.py:83-89 param_element_size`, `modeling_utils.py:4991-5022 get_total_byte_count`). 이 크기의 fp16 tensor 하나를 할당했다가 즉시 버린다(상한 `total_device_memory − 1.2 GiB`) — `modeling_utils.py:5025-5106 (caching_allocator_warmup)`, 호출 `:4417-4419`. 해제된 블록은 caching allocator에 **reserved로 남는다** [INFERRED]. 예시 모델 CondGen 4-bit 요청량: fp32 로드 11.032 GiB, bf16 로드 7.232 GiB [E11 계산]. [검증 재계산: 7,369,682,944×0.5 + 2,040,130,800×4 = 11,845,364,672 B, ×2이면 7,765,103,072 B. 호출 조건은 `device_map is not None` — bnb는 None을 `{"": cuda}`로 바꾸므로 단일 GPU에서는 항상 실행된다(`modeling_utils.py:4417-4419`). 기존 reserved−allocated가 있으면 요청량이 줄어든다(`:5068-5088`)]
 
-**4.5 device_map 제약** [VERIFIED 소스]
-bnb는 `max_memory`를 0.90배로 줄이고(`quantizer_bnb_4bit.py:97-100`), `device_map`에 cpu/disk가 섞이면 `ValueError`를 낸다(`:70-81`, `llm_int8_enable_fp32_cpu_offload=True`가 아니면). 비양자화 모델은 `"auto"`에서 CPU offload가 가능하다(`modeling_utils.py:4357-4359 accelerate_dispatch`) [INFERRED: 이 경우 VRAM 적합 판정 의미가 달라짐].
+**4.5 device_map 제약** [VERIFIED 소스 + CPU 시뮬레이션 V9 / free memory 값 자체는 INFERRED(CUDA 미실행)] **[검증 보정: 실효 계수 0.90 → 0.81]**
+`device_map`이 문자열(`"auto"` 등)이면 `_get_device_map`이 다음 순서로 처리한다 — `transformers==5.18.0 transformers/integrations/accelerate.py:338-376 (_get_device_map)`.
+1. `get_balanced_memory`로 GPU별 예산을 만든다. 기본값은 accelerate `get_max_memory`의 `torch.cuda.mem_get_info(i)[0]`(free)에 `memory_reserved − memory_allocated`를 더한 값이다(`accelerate==1.15.0 accelerate/utils/modeling.py:819`, `transformers/integrations/accelerate.py:202-237`). **GPU가 1개이고 사용자가 `max_memory`를 주지 않았으면 여기서 먼저 0.9배**를 한다("90% is a good compromise", `integrations/accelerate.py:283-292`).
+2. bnb quantizer가 예산을 다시 **0.90배**로 줄인다(`quantizer_bnb_4bit.py:97-100`, 호출 `integrations/accelerate.py:363`).
+3. `infer_auto_device_map`으로 배치한다. GPU 0에서는 "남은 모듈 중 가장 큰 layer" 크기를 예약한다(`integrations/accelerate.py:752`). 예시 모델은 가장 큰 leaf인 `lm_head`가 마지막에 배치되므로 이 예약은 결과를 바꾸지 않는다 [VERIFIED V9: 전부 GPU 0에 배치되는 최소 `max_memory[0]`이 모듈 합계 S보다 0.0003 GiB만 크다].
+4. 추론된 dict로 `validate_environment`를 **다시** 호출하고, cpu/disk가 섞이면 `ValueError`를 낸다(`integrations/accelerate.py:374`, `quantizer_bnb_4bit.py:70-81`, `llm_int8_enable_fp32_cpu_offload=True`가 아니면).
+
+따라서 단일 GPU에서 `max_memory`를 지정하지 않으면 실효 예산은 **(free + reserved − allocated) × 0.9 × 0.90 = × 0.81**이다. 사용자가 `max_memory`를 주면 1단계의 0.9는 빠지고 `min(user, free)` × 0.90이 된다. TRL은 `MULTI_GPU`/`DEEPSPEED`에서 `device_map=None`을 넘기며, 이때 bnb는 `{"": current_device}`로 바꾼다(`quantizer_bnb_4bit.py:102-119`). 이 경로에는 사전 적합 검사가 없어 넘치면 그대로 OOM이 난다. 비양자화 모델은 `"auto"`에서 CPU offload가 가능하다(`modeling_utils.py:4357-4359 accelerate_dispatch`) [INFERRED: 이 경우 VRAM 적합 판정 의미가 달라짐].
 
 **4.6 로드 후 비양자화 모듈 dtype = load dtype.** transformers는 Qwen3.5에 대해 fp32로 올리는 규칙이 없다(§1.4) [VERIFIED E1d: TRL 기본이면 embed/lm_head/norm/conv1d/A_log/dt_bias/vision 비양자화 전부 fp32, `dtype=bf16`이면 전부 bf16].
 
@@ -310,6 +317,8 @@ for module in model.modules():
 **5.5 `modules_to_save`: 원본은 frozen으로 남고 trainable deep copy가 추가된다.** [VERIFIED]
 `self.modules_to_save[adapter_name] = copy.deepcopy(self.original_module)` — `peft/utils/other.py:653 (ModulesToSaveWrapper.update)`; 원본 `requires_grad_(False)` — `:661`. E2: 원본·복사본 storage가 다름. 모듈 선택은 **점 경계 없는 `key.endswith(target_key)`** 다 — `peft/utils/other.py:1087-1088 (_set_trainable)`. 예를 들어 `"norm"`은 `input_layernorm`, `q_norm`까지 잡는다 [VERIFIED 소스].
 - 예시: `modules_to_save=["lm_head"]`는 lm_head 1,017,118,720 params의 **복사본 + grad + AdamW state 2개**를 추가한다. 2 B/elem이면 7.578 GiB, fp32이면 15.156 GiB [E11 계산].
+- **[검증 추가]** 사용자가 지정하지 않아도 `modules_to_save`에 `lm_head`가 들어가는 경로가 있다. SFT에서 `chat_template_path`가 `.jinja`/`.j2` 파일이 아닌 모델 ID이고 `clone_chat_template`이 새 token을 추가하면, TRL이 `peft_config.trainable_token_indices={"embed_tokens": added_tokens}`를 넣고 `"lm_head"`를 `modules_to_save`에 append한다(`trl/trainer/sft_trainer.py:1038-1048, 1099-1119`) [VERIFIED 소스, 미실행]. 기본값 `chat_template_path=None`이면 일어나지 않는다. resolver는 이 경우 위 lm_head 항목을 자동으로 더해야 한다.
+- 참고: LoRA 대상에서 `modules_to_save`를 빼는 검사는 점 경계 정규식 `(^|.*\.){m}($|\..*)`를 쓴다(`peft/tuners/tuners_utils.py:2361-2364`). 반면 wrapper를 씌우는 `_set_trainable`은 점 경계 없는 `endswith`를 쓴다. 두 규칙이 다르므로 `"proj"`처럼 짧은 이름은 LoRA가 걸린 `q_proj` 등을 다시 감쌀 수 있다 [VERIFIED 소스, INFERRED 결과].
 
 **5.6 `lora_dropout`** [VERIFIED 소스 + E10]
 `> 0`이면 `nn.Dropout(p)`, 아니면 `nn.Identity()` — `peft/tuners/lora/layer.py:255-258`. 드롭아웃 출력은 `lora_A`의 입력으로 저장되고(x 대신 새 tensor), dropout도 backward용 tensor를 저장한다. CPU에서는 입력 dtype의 noise tensor를 저장했다(E10). CUDA fused `native_dropout`은 bool mask(1 B/elem)를 저장한다 [INFERRED]. `p=0`이면 입력을 그대로 반환한다(복사 없음) [VERIFIED: `F.dropout(x, 0.0, True) is x`].
@@ -319,7 +328,7 @@ TRL DPO는 `disable_dropout=True`가 기본이라 모든 `nn.Dropout.p=0`이 된
 `"none"`(기본, `peft/tuners/lora/config.py:658-660`) / `"all"`(이름이 `bias`로 끝나는 모든 파라미터, vision LayerNorm bias 포함) / `"lora_only"`(LoRA 래핑 base layer의 bias) — `peft/tuners/tuners_utils.py:525-539`. 학습되는 bias는 load dtype이다(QLoRA+TRL이면 bf16).
 
 **5.8 DoRA** [VERIFIED 파라미터, INFERRED 런타임]
-targeted Linear마다 `lora_magnitude_vector` weight `(out_features,)`가 추가된다(E2: `(384,)` fp32, TRL QLoRA에서는 bf16) — `peft/tuners/lora/variants.py:141-167`, `peft/tuners/lora/dora.py:101-130 (DoraLinearLayer.update_layer)`. forward마다 base weight 전체를 dequant하고(`dequantize_module_weight`), `eye(in_features)`와 `lora_weight (out×in)`을 만들며, `weight + scaling·lora_weight`의 열 norm을 계산한다 — `dora.py:94-99 (get_lora_weight), 132-165 (DoraLinearLayer.forward)`. layer당 O(out·in + in²) 크기의 임시 tensor가 생긴다. 예: `down_proj` in=12288이면 `eye`만 151M 원소(bf16 302 MB).
+targeted Linear마다 `lora_magnitude_vector` weight `(out_features,)`가 추가된다(E2: `(384,)` fp32, TRL QLoRA에서는 bf16) — `peft/tuners/lora/variants.py:141-167`, `peft/tuners/lora/dora.py:101-130 (DoraLinearLayer.update_layer)`. forward마다 base weight 전체를 dequant하고(`dequantize_module_weight`), `eye(in_features)`와 `lora_weight (out×in)`을 만들며, `weight + scaling·lora_weight`의 열 norm을 계산한다 — `dora.py:94-99 (get_lora_weight), 132-165 (DoraLinearLayer.forward)`. layer당 O(out·in + in²) 크기의 임시 tensor가 생긴다. 예: `down_proj` in=12288이면 `eye`만 151M 원소(bf16 302 MB). **[검증 보정]** `eye`의 dtype은 `lora_A.weight.dtype`이다(`dora.py:97`). 그래서 TRL QLoRA(bf16 adapter)에서는 302 MB이고, 비양자화 LoRA(fp32 adapter)에서는 604 MB다.
 
 **5.9 LoRA 래퍼가 만드는 추가 tensor** [VERIFIED E10 + 소스]
 - 비양자화 `lora.Linear.forward`는 autocast 여부와 상관없이 항상 `x = self._cast_input_dtype(x, lora_A.weight.dtype)`를 호출한다 — `peft/tuners/lora/layer.py:1100`, `tuners_utils.py:2220-2235`. **fp32 adapter**면 x의 fp32 복사본(transient, 4 B/elem)이 생긴다. autocast가 이를 bf16으로 다시 cast하고 그 **bf16 복사본(2 B/elem)을 backward용으로 저장**한다. adapter가 bf16이면 x 자체를 저장한다(복사 없음). E10의 저장 목록이 이 차이를 보인다(`'new'` vs `'input_x'`).
@@ -361,7 +370,7 @@ if _is_quantized_model:
 모든 파라미터를 freeze하고, `Params4bit`가 아닌 fp16/bf16 파라미터를 **전부 fp32로** 올린 뒤 `torch.cuda.empty_cache()`를 부른다 — `peft==0.21.2 peft/utils/other.py:193-216`. GC kwargs 기본값 `{}`가 transformers에 그대로 넘어가 `use_reentrant` 없이 `checkpoint`가 호출되고, torch는 이를 **True**로 처리한다(`other.py:190-191, 253-258`; `torch/utils/checkpoint.py:635-645`). 다만 `Trainer.train()`이 시작할 때 자기 kwargs로 GC를 다시 켜므로(`transformers/trainer.py:1489-1500`, `train()` 내부) 실제 학습은 Trainer 설정을 따른다 [INFERRED].
 
 **6.4 그 밖의 TRL 동작**
-- 사용자가 `PeftModel`을 넘기고 `ref_model=None`이면 DPO/GRPO는 `"ref"` adapter를 하나 더 만든다(`dpo_trainer.py:647-671`, `grpo_trainer.py:452-476`). 이 adapter는 비활성(frozen)이라 bf16 cast 대상이 아니다(fp32 유지 가능) [INFERRED].
+- 사용자가 `PeftModel`을 넘기고 `ref_model=None`이면 DPO는 `"ref"` adapter를 하나 더 만든다(`dpo_trainer.py:647-674`). GRPO는 `beta != 0`일 때만 만든다(`grpo_trainer.py:452-480`, `beta` 기본값 0.0 — `grpo_config.py:676-677`). `add_adapter`의 `autocast_adapter_dtype=True` 기본값 때문에 이 adapter는 fp32로 생기고, frozen이라 TRL의 bf16 cast(`requires_grad`만 대상)를 피한다. **[검증 보정: INFERRED → VERIFIED(DPO)]** V12: tiny 4-bit + bf16 compute에서 사용자가 만든 `PeftModel`을 `DPOTrainer`에 넘기면 `default`는 bf16(trainable, 8,448)이고 `ref`는 **fp32(frozen, 8,448)** 다. 따라서 이 경로는 `P_lora × 4 B`를 추가로 상주시킨다. GRPO는 같은 코드이므로 INFERRED다.
 - 양자화 모델을 adapter 없이 학습하면 `ValueError("You cannot perform fine-tuning on purely quantized models...")` — `transformers/trainer_utils.py:100-140 (validate_quantization_for_training)` [VERIFIED 소스]. plan §5.1의 "Full + 4-bit 비지원"과 일치한다.
 - TRL은 vision tower를 freeze하지 않는다(트레이너에 freeze 코드 없음, grep). Full FT에서 vision 파라미터는 trainable이지만 text-only 데이터에서는 grad가 생기지 않는다(§Q8.4).
 
@@ -400,9 +409,9 @@ if self.gradient_checkpointing and self.training:
 ```
 
 **7.4 경계에 남는 것** [VERIFIED 구조 / INFERRED 수명]
-non-reentrant checkpoint는 구간 안의 saved tensor를 버리고, 재계산 closure가 **입력**을 붙잡는다. `Qwen3_5TextModel.forward`는 `decoder_layer(hidden_states, position_embeddings=..., attention_mask=..., position_ids=..., ...)`로 호출하므로(`modeling_qwen3_5.py:1290-1299`) layer마다 남는 것은 입력 `hidden_states` `[B, T, 4096]` 1개다. `position_embeddings`(cos/sin), mask, `position_ids`는 모든 layer가 같은 객체를 공유한다. 재계산은 forward 때의 autocast 상태로 실행된다 — `torch/utils/checkpoint.py:1897, 1944-1960 (_checkpoint_without_reentrant_generator.recompute_fn)`. RNG state는 기본 보존된다(`preserve_rng_state=True`, CPU/CUDA RNG state 소량).
+non-reentrant checkpoint는 구간 안의 saved tensor를 버리고, 재계산 closure가 **입력**을 붙잡는다. `Qwen3_5TextModel.forward`는 `decoder_layer(hidden_states, position_embeddings=..., attention_mask=..., position_ids=..., ...)`로 호출하므로(`modeling_qwen3_5.py:1290-1299`) layer마다 남는 것은 입력 `hidden_states` `[B, T, 4096]` 1개다. `position_embeddings`(cos/sin)와 `position_ids`는 모든 layer가 같은 객체를 공유한다. mask는 layer type별로 1개씩, 즉 `full_attention`용 causal mask와 `linear_attention`용 recurrent mask가 같은 type의 layer끼리 공유된다(`modeling_qwen3_5.py:1282-1285`) **[검증 보정: mask 2종]**. 재계산은 forward 때의 autocast 상태로 실행된다 — `torch/utils/checkpoint.py:1897, 1944-1960 (_checkpoint_without_reentrant_generator.recompute_fn)`. RNG state는 기본 보존된다(`preserve_rng_state=True`, CPU/CUDA RNG state 소량).
 - 경계 tensor dtype = residual stream dtype = **load dtype** (§Q9.3; TRL 기본이면 fp32 4 B/elem).
-- `offload=True`면 경계 tensor는 pinned host memory로 간다(device→host 복사). `every_n_layers=k`면 k번째 layer만 checkpoint하고 나머지는 전체 activation을 유지한다 [VERIFIED 소스 `modeling_utils.py:3123-3131`].
+- `offload=True`면 경계 tensor는 pinned host memory로 간다(device→host 복사). `every_n_layers=k`이면 일부 layer만 checkpoint하고 나머지는 전체 activation을 유지한다. **[검증 보정]** 선택 규칙은 "디코더 layer 번호 % k"가 아니다. `self.modules()` 순서로 센 **모든 `GradientCheckpointingLayer`의 일련번호** `layer_index % k == 0`이다(`modeling_utils.py:3181-3207 (_set_gradient_checkpointing)`; docstring은 `:3123-3131`). CondGen은 `model.visual`이 `language_model`보다 먼저 생성되므로(`modeling_qwen3_5.py:1318-1319`) vision block 27개가 앞 번호를 차지한다. 그래서 디코더 layer j는 `(27 + j) % k == 0`일 때 checkpoint된다. CausalLM은 `j % k == 0`이다 [VERIFIED V10: tiny(vision 2, decoder 4), k=3에서 CondGen decoder `[F,T,F,F]`, CausalLM `[T,F,F,T]`]. layer type(linear/full attention)마다 activation 크기가 다르므로 activation ledger는 이 번호 규칙으로 checkpoint 대상 layer를 골라야 한다.
 - 학습 중 cache: TRL은 forward에 `use_cache=False`를 명시하고(`sft_trainer.py:314, 1795`, `dpo_trainer.py:1279, 1332`, `grpo_trainer.py:1423`), Trainer는 `config.use_cache = args.use_cache`(기본 False)로 둔다(`trainer.py:633-634`, `training_args.py:953-958`) [VERIFIED].
 
 ### Q8. Optimizer와 gradient
@@ -429,10 +438,11 @@ non-reentrant checkpoint는 구간 안의 saved tensor를 버리고, 재계산 c
 
 **9.1 `Linear4bit` forward** [VERIFIED 소스, CUDA 분기는 INFERRED]
 `x = x.to(self.compute_dtype)` 후 `bnb.matmul_4bit(...)`를 호출하고 결과를 `.to(inp_dtype)`로 되돌린다 — `bitsandbytes/nn/modules.py:609-637`. grad가 필요하면 `MatMul4Bit.apply` → `torch.ops.bitsandbytes.gemm_4bit`로 간다(`autograd/_functions.py:303-362, 491`). CUDA 커널 선택 — `bitsandbytes/backends/cuda/ops.py:934-982`:
-- `M(=토큰 수) > 1536` 또는 `K % blocksize != 0` → **dequant + `F.linear` fallback**: `B_dq = torch.empty(shapeB, dtype=A.dtype)`로 **weight 전체를 compute dtype으로 복원**한다. DQ면 absmax 복원용 fp32 `nb` 원소가 추가된다 — `ops.py:901-916`.
+- `M(=토큰 수) > 1536` 또는 `K % blocksize != 0` → **dequant + `F.linear` fallback**: `B_dq = torch.empty(shapeB, dtype=A.dtype)`로 **weight 전체를 compute dtype으로 복원**한다. DQ면 fp32 `nb` 원소 tensor **2개**가 함께 살아 있다(`absmax_dq`와 `absmax = absmax_dq + absmax_offset`, 둘 다 함수 끝까지 참조됨) — `ops.py:903-916` **[검증 보정: 4·nb → 8·nb]**.
 - `M ≤ 4` → fused kernel. `5 ≤ M ≤ 1536` → GPU 아키텍처별 heuristic(`_gemm_4bit_use_custom_cuda`, `ops.py:584-812`). fp32 A는 `M < 8`일 때만 fused kernel.
 - 학습 시퀀스는 보통 M > 1536이므로 **layer 호출마다 `n × bytes(compute)` transient**가 생긴다. 예: 12288×4096 bf16 = 100,663,296 B.
 - `ctx.tensors = (None, B)`: activation A를 저장하지 않고 packed weight만 참조한다(`_functions.py:357-360`).
+- **[검증 추가]** `Linear4bit.forward`는 입력이 compute dtype이 아니면 `x.to(compute_dtype)` 사본(tokens × in × bytes(compute))을 만들고, 출력은 `.to(inp_dtype)`로 되돌린다(`bitsandbytes/nn/modules.py:626-637`). TRL 기본(fp32 residual, §9.3) + bf16 compute에서는 layer 호출마다 bf16 입력 사본(transient)과 fp32 출력(tokens × out × 4 B)이 생긴다 [VERIFIED 소스, 크기 INFERRED].
 
 **9.2 `Linear4bit` backward** [VERIFIED 소스, INFERRED 크기]
 
@@ -460,7 +470,7 @@ autocast는 가장 바깥 context를 나갈 때 cast cache를 비운다 — `tor
 
 **10.1 소스로 확인한 사실** [VERIFIED]
 - allocator 상수: `kMinBlockSize = 512`(모든 크기를 512 B 이상으로 반올림), `kSmallSize = 1 MiB`(small pool 상한), `kSmallBuffer = 2 MiB`(small pool segment), `kMinLargeAlloc = 10 MiB`, `kRoundLarge = 2 MiB` — `torch==2.14.1 torch/include/c10/core/AllocatorConfig.h:16-25`. 1–10 MiB 할당이 쓰는 `kLargeBuffer` 값은 헤더에 없다 [UNKNOWN; 일반적으로 20 MiB로 알려져 있으나 미확인].
-- `expandable_segments` 기본 false(`AllocatorConfig.h:209-215`). 환경변수는 `PYTORCH_ALLOC_CONF`(구 `PYTORCH_CUDA_ALLOC_CONF`도 지원, `:158-159`).
+- `expandable_segments` 기본 false(`AllocatorConfig.h:353` `use_expandable_segments_{false}`; 접근자는 `:213-215`) **[검증 보정: 인용 줄]**. 환경변수는 `PYTORCH_ALLOC_CONF`(구 `PYTORCH_CUDA_ALLOC_CONF`도 지원, `:158-159`).
 - `memory_allocated`는 tensor 점유만 센다. "unused memory can be held by the caching allocator and some context needs to be created on GPU" — `torch/cuda/memory.py:525-540`. CUDA context와 driver 예약은 `memory_reserved`에도 잡히지 않는다 [INFERRED: reserved는 caching allocator segment만 센다].
 - cuBLAS/cuBLASLt workspace 크기는 런타임 API로 조회할 수 있다: `torch.backends.cuda.cublas_workspace_size()`, `cublaslt_workspace_size()`. 기본 빌드에서는 `TORCH_CUBLASLT_UNIFIED_WORKSPACE`로 cuBLASLt가 cuBLAS workspace를 재사용한다 — `torch/backends/cuda/__init__.py:340-405`. 기본 크기 값 자체는 C++에 있어 이 머신에서 확인할 수 없다 [UNKNOWN].
 - transformers 로딩의 `caching_allocator_warmup`(§4.4)은 로드 직후 reserved를 모델 크기 이상으로 만든다. TRL은 `torch_empty_cache_steps=None`(기본)이므로 학습 중 `empty_cache`를 부르지 않는다(`trl/trainer/base_config.py:47-50, 97-102`). PEFT `prepare_model_for_kbit_training`은 upcast 후 `empty_cache`를 부른다(`peft/utils/other.py:211-216`).
@@ -508,6 +518,7 @@ peft:
 optimizer:
   name: adamw_torch_fused              # state dtype = param dtype
 gradient_checkpointing: {enabled: true, use_reentrant: false, granularity: decoder_layer, every_n_layers: 1, offload: false}
+  # [검증 보정] every_n_layers>1이면 vision block을 포함한 GradientCheckpointingLayer 일련번호로 선택(CondGen: (27+j)%k==0, §7.4)
 ```
 
 1. **기본 product preset은 `model_init_kwargs.dtype="bfloat16"`을 명시한 profile로 계산하고, TRL 기본(fp32) profile은 별도로 표시한다.** 예시 모델에서 둘의 상주 차이는 3.800 GiB다(아래 표). `requested`에 dtype이 없으면 `resolved.load_dtype = float32`로 기록한다(plan §11.3 requested/resolved).
@@ -566,25 +577,27 @@ timepoint 규칙(TrainerAdapter):
 
 ```text
 peak_allocated_load ≤ W_final(device) + max_q [ n_q·bytes(load_dtype) + (DQ ? 8·ceil(n_q/64) : 0) ]   # W_q 원본 + (_absmax, _absmax−offset) fp32 임시
+                      # [검증 보정] 비양자화 tensor의 bf16→fp32 변환이 host에서 일어난다는 가정(INFERRED, 미확정 1)이 붙은 상한이다.
+                      # device에서 변환된다면 가장 큰 비양자화 tensor의 원본 사본(embed_tokens bf16 2,034,237,440 B)이 순간적으로 더해진다.
 reserved_after_load ≥ min( Σ_q 0.5·n + Σ_nq n·bytes(load_dtype),  total_device_memory − 1.2 GiB )   # caching_allocator_warmup
 host_RAM_transient ≈ 가장 큰 단일 tensor (예: embed_tokens bf16 2.03 GB, CPU 쪽 fp32 변환이면 +4.07 GB)  [INFERRED]
 ```
 
 - 예시 모델(`gate_proj` 기준): W_final 대비 초과분 ≤ 207,618,048 B (0.193 GiB, fp32 로드) / 106,954,752 B (0.100 GiB, bf16 로드). §4.3의 0.218/0.124 GiB는 이 순간 materialize된 전체(출력 포함)다. 로딩 피크는 학습 피크보다 낮을 가능성이 크지만, warmup으로 reserved가 먼저 커지는 점을 `allocator_slack`의 근거로 기록한다.
-- fit 판정: bnb 4-bit + `device_map="auto"`는 **free memory × 0.90** 안에 들어가야 로딩된다. 넘으면 오류다. 비양자화 + `"auto"`는 CPU offload로 "로딩 성공"할 수 있으므로 VRAM-only 판정에서는 `unsupported/offload` 경고를 낸다.
+- fit 판정 **[검증 보정]**: 단일 GPU, bnb 4-bit, `device_map="auto"`, `max_memory` 미지정이면 `S_load ≤ (free + reserved − allocated) × 0.81`이어야 로딩된다(§4.5). 넘으면 `ValueError`다. `S_load = Σ_q 0.5·n + Σ_nq n·bytes(load_dtype)`(`compute_module_sizes`; warmup 합계와 1 MB 이내로 같다)이다. 예시 CondGen은 S = 11.032 GiB(fp32 로드)이므로 **free ≥ 13.62 GiB**, S = 7.232 GiB(bf16 로드)이므로 **free ≥ 8.93 GiB**가 필요하다 [VERIFIED V9 CPU 시뮬레이션 + 소스, CUDA 미실행]. 사용자가 `max_memory`를 주면 계수는 0.90이다. 분산(`device_map=None`)은 사전 검사 없이 OOM으로 실패한다. 비양자화 + `"auto"`는 CPU offload로 "로딩 성공"할 수 있으므로 VRAM-only 판정에서는 `unsupported/offload` 경고를 낸다.
 
 ### 3.6 런타임 transient (AllocationSpec, evidence=analytic, 수명 = 해당 matmul 호출)
 
 ```text
-q4_forward_dequant  = n_max_q · bytes(compute_dtype) [+ 4·ceil(n/64) if DQ]     # tokens(M) > 1536 (CUDA) 또는 compute fp32
+q4_forward_dequant  = n_max_q · bytes(compute_dtype) [+ 8·ceil(n/64) if DQ]     # tokens(M) > 1536 (CUDA) 또는 compute fp32  [검증 보정: DQ 항 4→8·nb, ops.py:911-914]
 q4_backward_dequant = n_max_q · bytes(load_dtype) + (load_dtype ≠ grad_dtype ? n_max_q · bytes(grad_dtype) : 0) [+ 4·ceil(n/64)]
 lora4bit_clone      = tokens × out_features × bytes(base_out_dtype)                 # PEFT bnb 래퍼의 result.clone()
 lora_fp32_input_copy= tokens × in_features × (4 transient + 2 saved)                 # 비양자화 lora.Linear + fp32 adapter
-dora_extra          = O(in² + 3·out·in) × bytes(compute) per targeted layer          # use_dora
+dora_extra          = in²·bytes(adapter) + O(3·out·in)·bytes(compute) per targeted layer   # use_dora; [검증 보정] eye는 adapter dtype(dora.py:97)
 autocast_cache      = P_lora × 2  (fp32 adapter일 때만, forward 구간)
 ```
 
-- 예시 모델 최댓값(12288×4096): forward 100.7 MB, backward 100.7 MB(bf16 로드) / 302.0 MB(fp32 로드).
+- 예시 모델 최댓값(12288×4096, nb = 786,432): DQ 항을 빼면 forward 100.7 MB, backward 100.7 MB(bf16 로드) / 302.0 MB(fp32 로드)다. DQ를 포함하면 forward 106,954,752 B(+8·nb), backward 103,809,024 B(bf16 로드) / 305,135,616 B(fp32 로드)(+4·nb)다 [검증 보정].
 - `5 ≤ M ≤ 1536` 구간의 fused/dequant 선택은 GPU 아키텍처별 heuristic이다. 보수적으로 dequant 경로(최대 transient)를 `bytes_high`, fused 경로(0)를 `bytes_low`로 둔다.
 
 ### 3.7 activation dtype 규칙 (activation ledger 담당자에게 전달)
@@ -613,5 +626,73 @@ autocast_cache      = P_lora × 2  (fp32 adapter일 때만, forward 구간)
 5. **TRL `create_model_from_path`의 architecture 추론이 revision을 무시**(§1.3)한다. 고정 revision과 `main`의 `config.architectures`가 다르면 다른 class가 로드될 수 있다. registry는 class를 고정 revision의 config로 결정하고, 실행 시 `model_init_kwargs.revision`과 함께 경고를 띄울지 결정이 필요하다.
 6. **AutoProcessor 의존성**: 이 venv에서는 Pillow/torchvision이 없어 MiMo의 `AutoProcessor.from_pretrained`가 실패했다. TRL 트레이너는 `processing_class=None`이면 AutoProcessor를 호출하므로(`sft_trainer.py:1003-1006`) 실제 학습 환경 lock에 Pillow 포함 여부, 또는 tokenizer를 명시적으로 넘기는 preset이 필요하다(전처리 조사와 조율).
 7. **`modules_to_save`가 4-bit 모듈을 가리키는 경우**(예: skip에서 빠진 `lm_head`): `Linear4bit` deep copy가 학습 가능한지는 확인하지 않았다. 지원 조합에서 차단하는 편이 안전하다.
-8. **PeftModel 입력 + DPO/GRPO의 `"ref"` adapter**의 dtype과 상주량(fp32 frozen 사본 가능성)은 소스 추론뿐이다(§6.4).
-9. **vision tower가 실행되지 않는 trainable 파라미터**에 대해 DDP/FSDP(다중 GPU)에서도 grad/state가 생기지 않는지는 단일 장치에서만 확인했다(E5d). 다중 GPU 확장(plan §9.8) 때 재확인이 필요하다.
+8. **PeftModel 입력 + DPO/GRPO의 `"ref"` adapter** — **[검증으로 일부 해소]** DPO는 V12에서 fp32 frozen 사본(`P_lora × 4 B`)을 실측했다(§6.4). 남은 것은 GRPO(`beta≠0`)의 실측과, ref adapter를 forward할 때 생기는 activation/transient(adapter 전환 비용)다.
+9. **vision tower가 실행되지 않는 trainable 파라미터**에 대해 DDP/FSDP(다중 GPU)에서도 grad/state가 생기지 않는지는 단일 장치에서만 확인했다(E5d, V6). 다중 GPU 확장(plan §9.8) 때 재확인이 필요하다. [검증 추가] `PeftModel`은 `PreTrainedModel`이 아니므로 Trainer는 `ddp_find_unused_parameters=None`일 때 `find_unused_parameters=True`로 DDP를 감싼다(`transformers/trainer.py:737-746`). 그래서 미사용 파라미터 때문에 DDP가 멈추지는 않을 것으로 보인다. 다만 모든 rank에서 쓰이지 않은 파라미터의 grad가 None으로 남는지는 DDP reducer(C++) 동작이라 미확인이다.
+
+---
+
+## 검증 로그 (Verification log)
+
+| 항목 | 값 |
+|---|---|
+| 검증자 | verify-loading-quant-peft (적대적 재검증, 원 작성자 아님) |
+| 날짜 | 2026-10-04 |
+| 환경 | 같은 공유 venv(torch 2.14.1 / transformers 5.18.0 / trl 1.14.1 / peft 0.21.2 / bitsandbytes 0.50.2 / accelerate 1.15.0, 버전을 import로 재확인), macOS arm64 CPU(MPS가 있으므로 `use_cpu=True`로 CPU를 강제하고 파라미터 device가 전부 `cpu`인지 확인) |
+| 원칙 | 원 문서의 실험 산출물(`tiny_qwen35`, `tensor_inventory.json`)은 재사용하지 않았다. header를 다시 받고, tiny clone을 새로 만들고, 스크립트도 새로 작성했다 |
+
+### 재현 실험 (scratch `/tmp/vf-research/scratch/verify-loading-quant-peft/`, 커밋하지 않음)
+
+| ID | 스크립트 | 내용과 결과 |
+|---|---|---|
+| V1 | `v_headers.py` | `huggingface_hub.get_safetensors_metadata`(header만)로 받음: 760 tensors 전부 BF16, 9,409,813,744 params. `model.visual.*` 333개 = 456,010,480, 나머지 427개 = 8,953,803,264. index `total_size` 18,819,627,488 = 2 × params |
+| V2 | `v_q4bytes.py` | CPU `F.quantize_4bit`(nf4, bs64)에서 QuantState 구성 tensor의 byte를 직접 합산했다. 4096², 12288×4096, 8192×4096, 32×4096, 1152×3456, 4608², 4097×3, 3×7 × DQ on/off **16개 경우 모두 공식과 byte 단위 일치** |
+| V3 | `v_meta_inventory.py` | 실제 config로 full-size meta 모델을 만들고 `Bnb4BitHfQuantizer._process_model_before_weight_loading`(transformers와 같은 경로)을 적용했다. CondGen: skip `['lm_head']`, Linear4bit 358(vision 110), 양자화 7,369,682,944, 비양자화 2,040,130,800, DQ 3,802,183,024 B, noDQ 4,145,469,568 B, 512 B 반올림 +422,544 B. CausalLM: 248, 3,569,313,760 B. `llm_int8_skip_modules=["model.visual"]`이면 `lm_head`가 Linear4bit가 된다 |
+| V4 | `v_peft_meta.py` | 위 meta 모델에 실제 `get_peft_model(..., low_cpu_mem_usage=True)` 적용: all-linear 358 layer / 51,265,024(vision 7,986,688). `exclude_modules=".*visual.*"`, CausalLM, 이름 목록 세 경우 모두 248 / 43,278,336 |
+| V5 | `v_target_none.py` | `LoraConfig(r=16)`(target 미지정) → `ValueError: Please specify target_modules ...` |
+| V6 | `v_make_tiny.py`, `v_sft_tiny.py` ×4 | 새 tiny CondGen clone(linear 3 + full 1, vision depth 2, vocab 248320, BF16, top-level dtype 제거)으로 실제 `SFTTrainer`(GA 2, 2 step) 실행. 4개 경우(QLoRA·LoRA × TRL 기본·`dtype=bf16`) 모두 원 문서 표와 일치. 상세는 아래 표 1·8·9·12–15번 |
+| V7 | `v_keymap.py`, `v_auto_causal.py` | V1 header의 key와 shape가 CondGen state_dict(760)와 일치하고, `^model\.language_model\.` 재매핑 후 CausalLM state_dict(427)와도 일치(missing/unexpected/shape 불일치 0). tiny를 실제 `AutoModelForCausalLM`으로 로드하면 `Qwen3_5ForCausalLM`, missing 0 / unexpected 0, `up_proj` 값이 checkpoint와 같다. dtype 없이 `from_pretrained`하면 bf16 |
+| V8 | `v_load_transient.py` | `F.quantize_4bit`를 weakref로 계측: 41회 호출 모두 `MainThread`, 입력 dtype = load dtype(fp32/bf16), 이전 입력이 살아 있던 경우 0 |
+| V9 | `v_devmap.py` | full-size 4-bit meta 모델로 `infer_auto_device_map`을 이분 탐색: 전부 GPU 0에 놓이는 최소 `max_memory[0]` = S + 0.0003 GiB(S = 11.032 / 7.232 GiB, fp32 / bf16 로드). 주의: 이 시뮬레이션은 모듈 교체를 dtype context 밖에서 해서 bf16 경우 Linear4bit bias 280,432개를 fp32로 셌다(+560,864 B). 실제 `from_pretrained`는 `preprocess_model`을 `local_torch_dtype(dtype)` 안에서 호출한다(`modeling_utils.py:4290-4302, 3740`). 결론 수치(8.93 GiB)에는 영향이 없다 |
+| V10 | `v_every_n.py` | `gradient_checkpointing_enable(every_n_layers=3)`: CondGen vision `[T,F]`, decoder `[F,T,F,F]` / CausalLM decoder `[T,F,F,T]` |
+| V11 | `v_bnb_optim.py` | CPU bnb optimizer state byte: AdamW8bit·PagedAdamW8bit n=65,536 → tensor별 133,120 B(2.03125 B/param) + optimizer 공유 qmap 2,048 B. n=512 → fp32 8 B/param. AdamW32bit + bf16 param → 8 B/param. CPU에서는 paged가 꺼지므로 paging 자체는 검증하지 못했다 |
+| V12 | `v_dpo_ref.py` | 4-bit tiny + 사용자 `PeftModel` → `DPOTrainer`: `default` bf16 trainable 8,448, `ref` **fp32 frozen** 8,448 |
+| V13 | `v_saved.py` | `saved_tensors_hooks`로 기록, CPU bf16 autocast: fp32 adapter면 `lora_A`가 저장하는 활성값이 x의 새 bf16 사본(`is_x=False`)이고, bf16 adapter면 x 자체(`is_x=True`)다. r 차원 중간값은 두 경우 모두 저장된다 |
+
+### 확인한 주장과 판정
+
+| # | 주장 (문서 위치) | 판정 | 근거 (한 줄) |
+|---|---|---|---|
+| 1 | TRL `create_model_from_path`는 dtype 미지정 시 fp32로 로드하고, `from_pretrained` 단독은 `"auto"`(예시 BF16)다 (§1.1–1.2) | VERIFIED | `trl/trainer/utils.py:1292-1300`, `transformers/modeling_utils.py:4106-4107, 815-896`. V6: TRL 기본이면 frozen 비양자화 전부 fp32. V7: 무인자 `from_pretrained` → bf16 |
+| 2 | 문자열 진입 시 `getattr(transformers, architectures[0])` → CondGen, vision 상주. `AutoConfig`에 revision을 넘기지 않는다 (§1.3) | VERIFIED | `utils.py:1308-1309`(`trust_remote_code`만 전달). V6: class CondGen, vision LoRA tensor 20개 존재. V1: 9,409,813,744 |
+| 3 | `AutoModelForCausalLM` → `Qwen3_5ForCausalLM`, visual/mtp를 경고 없이 버리고 prefix를 재매핑한다. 333 tensors / 456,010,480 (§1.4) | VERIFIED | `modeling_auto.py:854`, `modeling_qwen3_5.py:1679`, `conversion_mapping.py:1054`, `auto_factory.py:395-410`. V1·V7 |
+| 4 | 변환 규칙은 `type(module) is nn.Linear` 또는 Conv1D, 기본 skip은 `['lm_head']`, 사용자 skip 목록은 기본값을 대체한다. 358 = 248 + 110 (§2.1–2.4) | VERIFIED | `integrations/bitsandbytes.py:189`, `quantizer_bnb_4bit.py:129-131` + `quantizers/base.py:238-258`(`add_default_skips=False`). V3 |
+| 5 | `BitsAndBytesConfig` 기본값은 fp4 / DQ 없음 / fp32 / uint8, blocksize 64 고정, nested 256 (§2.3, §3.1) | VERIFIED | `quantization_config.py:440-493`. `Linear4bit.__init__`에는 blocksize 인자가 아예 없다(`nn/modules.py:537-567`). `Params4bit` None→64(`:230-231`). `functional.py:940` |
+| 6 | `B_q4_DQ`/`B_q4_noDQ` 공식과 예시 4개 값, block padding 없음 (§3.3–3.4) | VERIFIED | V2(16개 경우 byte 일치). CUDA op 할당 shape가 default op와 같다(`_ops.py:225-236`, `backends/cuda/ops.py:384-392`, nested `:299-311`) |
+| 7 | 예시 합계 3,802,183,024 / 3,569,313,760 B, 비양자화 2,040,130,800, embed+lm_head 3.789 / 7.578 GiB, 반올림 +422,544 B (§3.5, §6.2) | VERIFIED | V3. §3.4 profile 표 7행도 이 값으로 다시 합산해 일치(step scalar를 512 B 블록으로 셈) |
+| 8 | TRL SFT/DPO/GRPO는 `prepare_model_for_kbit_training`을 호출하지 않는다. 순서는 get_peft_model → (ZeRO-3 reentrant) → `enable_input_require_grads` → 양자화면 trainable 전부 bf16 (§6.1) | VERIFIED | 함수는 `trl/experimental/*`에만 있다(grep). `sft_trainer.py:1129-1167`, `dpo_trainer.py:640-712`, `grpo_trainer.py:440-516`. V6: QLoRA trainable 전부 bf16 |
+| 9 | adapter는 fp32로 생성 → base dtype(Linear4bit는 `compute_dtype`) → `autocast_adapter_dtype`로 fp32. 비양자화 LoRA는 fp32, TRL QLoRA는 bf16, `modules_to_save` 복사본은 upcast하지 않는다 (§5.2) | VERIFIED | `tuners_utils.py:2149-2165, 2705-2763`. `ModulesToSaveWrapper`는 `BaseTunerLayer`가 아니다(`other.py:303, 598`). V6 `lora_bf16`: base bf16 + adapter·state fp32 |
+| 10 | all-linear 358 / 51,265,024(vision 7,986,688), text-only 248 / 43,278,336. `qwen3_5`에서 target 미지정이면 `ValueError` (§5.3) | VERIFIED | V4(실제 PEFT 경로), V5. `peft/utils/constants.py`에 `qwen3_5` 없음 |
+| 11 | `modules_to_save` = frozen 원본 + trainable deepcopy, 점 경계 없는 `endswith`, lm_head +7.578 GiB (§5.5) | VERIFIED (+보완) | `other.py:653, 661, 1088`. 1,017,118,720 × 2 B × 4 = 8,136,949,760 B. SFT `chat_template_path` 자동 추가 경로와 LoRA 제외 규칙(점 경계 정규식)과의 불일치를 본문에 추가 |
+| 12 | GC는 TRL 기본 on, transformers 기본 `use_reentrant=False`, 단위는 `GradientCheckpointingLayer`, torch는 None을 True로 처리 (§7) | VERIFIED / CORRECTED(세부) | `base_config.py:61`, `modeling_utils.py:3138-3139`, `trainer.py:1494-1498`(`gc_kwargs or None`), `torch/utils/checkpoint.py:635-645`. V6 keywords `{'use_reentrant': False}`. **보정**: `every_n_layers` 선택은 vision block을 포함한 일련번호 기준(V10, §7.4) |
+| 13 | 기본 optim `adamw_torch_fused`. state는 지연 생성되고 param dtype을 따르며 step은 fp32 scalar. bnb 8-bit 2.03125 / 8, 32-bit 8, paged는 ≥1e5, Embedding은 32-bit 강제 (§8.1–8.3) | VERIFIED | `training_args.py:803-810`, `trainer_optimizer.py:206-207`, `torch/optim/adam.py:150-189`, bnb `optimizer.py:374-392, 491-532`, `trainer.py:1315-1326`. V6, V11. paged의 managed memory 할당은 CPU에서 확인 불가(미확정 4 유지) |
+| 14 | 실행되지 않은 trainable은 grad·state가 없다. GA microbatch 사이에 grad가 유지되고 `zero_grad` 뒤 None이 된다 (§8.4) | VERIFIED | V6: text state 62/62, vision 0/20, post-accumulate hook 4회(2 step × GA 2), substep 끝에 grad 62개 존재, 학습 후 전부 None. `trainer.py:1908`, `module.py:2957` |
+| 15 | autocast 하에서 residual·checkpoint 경계 dtype = load dtype, Linear4bit 출력 = 입력 dtype (§9.3) | VERIFIED | V6: layer0 (in, out) = fp32/fp32(TRL 기본) vs bf16/bf16(`dtype=bf16`), `is_autocast_enabled('cpu')=True`. `bitsandbytes/nn/modules.py:637`. accelerate의 fp32 출력 변환 `accelerator.py:1824-1835` |
+| 16 | on-the-fly 양자화는 동기·tensor 1개씩. warmup 요청량 11.03 / 7.23 GiB (§4.2, §4.4) | VERIFIED | `core_model_loading.py:1626-1636`. V8. warmup 공식 재계산 일치(`modeling_utils.py:4991-5106`, 상한 `:5096`) |
+| 17 | Linear4bit forward는 M > 1536이면 전체 dequant, backward는 `quant_state.dtype`으로 dequant 후 grad dtype으로 cast. 100.7 / 302 MB (§9.1–9.2) | VERIFIED(소스) / CORRECTED(DQ 항) | `backends/cuda/ops.py:926, 954, 903-916`, `_functions.py:384`, CUDA `dequantize_4bit` 출력 `torch.empty(shape, dtype=dtype)`(`ops.py:432`). **보정**: forward의 DQ 임시는 8·nb다(`absmax_dq`와 그 합이 동시에 존재). CUDA 실행 자체는 INFERRED |
+| 18 | `lora.Linear`는 항상 adapter dtype으로 입력을 cast하고, bnb wrapper는 base 출력을 clone한다. DoRA는 magnitude `(out,)`과 `eye(in)` 임시를 만든다 (§5.8–5.9) | VERIFIED | `lora/layer.py:1100`, `lora/bnb.py:533, 543`, `lora/dora.py:97`(eye의 dtype = adapter dtype, fp32 adapter면 302 MB가 아니라 604 MB). V13 |
+| 19 | bnb 4-bit + `device_map="auto"` 적합 조건 = free × 0.90 (§3.5, §4.5) | **CORRECTED** | 단일 GPU이고 `max_memory`를 주지 않으면 `get_balanced_memory`의 0.9 × bnb 0.90 = **0.81**이다(`integrations/accelerate.py:283-292, 363, 374`). V9: 필요 free 13.62 GiB(fp32 로드) / 8.93 GiB(bf16 로드) |
+| 20 | DPO/GRPO `"ref"` adapter는 fp32로 유지될 수 있다 [원 INFERRED] (§6.4, 미확정 8) | **CORRECTED** (INFERRED → VERIFIED, DPO) | V12: ref fp32 frozen, default bf16. GRPO는 같은 코드이지만 `beta` 기본 0.0이라 기본 설정에서는 생성하지 않는다 |
+| 21 | allocator 상수(`kMinBlockSize=512` 등), `kLargeBuffer`가 헤더에 없음, `expandable_segments` 기본 false (§10.1) | VERIFIED (인용 보정) | `torch/include/c10/core/AllocatorConfig.h:16-25`. 기본 false는 `:353`에 있다(원 인용 `:209-215`는 접근자) |
+| 22 | host·device dtype 변환 위치, CUDA context·workspace 크기, paged managed memory의 계측 방식 (§4.3, §10, 미확정 1·3·4) | UNVERIFIABLE | wheel에 C++ 소스가 없고 이 머신에는 CUDA가 없다. 원 문서의 INFERRED/UNKNOWN 태그를 유지했고, §3.5 상한에는 이 가정이 붙어 있다고 명시했다 |
+
+### 본문 수정 요약
+
+- §4.5, §3.5: bnb 4-bit 로딩 적합 계수를 0.90에서 **0.81**로 바꿨다(단일 GPU, `max_memory` 미지정). 사용자가 `max_memory`를 준 경우와 분산(`device_map=None`, 사전 검사 없음)을 구분했다. 예시 모델의 필요 free memory를 넣었다.
+- §3.5: `peak_allocated_load` 상한이 "host에서 dtype 변환"이라는 INFERRED 가정 위에 있음을 명시했다.
+- §9.1, §3.6: forward dequant의 DQ 임시를 4·nb에서 **8·nb**로 고쳤다. DQ를 포함한 byte 값을 추가했다. fp32 residual에서 `Linear4bit` 입출력 cast 사본이 생긴다는 점을 추가했다.
+- §7.4, §3.1 YAML: `every_n_layers`의 선택 번호 규칙(CondGen `(27+j)%k`)과 mask 2종 공유를 보정했다.
+- §6.4, 미확정 8: DPO ref adapter fp32를 VERIFIED로 올렸다.
+- §5.8, §3.6: DoRA `eye(in)` 임시의 dtype이 adapter dtype이라는 점을 반영했다(fp32 adapter면 2배).
+- §5.5: SFT `chat_template_path`의 `lm_head` 자동 `modules_to_save` 경로와 매칭 규칙 불일치를 추가했다.
+- §10.1 인용 줄을 고쳤다. 미확정 9에 DDP `find_unused_parameters` 기본값을 보충했다.
+- 원 문서의 나머지 수치(§3.4 profile 표, §6.2 표, §4.3 transient, LoRA 파라미터 수)는 다시 계산해 바꿀 것이 없었다.
