@@ -185,9 +185,7 @@ def test_unknown_dtype(model_dir: ModelDir, st_writer: Any) -> None:
     target, access = model_dir(tensors=None)
     header = {"w.weight": {"dtype": "Q3", "shape": [4], "data_offsets": [0, 4]}}
     st_writer.write_header(target / "model.safetensors", header)
-    _fails(
-        ErrorCode.UNSUPPORTED_MODEL_FORMAT, target, access, reason="unknown_dtype", dtype="Q3"
-    )
+    _fails(ErrorCode.UNSUPPORTED_MODEL_FORMAT, target, access, reason="unknown_dtype", dtype="Q3")
 
 
 def test_malformed_header(model_dir: ModelDir) -> None:
