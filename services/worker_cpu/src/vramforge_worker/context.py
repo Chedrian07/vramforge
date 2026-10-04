@@ -143,8 +143,11 @@ class WorkerJobContext:
         progress, partial = self._pending
         self._pending = None
         with session_scope(self.sessions) as db:
+            # Lock before checking the lease: a terminal event committed by another process
+            # (reaper, on_stopped) must never be followed by one of ours.
+            store.lock_analysis(db, self.analysis_id)
             if self._still_leased(db):
-                self._event(db, EventType.PROGRESS, progress=progress, partial=partial)
+                self._event(db, EventType.PROGRESS, progress=progress, partial=partial, lock=False)
         self._last_event = time.monotonic()
 
     # ---------------------------------------------------------------- JobContext
@@ -189,8 +192,9 @@ class WorkerJobContext:
     def warn(self, issue: Issue) -> None:
         self.flush_progress()
         with session_scope(self.sessions) as db:
+            store.lock_analysis(db, self.analysis_id)
             if self._still_leased(db):
-                self._event(db, EventType.WARNING, issue=issue)
+                self._event(db, EventType.WARNING, issue=issue, lock=False)
 
     def cancelled(self) -> bool:
         return self.state.cancel_requested or self.state.lease_lost

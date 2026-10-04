@@ -350,3 +350,53 @@ def test_artifact_dir_is_owner_scoped(settings: Settings, sessions, monkeypatch)
     aid = create_analysis(sessions)
     tasks.run_analysis(aid, 1)
     assert captured == [settings.data_dir / "artifacts" / OWNER / aid]
+
+
+def test_context_events_never_follow_a_terminal_event(
+    settings: Settings, sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Progress and warning events check the lease under the analysis row lock, so a terminal
+    event written by another process (reaper, on_stopped) is never followed by a stray event."""
+    from vramforge_api import store
+    from vramforge_estimator.sources import SourceAccess
+    from vramforge_worker.context import WorkerJobContext
+    from vramforge_worker.lease import LeaseState, acquire_lease
+
+    aid = create_analysis(sessions)
+    assert acquire_lease(sessions, aid, 1, "me", ttl_s=30)
+    ctx = WorkerJobContext(
+        settings=settings,
+        sessions=sessions,
+        analysis_id=aid,
+        owner_key=OWNER,
+        fingerprint="req_test",
+        lease_owner="me",
+        artifact_dir=settings.data_dir / "artifacts" / OWNER / aid,
+        access=SourceAccess(),
+        state=LeaseState(),
+    )
+    order: list[str] = []
+    real_lock, real_check = store.lock_analysis, WorkerJobContext._still_leased
+
+    def lock(db, analysis_id):
+        order.append("lock")
+        real_lock(db, analysis_id)
+
+    def check(self, db):
+        order.append("lease")
+        return real_check(self, db)
+
+    monkeypatch.setattr(store, "lock_analysis", lock)
+    monkeypatch.setattr(WorkerJobContext, "_still_leased", check)
+    warning = Issue(code=ErrorCode.SCAN_FAILED_ROWS, severity="warning", user_message="x")
+    ctx.warn(warning)
+    assert order == ["lock", "lease"]
+    assert event_types(sessions, aid)[-1] == ("warning", "QUEUED")
+
+    with session_scope(sessions) as db:  # the reaper gave up on this run meanwhile
+        store.finish(db, db.get(Analysis, aid), JobStatus.FAILED)
+    before = event_types(sessions, aid)
+    ctx.warn(warning)
+    ctx.report(JobProgress(stage=JobStatus.TOKENIZING, processed_rows=1, total_rows=1))
+    assert event_types(sessions, aid) == before
+    assert before[-1] == ("failed", "FAILED")
