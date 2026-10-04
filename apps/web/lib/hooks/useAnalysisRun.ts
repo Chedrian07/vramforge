@@ -89,7 +89,7 @@ function reducer(state: RunState, action: Action): RunState {
       return {
         ...state,
         jobStatus: e.status,
-        progress: (e.progress as JobProgress | null | undefined) ?? state.progress,
+        progress: e.progress ?? state.progress,
         partial: e.partial ?? state.partial,
         liveIssues: e.type === "warning" && e.issue ? [...state.liveIssues, e.issue] : state.liveIssues,
         endIssue: ended ? (e.issue ?? null) : state.endIssue,

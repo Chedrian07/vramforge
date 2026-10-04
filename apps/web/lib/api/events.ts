@@ -1,9 +1,12 @@
 // SSE payload contract. FastAPI's OpenAPI output leaves text/event-stream untyped, so this Zod
 // schema mirrors packages/estimator/src/vramforge_estimator/schemas/events.py (`AnalysisEvent`)
-// and validates every received event (docs/research/stack-compat.md W8 option c).
+// and validates every received event (docs/research/stack-compat.md W8 option c). The parts that
+// are in the generated contract (JobProgress, ShardProgress, Issue) are checked against it at
+// compile time below; AnalysisEvent and EventType are checked as soon as the OpenAPI document
+// lists them in components (`pnpm gen:api`).
 import { z } from "zod";
 
-import type { JobStatus, Severity } from "./types";
+import type { JobStatus, Schemas, Severity } from "./types";
 
 export const EVENT_TYPES = [
   "progress",
@@ -84,7 +87,33 @@ export const analysisEventSchema = z.object({
 
 export type AnalysisEvent = z.infer<typeof analysisEventSchema>;
 export type EventIssue = z.infer<typeof eventIssueSchema>;
-export type EventProgress = z.infer<typeof jobProgressSchema>;
+/** The generated contract type: the validated payload is assignable to it (checked below). */
+export type EventProgress = Schemas["JobProgress"];
+
+// ---------------------------------------------------------------- contract parity (compile time)
+
+type KeyParity<A, B> = [Exclude<keyof A, keyof B>, Exclude<keyof B, keyof A>] extends [never, never]
+  ? true
+  : { onlyInContract: Exclude<keyof A, keyof B>; onlyInMirror: Exclude<keyof B, keyof A> };
+/** A component of the generated schema, or never while the OpenAPI document lacks it. */
+type Generated<K extends string> = Schemas extends Record<K, infer T> ? T : never;
+type ParityOnceGenerated<T, Mirror> = [T] extends [never] ? true : KeyParity<T, Mirror>;
+
+export const eventContractParity: {
+  progress: KeyParity<Schemas["JobProgress"], z.infer<typeof jobProgressSchema>>;
+  shard: KeyParity<Schemas["ShardProgress"], NonNullable<z.infer<typeof jobProgressSchema>["shard_progress"]>>;
+  // Same keys as Issue; `code` stays a plain string so an unknown new code never drops an event.
+  issue: KeyParity<Schemas["Issue"], EventIssue>;
+  event: ParityOnceGenerated<Generated<"AnalysisEvent">, AnalysisEvent>;
+} = { progress: true, shard: true, issue: true, event: true };
+
+// Validated progress is usable wherever the generated JobProgress type is expected.
+const progressAssignable: EventProgress = null as unknown as z.infer<typeof jobProgressSchema>;
+void progressAssignable;
+
+// Every event type of the contract is listed in EVENT_TYPES (once EventType is generated).
+const eventTypesComplete: [Exclude<Generated<"EventType">, EventType>] extends [never] ? true : never = true;
+void eventTypesComplete;
 
 /** Parses one SSE `data:` payload; malformed or unknown-shaped events are dropped. */
 export function parseEventData(data: unknown): AnalysisEvent | null {
