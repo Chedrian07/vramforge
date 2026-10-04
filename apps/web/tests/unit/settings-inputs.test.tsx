@@ -139,3 +139,20 @@ describe("advanced settings", () => {
     expect(screen.getByLabelText("rank (r)")).toBeDisabled();
   });
 });
+
+describe("dataset & reproducibility group", () => {
+  it("summarises the mapping and the template/scope options", async () => {
+    const user = userEvent.setup();
+    renderForm(<AdvancedSettings resolved={null} datasetInspection={null} />, {
+      mappingEnabled: true,
+      mapPrompt: "question",
+      mapChosen: "chosen",
+    });
+    await user.click(screen.getByRole("button", { name: /^Dataset & reproducibility/ }));
+    expect(screen.getByText("question → prompt, chosen → chosen")).toBeInTheDocument();
+    expect(screen.getByLabelText("enable_thinking (chat template)")).toHaveValue("default");
+    expect(screen.getByLabelText("빈 system 메시지")).toHaveValue("omit");
+    expect(screen.getByRole("switch", { name: "평가 단계 포함" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByLabelText("모델 revision")).toBeInTheDocument();
+  });
+});

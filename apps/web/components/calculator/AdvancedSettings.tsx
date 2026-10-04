@@ -294,10 +294,46 @@ function MethodSpecific({
   );
 }
 
+const MAPPING_ROLES = [
+  ["mapSystem", "system"],
+  ["mapPrompt", "prompt"],
+  ["mapChosen", "chosen"],
+  ["mapRejected", "rejected"],
+  ["mapCompletion", "completion"],
+  ["mapMessages", "messages"],
+  ["mapText", "text"],
+] as const;
+
+/** Read-only mapping summary; the editor itself lives next to the dataset input. */
+function MappingSummary() {
+  const values = useWatch<FormValues>() as FormValues;
+  const pairs = MAPPING_ROLES.filter(([field]) => values[field]).map(([field, role]) => `${values[field]} → ${role}`);
+  const jump = () => {
+    const target = document.getElementById("mapping-format") ?? document.getElementById("dataset-reference");
+    target?.focus();
+  };
+  return (
+    <Wide>
+      <div className="flex flex-col gap-1 rounded-lg border border-line bg-surface-2 px-3 py-2 text-[13px]">
+        <span className="font-medium text-ink-2">컬럼 매핑</span>
+        <span className="text-ink">
+          {values.mappingEnabled && pairs.length > 0 ? pairs.join(", ") : "자동 감지 (분석 시 서버가 적용한 매핑을 결과에 표시)"}
+        </span>
+        <span>
+          <button type="button" onClick={jump} className="text-[12px] text-accent underline underline-offset-2">
+            Dataset 영역의 매핑 편집으로 이동
+          </button>
+        </span>
+      </div>
+    </Wide>
+  );
+}
+
 function DatasetReproducibility({ inspection }: { inspection: DatasetInspection | null }) {
   const splits = (inspection?.splits ?? []).map((s) => s.name);
   return (
     <>
+      <MappingSummary />
       {splits.length > 0 ? (
         <SelectField name="datasetSplit" label="학습 split" options={[{ value: "", label: "자동 (train)" }, ...splits.map((s) => ({ value: s, label: s }))]} />
       ) : (
