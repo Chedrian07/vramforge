@@ -86,9 +86,11 @@ scenario_high_bytes = max_t high(t)    (미상 timepoint가 하나라도 있으�
 - **device_map 예산 검사**: TRL은 단일 GPU에서 `device_map="auto"`로 로드하고, `max_memory`가 없으면 transformers가 가용 메모리의 0.9배, bitsandbytes 4-bit가 다시 0.90배를 예산으로 씁니다(docs/research/loading-quantization-peft.md §4.5, V9).
 
 ```text
-device_map_budget = ceil(W / f),   f = 0.81 (bnb 4-bit) | 0.9 (비양자화)
-W = 상주 가중치 bytes (compute_module_sizes의 S_load 이상이라 보수적)
+device_map_budget = ceil(S_load / f),   f = 0.81 (bnb 4-bit) | 0.9 (비양자화)
+S_load = Σ_4bit 0.5 × n + Σ_나머지 n × bytes(load dtype)    # transformers compute_module_sizes
 ```
+
+  `S_load`는 architecture adapter가 제공합니다(예시 MiMo QLoRA bf16: 7,765,103,072 B → 가용 8.93 GiB 필요, research §3.5 V9와 일치). adapter가 제공하지 않으면 상주 가중치 bytes(4-bit metadata 포함, `S_load` 이상)로 대신 계산하고 보수적이라고 표시합니다.
 
   이 값은 실제 할당이 아니라 로딩 직전 필요한 **가용 메모리 요구량**입니다. `*_device_map_check` timepoint에만 있고, 그 시점에 이미 상주한 모델(예: reference를 로드할 때의 정책)과 함께 합산됩니다. 4-bit는 부족하면 로딩이 `ValueError`로 실패하고, 비양자화 모델은 CPU로 offload됩니다.
 - `standalone_model` reference와 GRPO reference 모델은 정책과 같은 `model_init_kwargs`·`quantization_config`로 정책 다음에 로드합니다.

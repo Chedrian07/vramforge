@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -119,6 +120,11 @@ def test_plan_example_grpo(mimo) -> None:
             device.scenario_high_bytes
         )
     long = est.scenarios[-1]
+    # device_map="auto" + bnb 4-bit: free x 0.81 must hold S_load = 7,765,103,072 B (research
+    # §3.5: "free >= 8.93 GiB" for the bf16 CondGen load)
+    budget = alloc(long, "policy.device_map_budget")
+    assert budget.bytes_high == math.ceil(7_765_103_072 * 100 / 81)
+    assert budget.bytes_high / GiB == pytest.approx(8.928, abs=0.001)
     logits = (
         alloc(long, "logits.policy.fp32").bytes_high
         + alloc(long, "loss.grpo.grad_logits").bytes_high

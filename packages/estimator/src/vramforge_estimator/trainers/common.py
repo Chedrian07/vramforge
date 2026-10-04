@@ -263,6 +263,28 @@ def plan_model_load(b: ScheduleBuilder, label: str, title: str) -> LoadedModel:
     return LoadedModel(label, check, peak)
 
 
+def load_budget_bytes(
+    arch: ArchitectureAdapter,
+    inventory: ModelInventory,
+    cfg: ResolvedConfig,
+    weights: Sequence[AllocationSpec],
+) -> tuple[int | None, int | None, bool]:
+    """(low, high, exact) of `S_load`, the module sizes transformers' `device_map="auto"` places:
+    4-bit weights at 0.5 B/param, other tensors in the load dtype (docs/research/
+    loading-quantization-peft.md §3.5, verified V9). Adapters that expose `loading_budget_bytes`
+    give it exactly; otherwise the resident weights (with 4-bit metadata) bound it from above."""
+    exact = getattr(arch, "loading_budget_bytes", None)
+    if callable(exact):
+        value = exact(inventory, cfg)
+        if isinstance(value, int) and value > 0:
+            return value, value, True
+    lows = [w.bytes_low for w in weights]
+    highs = [w.bytes_high for w in weights]
+    if not weights or any(v is None for v in [*lows, *highs]):
+        return None, None, False
+    return sum(v or 0 for v in lows), sum(v or 0 for v in highs), False
+
+
 def add_model_weights(
     b: ScheduleBuilder,
     arch: ArchitectureAdapter,
@@ -284,9 +306,8 @@ def add_model_weights(
     b.add(weights, transient)
     kind = "quantized" if cfg.quantization.enabled else "dense"
     factor = DEVICE_MAP_BUDGET[kind]
-    lows = [w.bytes_low for w in weights]
-    highs = [w.bytes_high for w in weights]
-    if any(v is None for v in [*lows, *highs]) or not weights:
+    s_low, s_high, exact = load_budget_bytes(arch, inventory, cfg, weights)
+    if s_low is None or s_high is None:
         b.add(
             unknown(
                 f"{load.label}.device_map_budget",
@@ -298,19 +319,22 @@ def add_model_weights(
         )
         return weights
     consequence = "부족하면 ValueError" if kind == "quantized" else "부족하면 CPU offload"
-    low = math.ceil(sum(v or 0 for v in lows) / factor)
-    high = math.ceil(sum(v or 0 for v in highs) / factor)
+    basis = (
+        "S_load(4-bit weight 0.5 B/param + 나머지 load dtype)"
+        if exact
+        else "상주 가중치(S_load 이상, 보수적)"
+    )
     b.add(
         spec(
             f"{load.label}.device_map_budget",
             AllocationCategory.LOAD_TRANSIENT,
-            low,
-            high,
+            math.ceil(s_low / factor),
+            math.ceil(s_high / factor),
             live_at=[load.check],
             formula="load-phase",
             note=(
                 "실제 할당이 아니라 로딩 전 필요한 가용 메모리입니다: "
-                f"가중치 ÷ {float(factor):g} ({consequence})."
+                f"{basis} ÷ {float(factor):g} ({consequence})."
             ),
         )
     )
@@ -627,6 +651,7 @@ __all__ = [
     "lm_head_input_saved",
     "lm_head_param_dtype",
     "lm_head_trainable",
+    "load_budget_bytes",
     "optimizer_state_bytes",
     "plan_model_load",
     "ref",

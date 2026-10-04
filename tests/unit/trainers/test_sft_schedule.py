@@ -113,6 +113,18 @@ def test_weights_resident_everywhere_and_load_transient_only_at_peak() -> None:
     assert dense.bytes_high == math.ceil(WEIGHTS / 0.9)
 
 
+def test_device_map_budget_uses_the_adapters_s_load() -> None:
+    # transformers sizes 4-bit weights at 0.5 B/param for device_map="auto" (S_load), which is
+    # smaller than the resident bytes with quantization metadata (research §3.5, V9).
+    s_load = 900_001
+    sched = build(arch=FakeArch(load_budget=s_load))
+    budget = by_name(sched, "policy.device_map_budget")
+    assert budget.bytes_low == budget.bytes_high == math.ceil(s_load * 100 / 81)
+    assert budget.note is not None and "S_load" in budget.note
+    fallback = by_name(build(), "policy.device_map_budget")
+    assert fallback.note is not None and "보수적" in fallback.note
+
+
 def test_accumulation_never_multiplies_activations() -> None:
     one = build(make_cfg(accumulation=1))
     many = build(make_cfg(accumulation=64))

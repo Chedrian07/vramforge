@@ -430,9 +430,13 @@ class FakeArch:
     unknown_activations: bool = False
     vision_lora_group: bool = False  # split LoRA into text + vision groups
     flagged_groups: bool = False  # per-shape groups with receives_grad (repository adapters)
+    load_budget: int | None = None  # S_load reported by `loading_budget_bytes` (None: absent)
 
     def supports(self, facts: ArchitectureFacts) -> bool:
         return True
+
+    def loading_budget_bytes(self, inventory, cfg) -> int | None:
+        return self.load_budget
 
     def lora_target_modules(self, inventory, target, exclude):
         if target == "all-linear":
