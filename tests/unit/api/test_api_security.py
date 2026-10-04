@@ -149,3 +149,16 @@ def test_unhandled_errors_hide_internals(
     assert resp.status_code == 500
     assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
     assert "/srv/secret" not in resp.text and "Traceback" not in resp.text
+
+
+def test_owner_survives_malformed_foreign_cookies(client: TestClient) -> None:
+    """Cookies are host-scoped, not port-scoped: other local apps' cookies must not break ours."""
+    first = client.get("/api/v1/local-roots")
+    owner = first.headers["set-cookie"].split(";")[0].split("=", 1)[1]
+    client.cookies.clear()
+    resp = client.get(
+        "/api/v1/local-roots",
+        headers={"Cookie": f'other=a b; broken="unterminated; vf_owner={owner}; tail=1'},
+    )
+    assert resp.status_code == 200
+    assert "set-cookie" not in resp.headers  # the existing owner was recognized

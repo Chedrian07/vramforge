@@ -18,10 +18,10 @@ import hashlib
 import hmac
 import re
 import secrets
-from http.cookies import SimpleCookie
 from typing import Any
 
 from starlette.datastructures import Headers
+from starlette.requests import cookie_parser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from vramforge_estimator.errors import make_issue
@@ -89,16 +89,10 @@ def cookie_header(
 
 
 def parse_cookies(headers: Headers) -> dict[str, str]:
-    jar: dict[str, str] = {}
-    for raw in headers.getlist("cookie"):
-        parsed: SimpleCookie = SimpleCookie()
-        try:
-            parsed.load(raw)
-        except Exception:  # noqa: S112 - a malformed cookie header is ignored entirely
-            continue
-        for key, morsel in parsed.items():
-            jar[key] = morsel.value
-    return jar
+    """Browser-like cookie parsing. `http.cookies.SimpleCookie` drops every cookie after one
+    malformed value, and cookies are not port-scoped: another app on the same host could
+    otherwise make this service mint a new owner on every request."""
+    return cookie_parser("; ".join(headers.getlist("cookie")))
 
 
 class _BodyTooLarge(Exception):
