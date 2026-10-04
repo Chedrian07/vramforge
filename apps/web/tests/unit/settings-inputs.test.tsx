@@ -22,6 +22,35 @@ function renderForm(node: React.ReactNode, values: Partial<FormValues> = {}) {
   return { ...utils, form: () => form! };
 }
 
+describe("cross-field validation", () => {
+  it("clears an error once the other field it depends on is fixed", async () => {
+    const user = userEvent.setup();
+    renderForm(<HardwareSection />, { hardwareMode: "custom" });
+    await user.type(screen.getByLabelText("GPU 전체 용량 (GiB)"), "80");
+    await user.type(screen.getByLabelText(/실제 사용 가능 VRAM/), "100");
+    expect(await screen.findByText("사용 가능 VRAM은 전체 용량 이하여야 합니다")).toBeInTheDocument();
+
+    // Only the total changes; the usable field's error must not outlive its cause.
+    const total = screen.getByLabelText("GPU 전체 용량 (GiB)");
+    await user.clear(total);
+    await user.type(total, "120");
+    await waitFor(() => expect(screen.queryByText("사용 가능 VRAM은 전체 용량 이하여야 합니다")).not.toBeInTheDocument());
+    expect(screen.getByLabelText(/실제 사용 가능 VRAM/)).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("keeps an error that still applies", async () => {
+    const user = userEvent.setup();
+    renderForm(<HardwareSection />, { hardwareMode: "custom" });
+    await user.type(screen.getByLabelText("GPU 전체 용량 (GiB)"), "80");
+    await user.type(screen.getByLabelText(/실제 사용 가능 VRAM/), "100");
+    const total = screen.getByLabelText("GPU 전체 용량 (GiB)");
+    await user.clear(total);
+    await user.type(total, "90");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText("사용 가능 VRAM은 전체 용량 이하여야 합니다")).toBeInTheDocument();
+  });
+});
+
 describe("method section", () => {
   it("switches objectives with the keyboard and explains the data transformation", async () => {
     const user = userEvent.setup();

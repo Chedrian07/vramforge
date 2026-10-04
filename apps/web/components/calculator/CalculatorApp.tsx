@@ -16,6 +16,7 @@ import { buildRequest, fromAnalysisRequest } from "@/lib/form/convert";
 import { canonicalJson } from "@/lib/form/fingerprint";
 import { datasetInspectCall, modelInspectCall, shouldApplySuggestion } from "@/lib/form/inspect";
 import type { ExplicitAnalysisRequest } from "@/lib/form/request-schema";
+import { useRevalidateShownErrors } from "@/lib/form/revalidate";
 import { DEFAULT_FORM_VALUES, EXAMPLE_FORM_VALUES, formSchema, type FormValues } from "@/lib/form/values";
 import { isRunActive, useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
 import { useFitsViewport } from "@/lib/hooks/useFitsViewport";
@@ -63,6 +64,7 @@ export function CalculatorApp() {
     mode: "onChange",
   });
   const values = useWatch({ control: form.control }) as FormValues;
+  useRevalidateShownErrors(form);
   const run = useAnalysisRun();
   const modelInspection = useModelInspection();
   const datasetInspection = useDatasetInspection();
