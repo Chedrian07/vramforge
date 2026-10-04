@@ -27,7 +27,9 @@ was cancelled or needs input is never `ready`), `estimate_evidence` from the mem
 or, when there is no primary scenario (e.g. GRPO without an explicit completion budget), the worst
 outcome over all scenarios (exceeds > unknown > low_margin > expected_fit). A fit verdict is
 withheld (unknown) for every scenario while some row lengths are unverified (sample scan or failed
-rows; plan §10.3).
+rows; plan §10.3). GRPO context is checked per scenario (prompt + budget, plan §8.3): the result-
+level check uses the chosen budget or the smallest candidate, and a larger candidate that exceeds
+the context only withholds its own scenario's fit.
 
 The signatures are owned by the orchestrator; the body is implemented by the api agent.
 """
