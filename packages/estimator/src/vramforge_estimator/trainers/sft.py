@@ -33,6 +33,7 @@ from .common import (
     add_scope_unknowns,
     add_trainable_state,
     add_workspace,
+    batch_has_padding,
     common_assumptions,
     extend_live_at,
     grads_live,
@@ -235,7 +236,10 @@ class SftTrainer:
         eval_tp, save_tp = add_scope_phases(b, scope)
 
         add_model_weights(b, arch, inventory, cfg, load)
-        seq = SequenceShape(batch=shape.sequences_per_forward, seq_len=shape.padded_length)
+        rows = shape.sequences_per_forward
+        seq = SequenceShape(
+            batch=rows, seq_len=shape.padded_length, has_padding=batch_has_padding(cfg, rows)
+        )
         acts = arch.train_step_ledger(
             inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), POLICY_PREFIX
         )

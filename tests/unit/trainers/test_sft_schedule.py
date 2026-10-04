@@ -188,3 +188,22 @@ def test_unknown_architecture_activations_propagate() -> None:
     # slack is only sized where the timepoint total is known
     slack = {a.live_at[0] for a in sched.allocations if a.name.startswith("allocator_slack@")}
     assert FWD not in slack and STEP in slack and LOAD_CHECK not in slack
+
+
+def test_sequence_shapes_report_the_padding_of_the_planned_batch() -> None:
+    one = FakeArch()
+    sched = build(shape=sft_shape(1, 100), arch=one)
+    assert [(p, s.batch, s.has_padding) for p, s in one.seen] == [("policy", 1, False)]
+    assert any(a.id == "padding" and "1행" in a.text for a in sched.assumptions)
+    # pad_to_multiple_of pads a single row unless its length is already a multiple: unknown
+    multiple = FakeArch()
+    cfg = make_cfg(inventory=INV).model_copy(update={"pad_to_multiple_of": 64})
+    build(cfg=cfg, shape=sft_shape(1, 128), arch=multiple)
+    assert multiple.seen[0][1].has_padding is None
+    unit = FakeArch()
+    build(cfg=make_cfg(inventory=INV).model_copy(update={"pad_to_multiple_of": 1}), arch=unit)
+    assert unit.seen[0][1].has_padding is False
+    # several rows are right-padded to the longest
+    rows = FakeArch()
+    build(shape=sft_shape(2, 100), arch=rows)
+    assert [(s.batch, s.has_padding) for _, s in rows.seen] == [(2, True)]

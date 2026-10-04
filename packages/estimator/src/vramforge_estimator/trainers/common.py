@@ -23,6 +23,7 @@ from vramforge_estimator.schemas import (
     ExcludedComponent,
     Issue,
     ModelInventory,
+    Objective,
     Phase,
     ResolvedConfig,
     ScopeConfig,
@@ -216,6 +217,49 @@ def renamed(
             updates["category"] = category
         out.append(s.model_copy(update=updates))
     return out
+
+
+PADDING_NOTES = {
+    Objective.SFT: (
+        "SFT: microbatch 1행이면 padding이 없어 SDPA가 mask 없이 is_causal로 실행되고"
+        "(pad_to_multiple_of가 있으면 길이에 따라 padding 가능), 여러 행이면 가장 긴 행까지 "
+        "오른쪽 padding된 batch(attention mask 경로)로 계산합니다. batch shape에 행별 길이가 "
+        "없어 길이가 모두 같은 경우를 구별하지 않습니다."
+    ),
+    Objective.DPO: (
+        "DPO: chosen B행과 rejected B행을 두 branch 중 가장 긴 길이까지 padding하므로 "
+        "padding이 있는 batch(attention mask 경로)로 계산합니다. batch shape에 branch별 길이가 "
+        "없어 두 길이가 같은 pair를 구별하지 않습니다."
+    ),
+    Objective.GRPO: (
+        "GRPO: update·log-prob micro-batch는 generation batch의 최대 prompt·completion 폭으로 "
+        "padding되고(prompt 왼쪽, completion 오른쪽, EOS 뒤는 mask 0), TRL이 "
+        "attention_mask = cat(prompt_mask, completion_mask)를 넘기므로 padding이 있는 "
+        "batch(attention mask 경로)로 계산합니다."
+    ),
+}
+
+
+def batch_has_padding(cfg: ResolvedConfig, rows: int) -> bool | None:
+    """`SequenceShape.has_padding` of a forward over `rows` sequences of the planned batch
+    (docs/methodology.md#padding). transformers builds an SDPA mask only when some position is
+    masked (docs/research/architecture-memory.md §3.1, masking_utils `_ignore_causal_mask_sdpa`).
+
+    - SFT: one row has no padding; with pad_to_multiple_of > 1 it is padded unless its length is
+      already a multiple (unknown here: None). Several rows are padded to the longest; the batch
+      shape carries no per-row lengths, so an all-equal batch cannot be told apart (True).
+    - DPO: the collator pads the chosen and rejected rows to the longer branch; the branch lengths
+      are not in the shape (True).
+    - GRPO: micro-batches are slices of the generation batch padded to its maxima, left-padded
+      prompts and right-padded completions masked after EOS (docs/research/trl-grpo.md §6.4;
+      trl grpo_trainer.py:1947-1951, 2554, 3086) (True).
+    """
+    if cfg.objective is Objective.SFT:
+        if rows > 1:
+            return True
+        multiple = cfg.pad_to_multiple_of
+        return None if multiple is not None and multiple > 1 else False
+    return True
 
 
 def residual_dtype(cfg: ResolvedConfig) -> str:
@@ -639,11 +683,17 @@ def common_assumptions(b: ScheduleBuilder, cfg: ResolvedConfig) -> None:
         f"{cfg.load_dtype}.",
         "docs/research/trl-sft-dpo.md §8.4",
     )
+    b.assume(
+        "padding",
+        PADDING_NOTES[cfg.objective],
+        "docs/research/architecture-memory.md §3.1, docs/research/trl-grpo.md §6.4",
+    )
 
 
 __all__ = [
     "DEVICE_MAP_BUDGET",
     "FINAL_HIDDEN_ALIAS",
+    "PADDING_NOTES",
     "POLICY_PREFIX",
     "LoadedModel",
     "ScheduleBuilder",
@@ -652,6 +702,7 @@ __all__ = [
     "add_scope_unknowns",
     "add_trainable_state",
     "add_workspace",
+    "batch_has_padding",
     "common_assumptions",
     "eight_bit_state_bytes",
     "extend_live_at",

@@ -8,7 +8,7 @@ the real architecture adapters. Sizes are synthetic and never real model numbers
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vramforge_estimator.architectures import (
     GenerationTimepoints,
@@ -441,6 +441,8 @@ class FakeArch:
     flagged_groups: bool = False  # per-shape groups with contract flags (repository adapters)
     load_budget: int | None = None  # S_load reported by `loading_budget_bytes` (None: absent)
     final_hidden: bool = False  # emit the final-norm output under the "<prefix>.final_hidden" alias
+    # (ledger prefix, SequenceShape) of every train-step / no-grad forward the trainer requested
+    seen: list[tuple[str, SequenceShape]] = field(default_factory=list)
 
     def supports(self, facts: ArchitectureFacts) -> bool:
         return True
@@ -558,6 +560,7 @@ class FakeArch:
         return groups
 
     def train_step_ledger(self, inventory, cfg, shape: SequenceShape, tps: StepTimepoints, prefix):
+        self.seen.append((prefix, shape))
         tokens = shape.batch * shape.seq_len
         saved = None if self.unknown_activations else 10 * tokens
         extra = []
@@ -596,6 +599,7 @@ class FakeArch:
         ]
 
     def no_grad_forward_ledger(self, inventory, cfg, shape, live_at, prefix):
+        self.seen.append((prefix, shape))
         return [
             _alloc(
                 f"{prefix}.no_grad",
