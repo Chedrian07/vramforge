@@ -19,7 +19,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal, cast
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import ErrorCode, FileEntry, Issue, Severity, Stage
@@ -264,7 +264,7 @@ class SourceFiles:
             fs = HfFileSystem(token=self._token(), skip_instance_cache=True)
             remote = f"datasets/{self.source.repo_id}@{self.source.revision}/{rel_path}"
             try:
-                return fs.open(remote, "rb", block_size=1 << 20)  # type: ignore[no-any-return]
+                return cast(IO[bytes], fs.open(remote, "rb", block_size=1 << 20))
             except Exception as exc:
                 raise EstimatorError(_download_issue(exc, rel_path)) from None
 
@@ -293,7 +293,7 @@ def _git_blob_id(path: Path, size: int) -> str:
 
 
 def _issue(
-    code: ErrorCode, message: str, *, severity: Severity = Severity.ERROR, **details: object
+    code: ErrorCode, message: str, *, severity: Severity = Severity.ERROR, **details: Any
 ) -> Issue:
     return make_issue(
         code, message, severity=severity, stage=Stage.INSPECTING, component="dataset", **details

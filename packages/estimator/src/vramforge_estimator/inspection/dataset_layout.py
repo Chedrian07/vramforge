@@ -80,7 +80,7 @@ class DatasetLayout:
         return next((config for config in self.configs if config.name == name), None)
 
 
-class ManifestFileSystem(AbstractFileSystem):  # type: ignore[misc]
+class ManifestFileSystem(AbstractFileSystem):
     """Read-only directory listing of a pinned file list (no file contents)."""
 
     protocol = _PROTOCOL
@@ -528,7 +528,7 @@ def _layout_notes(
     return tuple(notes)
 
 
-def _issue(code: ErrorCode, message: str, **details: object) -> Issue:
+def _issue(code: ErrorCode, message: str, **details: Any) -> Issue:
     return make_issue(
         code,
         message,
@@ -558,7 +558,7 @@ _UNSUPPORTED_MESSAGES = {
 }
 
 
-def _unsupported(reason: str, **details: object) -> Issue:
+def _unsupported(reason: str, **details: Any) -> Issue:
     return _issue(
         ErrorCode.DATASET_FORMAT_UNSUPPORTED,
         _UNSUPPORTED_MESSAGES[reason],

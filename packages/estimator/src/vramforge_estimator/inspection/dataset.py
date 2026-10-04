@@ -20,7 +20,7 @@ the package stays cheap and works without the `analysis` extra.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import (
@@ -296,7 +296,7 @@ def _check_eval_split(
     return None
 
 
-def _required(code: ErrorCode, message: str, **details: object) -> Issue:
+def _required(code: ErrorCode, message: str, **details: Any) -> Issue:
     return make_issue(
         code,
         message,

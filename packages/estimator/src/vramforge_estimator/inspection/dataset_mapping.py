@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from typing import Any
 
 from vramforge_estimator.errors import make_issue
 from vramforge_estimator.schemas import (
@@ -335,7 +336,7 @@ def _kind_issues(given: dict[str, str], kinds: dict[str, str]) -> list[Issue]:
     ]
 
 
-def _mapping_issue(message: str, **details: object) -> Issue:
+def _mapping_issue(message: str, **details: Any) -> Issue:
     return make_issue(
         ErrorCode.COLUMN_MAPPING_REQUIRED,
         message,
@@ -355,7 +356,7 @@ def _missing_columns_issue(missing: list[str]) -> Issue:
 
 
 def _no_candidate_issue(objective: Objective | None, columns: list[DatasetColumn]) -> Issue:
-    needs = _OBJECTIVE_NEEDS.get(objective, "") if objective is not None else ""  # type: ignore[call-overload]
+    needs = _OBJECTIVE_NEEDS.get(objective, "") if objective is not None else ""
     return _mapping_issue(
         "컬럼 역할을 자동으로 정할 수 없습니다. " + needs + " 컬럼 매핑을 지정해 주세요.",
         reason="no_candidate",
