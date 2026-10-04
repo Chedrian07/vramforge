@@ -95,6 +95,7 @@ proxy 설정 파일(`infra/proxy/Caddyfile`)은 원격 Docker host와 SELinux �
 | `VRAMFORGE_BIND` | `127.0.0.1` | proxy를 publish할 호스트 주소. 외부 공개 전 [§3.1](#31-다른-컴퓨터에서-접속하게-할-때) 확인 |
 | `VRAMFORGE_PORT` | `8080` | proxy를 publish할 호스트 포트 |
 | `VRAMFORGE_COOKIE_SECURE` | `false` | owner cookie에 `Secure`를 붙임. HTTPS 뒤에서는 `true` |
+| `VRAMFORGE_SHARE_SERVER_HF_TOKEN` | `false` | 서버의 Hugging Face 토큰을 모든 사용자의 분석에 쓸지 여부. 혼자 쓰는 배포에서만 `true`([§5](#5-hugging-face-토큰)) |
 | `VRAMFORGE_LOCAL_SOURCES_DIR` | `./local-sources` | `/sources/local`에 읽기 전용으로 연결할 호스트 폴더. 상대 경로는 `compose.yaml`이 있는 폴더 기준 |
 | `VRAMFORGE_LOCAL_ROOTS` | `local=/sources/local` | 허용할 local root(`이름=/컨테이너/절대경로`, 쉼표 구분) |
 | `VRAMFORGE_PROXY_MAX_BODY_SIZE` | `2049MiB` | proxy의 요청 본문 상한. API 업로드 상한(2 GiB) + multipart 여유 1 MiB |
@@ -114,9 +115,10 @@ proxy 설정 파일(`infra/proxy/Caddyfile`)은 원격 Docker host와 SELinux �
 
 | 변수 | 설정하지 않았을 때 | 설명 |
 |---|---|---|
-| `HF_TOKEN` | 익명 접근 | Hugging Face 토큰. [§5](#5-hugging-face-토큰) |
+| `HF_TOKEN` | 익명 접근 | Hugging Face 토큰. `VRAMFORGE_SHARE_SERVER_HF_TOKEN=true`일 때만 분석에 씁니다([§5](#5-hugging-face-토큰)) |
 | `VRAMFORGE_ACCESS_TOKEN` | 토큰 없음 | 설정하면 모든 API 요청에 토큰이 필요합니다 |
 | `VRAMFORGE_MAX_UPLOAD_BYTES` | `2147483648` (2 GiB) | 업로드 파일 상한. 올리면 `VRAMFORGE_PROXY_MAX_BODY_SIZE`도 함께 올립니다 |
+| `VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER` | `10737418240` (10 GiB) | 사용자(브라우저) 한 명이 보관할 수 있는 업로드 합계(만료 전 파일). 넘으면 `413 UPLOAD_TOO_LARGE`이고, 보존 기간이 지나거나 그 업로드를 쓰는 분석을 지우면 공간이 비워집니다. api에만 전달됩니다 |
 | `VRAMFORGE_MAX_CONCURRENT_JOBS_PER_OWNER` | `2` | 사용자별 동시 분석 수 |
 | `VRAMFORGE_JOB_TIMEOUT_S` | `21600` (6시간) | 분석 작업 하나의 시간 상한 |
 | `VRAMFORGE_RETENTION_DAYS` | `7` | 업로드·분석 결과 보존 기간(일) |
@@ -127,7 +129,17 @@ proxy 설정 파일(`infra/proxy/Caddyfile`)은 원격 Docker host와 SELinux �
 ## 5. Hugging Face 토큰
 
 - 공개 모델·데이터셋은 토큰 없이 분석합니다.
-- gated 또는 private 저장소를 분석하려면 **읽기 전용(fine-grained read) 토큰**을 만들어 `.env`에 `HF_TOKEN=hf_...`로 넣고 `docker compose up -d`를 실행합니다. gated 모델은 같은 계정으로 Hugging Face 웹사이트에서 이용 조건에 먼저 동의해야 합니다.
+- 서버에 설정한 토큰(`HF_TOKEN` 또는 `VRAMFORGE_HF_TOKEN`)은 **기본적으로 분석에 쓰지 않습니다.** 서비스 계정의 권한이 사용자의 접근 권한을 대신하면 안 되기 때문입니다(plan.md §18). 이때 gated·private 저장소는 `SOURCE_ACCESS_DENIED`로 끝납니다(Hugging Face는 권한 없는 비공개 저장소를 `SOURCE_NOT_FOUND`로 답하기도 함). 오류 메시지에는 서버 토큰 상태와 운영자가 바꿀 수 있는 설정이 함께 나옵니다.
+- **혼자 쓰는 배포**에서 gated·private 저장소를 분석하려면 **읽기 전용(fine-grained read) 토큰**을 만들어 `.env`에 넣고 공유를 켠 뒤 `docker compose up -d`를 실행합니다. gated 모델은 같은 계정으로 Hugging Face 웹사이트에서 이용 조건에 먼저 동의해야 합니다.
+
+  ```bash
+  # .env
+  HF_TOKEN=hf_...
+  VRAMFORGE_SHARE_SERVER_HF_TOKEN=true
+  ```
+
+- **여러 사람이 쓰는 배포에서는 공유를 켜지 않습니다.** 켜면 이 인스턴스에 접근할 수 있는 모든 사용자가 그 토큰으로 볼 수 있는 저장소를 분석할 수 있습니다. 공유를 꺼 두면 토큰을 설정해 두어도 Hugging Face 요청에 보내지 않습니다.
+- 지금 상태는 `GET /api/v1/health`의 `components.hf_token`으로 확인합니다. `not_configured`(토큰 없음), `configured_not_shared`(설정했지만 쓰지 않음), `shared`(모든 분석에 사용) 중 하나이며 토큰 값은 나오지 않습니다. `VRAMFORGE_ACCESS_TOKEN`을 설정했다면 인증된 요청에만 이 항목이 보입니다.
 - 토큰은 서버 쪽 api·worker 컨테이너에만 전달됩니다. 브라우저, 분석 결과, 내보내기 파일, 로그에는 넣지 않습니다(plan.md §18).
 - **셸에 `HF_TOKEN`이 export되어 있으면 compose가 그 값을 컨테이너로 전달합니다.** 개인 토큰을 쓰고 싶지 않다면 `unset HF_TOKEN` 뒤에 기동합니다.
 - 토큰을 바꾸거나 지우면 `docker compose up -d`로 api·worker를 다시 만듭니다. 이미 받은 파일은 `vfdata` 볼륨의 HF cache(`/data/hf`)에 남습니다.
@@ -281,6 +293,7 @@ docker compose up -d --build --wait
 - [ ] `VRAMFORGE_COOKIE_SECURE=true`
 - [ ] 처음 기동하기 전에 `POSTGRES_PASSWORD`를 기본값이 아닌 값으로 정했다
 - [ ] `HF_TOKEN`은 읽기 전용 최소 권한이다
+- [ ] 여러 사람이 쓰는 배포라면 `VRAMFORGE_SHARE_SERVER_HF_TOKEN`을 기본값(`false`)으로 두었다([§5](#5-hugging-face-토큰))
 - [ ] 방화벽과 바인드 주소로 노출 범위를 확인했다
 - [ ] DB 백업 절차를 정했다([§7](#7-데이터-볼륨-백업-초기화))
 

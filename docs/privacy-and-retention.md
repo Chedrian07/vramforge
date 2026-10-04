@@ -7,6 +7,8 @@
 |---|---|---|
 | 보존 기간 | 7일 | `VRAMFORGE_RETENTION_DAYS` |
 | 업로드 최대 크기 | 2 GiB | `VRAMFORGE_MAX_UPLOAD_BYTES` |
+| 사용자별 업로드 보관 한도 | 10 GiB (만료 전 업로드 합계) | `VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER` |
+| 서버 HF token 공유 | 꺼짐 (서버 token을 분석에 쓰지 않음) | `VRAMFORGE_SHARE_SERVER_HF_TOKEN=true` (혼자 쓰는 배포에서만) |
 | 데이터 디렉터리 | `/data` (`artifacts/`, `uploads/`, `hf/`) | `VRAMFORGE_DATA_DIR` |
 | 접근 토큰 | 없음 (localhost 바인드 전제) | `VRAMFORGE_ACCESS_TOKEN` |
 | HTTPS 전용 쿠키 | 꺼짐 | `VRAMFORGE_COOKIE_SECURE=true` (HTTPS 배포에서 켠다) |
@@ -38,8 +40,10 @@
 
 ## 3. Hugging Face token
 
-- `VRAMFORGE_HF_TOKEN`(또는 `HF_TOKEN`)은 서버 설정으로만 읽는다. 결과·이벤트·로그·내보내기·브라우저 저장소에 들어가지 않는다.
-- 이 token은 **인스턴스의 모든 사용자 요청에 쓰인다.** 여러 사람이 쓰는 배포에서 비공개 repo에 접근할 수 있는 token을 설정하면, 그 인스턴스에 접근할 수 있는 모든 사용자가 해당 repo를 분석할 수 있다. 공용 배포에서는 공개 모델만 쓰거나 접근 범위를 공용으로 허용할 수 있는 token만 설정한다 (plan §18: 서비스 전역 계정으로 사용자 권한을 대신하지 않는다).
+- `VRAMFORGE_HF_TOKEN`(또는 `HF_TOKEN`)은 서버 설정으로만 읽는다. 결과·이벤트·로그·내보내기·브라우저 저장소에 들어가지 않는다. 빈 값은 설정하지 않은 것으로 본다.
+- plan §18에 따라 서비스 전역 계정의 권한으로 사용자 권한을 대신하지 않는다. 그래서 **기본값에서는 서버 token을 어떤 분석·메타데이터 확인 요청에도 보내지 않는다.** 비공개·gated 저장소는 `SOURCE_ACCESS_DENIED`(Hugging Face가 비공개 저장소를 숨기면 `SOURCE_NOT_FOUND`)로 끝나고, 메시지와 `details.server_hf_token`에 서버 token 상태(`not_configured`, `configured_not_shared`, `shared`)와 운영자가 바꿀 수 있는 설정이 담긴다.
+- 혼자 쓰는 배포의 운영자만 `VRAMFORGE_SHARE_SERVER_HF_TOKEN=true`로 서버 token을 **모든 소유자의 요청에** 쓰도록 허용할 수 있다. 이 설정을 켠 인스턴스에 접근할 수 있는 사람은 누구나 그 token으로 볼 수 있는 저장소를 분석할 수 있으므로, 여러 사람이 쓰는 배포에서는 켜지 않는다.
+- `GET /api/v1/health`의 `components.hf_token`은 위 세 상태 중 하나만 알려 주고 token 값은 내보내지 않는다. `VRAMFORGE_ACCESS_TOKEN`을 설정한 배포에서는 인증된 요청에만 보인다.
 
 ## 4. 보존 기간과 자동 삭제
 
@@ -53,6 +57,8 @@ worker가 시작할 때와 대기 중 약 1분마다(`VRAMFORGE_MAINTENANCE_INTE
 | 고아 디렉터리 | DB row가 없는 서비스 형식(`<owner>/<id>`)의 디렉터리를 하루 뒤 삭제 |
 
 - 실행 중인 분석은 보존 기간 계산에서 제외한다.
+- 분석 상태 응답(`GET /api/v1/analyses/{id}`)의 `expires_at`이 이 규칙으로 계산한 삭제 예정 시각이다(끝난 시각 + 보존 기간, 실행 중이면 `null`). 실제 삭제는 그 뒤 첫 정리 작업 때 일어난다.
+- 업로드는 소유자별 합계 한도(`VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER`, 기본 10 GiB) 안에서만 받는다. 만료 전 업로드만 합계에 들어가며, 한도를 넘는 업로드는 저장하지 않고 `413 UPLOAD_TOO_LARGE`로 거부한다.
 - 정리 작업은 서비스가 만든 경로(`/data/artifacts/<64자 hex>/<32자 hex>`, `/data/uploads/...`)만 지운다. 공용 HF cache(`/data/hf`)와 읽기 전용 로컬 root(`/sources/local`)는 지우지 않는다.
 - worker가 멈춰 있으면 정리도 멈춘다. 데이터베이스·볼륨 백업은 이 정책의 범위 밖이다.
 

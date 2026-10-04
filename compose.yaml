@@ -22,6 +22,8 @@ x-python-build: &python-build
 # absent in the container: no empty token, and the API's own defaults apply.
 # Each secret goes only to the services that use it (plan.md §18): migrate gets the database URL
 # alone, HF_TOKEN reaches api and worker, VRAMFORGE_ACCESS_TOKEN reaches the api only.
+# HF_TOKEN is used for source access only with VRAMFORGE_SHARE_SERVER_HF_TOKEN=true
+# (single-user deployments; the service account must not stand in for users' access).
 x-db-env: &db-env
   VRAMFORGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-vramforge}:${POSTGRES_PASSWORD:-vramforge}@postgres:5432/${POSTGRES_DB:-vramforge}
   VRAMFORGE_LOG_LEVEL:
@@ -32,6 +34,7 @@ x-worker-env: &worker-env
   VRAMFORGE_DATA_DIR: /data
   VRAMFORGE_LOCAL_ROOTS: ${VRAMFORGE_LOCAL_ROOTS:-local=/sources/local}
   HF_TOKEN:
+  VRAMFORGE_SHARE_SERVER_HF_TOKEN: ${VRAMFORGE_SHARE_SERVER_HF_TOKEN:-false}
   VRAMFORGE_MAX_UPLOAD_BYTES:
   VRAMFORGE_MAX_CONCURRENT_JOBS_PER_OWNER:
   VRAMFORGE_JOB_TIMEOUT_S:
@@ -41,6 +44,7 @@ x-api-env: &api-env
   <<: *worker-env
   VRAMFORGE_COOKIE_SECURE: ${VRAMFORGE_COOKIE_SECURE:-false}
   VRAMFORGE_ACCESS_TOKEN:
+  VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER:
 
 x-app-volumes: &app-volumes
   - vfdata:/data
