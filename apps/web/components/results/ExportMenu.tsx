@@ -19,6 +19,7 @@ export function exportItems(result: AnalysisResult | null, jobStatus: JobStatus 
   const terminal = jobStatus === "COMPLETED" || jobStatus === "PARTIAL" || jobStatus === "FAILED" || jobStatus === "CANCELLED" || jobStatus === "NEEDS_INPUT";
   const base = !result || !terminal ? "분석이 끝난 뒤 내보낼 수 있습니다." : null;
   const readiness = result?.status?.training_readiness ?? null;
+  const grpo = result?.resolved_config?.grpo ?? null;
   let trainerReason: string | null = base;
   if (!trainerReason) {
     if (jobStatus !== "COMPLETED") trainerReason = "완료된 분석에서만 실행용 설정을 만듭니다.";
@@ -27,6 +28,9 @@ export function exportItems(result: AnalysisResult | null, jobStatus: JobStatus 
         readiness == null
           ? "학습 준비 상태가 판정되지 않아 실행용 설정을 제공하지 않습니다."
           : `학습 준비 상태가 '${READINESS_LABEL[readiness]}'라 실행용 설정을 제공하지 않습니다.${readiness === "conditional" ? " (예: GRPO reward 미지정)" : ""}`;
+    } else if (grpo && (!grpo.budget_explicit || grpo.completion_budgets.length !== 1)) {
+      // The trainer config needs one max_completion_length (exports/trainer_config.py check_ready).
+      trainerReason = "GRPO는 completion budget을 하나로 지정해야 실행용 설정을 만듭니다 (예산별 시나리오는 계획용).";
     }
   }
   return [
@@ -47,11 +51,14 @@ export function ExportMenu({
   analysisId,
   result,
   jobStatus,
+  differsFromScreen = false,
 }: {
   api: Pick<ApiClient, "exportUrl">;
   analysisId: string | null;
   result: AnalysisResult | null;
   jobStatus: JobStatus | null;
+  /** The screen shows a recomputed scenario or changed inputs that the stored analysis lacks. */
+  differsFromScreen?: boolean;
 }) {
   const items = exportItems(analysisId ? result : null, jobStatus);
   return (
@@ -105,6 +112,11 @@ export function ExportMenu({
               );
             })}
           </ul>
+          {differsFromScreen && analysisId ? (
+            <p role="note" className="mx-1 mt-1 rounded-lg bg-warn-soft px-2 py-1.5 text-[12px] leading-snug text-warn">
+              내보내기 파일은 서버에 저장된 기준 분석(처음 분석한 설정과 수치)으로 만들어집니다. 화면의 재계산 결과나 바꾼 입력은 들어가지 않으니, 바뀐 설정으로 내보내려면 전체 분석을 다시 실행하세요.
+            </p>
+          ) : null}
           <p className="border-t border-line px-3 pt-2 pb-1 text-[11px] leading-snug text-muted">
             서버에 저장된 분석 결과로 생성합니다. 데이터 원문, 토큰, 절대 경로는 포함하지 않습니다.
           </p>

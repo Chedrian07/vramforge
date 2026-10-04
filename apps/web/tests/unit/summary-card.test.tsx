@@ -134,9 +134,9 @@ describe("SummaryCard", () => {
 describe("ExportMenu", () => {
   const api = { exportUrl: (id: string, f: string) => `/api/v1/analyses/${id}/export?format=${f}` };
 
-  async function open(result: AnalysisResult | null, jobStatus: JobStatus | null, id: string | null) {
+  async function open(result: AnalysisResult | null, jobStatus: JobStatus | null, id: string | null, differsFromScreen = false) {
     const user = userEvent.setup();
-    renderWithProviders(<ExportMenu api={api} analysisId={id} result={result} jobStatus={jobStatus} />);
+    renderWithProviders(<ExportMenu api={api} analysisId={id} result={result} jobStatus={jobStatus} differsFromScreen={differsFromScreen} />);
     await user.click(screen.getByRole("button", { name: "결과 내보내기" }));
     return screen.getByRole("dialog");
   }
@@ -162,5 +162,26 @@ describe("ExportMenu", () => {
   it("offers trainer-config when the result is ready", async () => {
     const menu = await open(dpoResult, "COMPLETED", dpoResult.analysis_id);
     expect(within(menu).getByRole("link", { name: /trainer-config.yaml/ })).toHaveAttribute("href", `/api/v1/analyses/${dpoResult.analysis_id}/export?format=trainer-config`);
+    expect(within(menu).queryByRole("note")).not.toBeInTheDocument();
+  });
+
+  it("needs one explicit GRPO completion budget for trainer-config even when ready", async () => {
+    // A local reward model on the training GPU makes the result ready; budget candidates are a
+    // planning aid, not one max_completion_length (exports/trainer_config.py check_ready).
+    const ready: AnalysisResult = {
+      ...grpoResult,
+      status: { ...grpoResult.status!, training_readiness: "ready" },
+      resolved_config: { ...grpoResult.resolved_config!, grpo: { ...grpoResult.resolved_config!.grpo!, reward_kind: "local_model" } },
+    };
+    const menu = await open(ready, "COMPLETED", ready.analysis_id);
+    const trainer = within(menu).getByRole("button", { name: /trainer-config.yaml/ });
+    expect(trainer).toHaveAttribute("aria-disabled", "true");
+    expect(trainer).toHaveAccessibleDescription(/completion budget을 하나로 지정해야/);
+    expect(within(menu).getByRole("link", { name: /resolved-plan.yaml/ })).toBeInTheDocument();
+  });
+
+  it("says exports use the stored analysis when the screen shows other settings", async () => {
+    const menu = await open(dpoResult, "COMPLETED", dpoResult.analysis_id, true);
+    expect(within(menu).getByRole("note")).toHaveTextContent("서버에 저장된 기준 분석");
   });
 });

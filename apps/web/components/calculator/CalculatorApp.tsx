@@ -189,7 +189,13 @@ export function CalculatorApp() {
                 gpuWorkerConnected={profiles.data?.gpu_worker_connected ?? null}
                 exportSlot={
                   <>
-                    <ExportMenu api={env.api} analysisId={runState.analysisId} result={terminalResult} jobStatus={runState.jobStatus} />
+                    <ExportMenu
+                      api={env.api}
+                      analysisId={runState.analysisId}
+                      result={terminalResult}
+                      jobStatus={runState.jobStatus}
+                      differsFromScreen={baseResult != null && (recompute.display !== baseResult || recompute.stale)}
+                    />
                     <DeleteAnalysis api={env.api} analysisId={runState.analysisId} disabled={running} onDeleted={run.reset} />
                   </>
                 }

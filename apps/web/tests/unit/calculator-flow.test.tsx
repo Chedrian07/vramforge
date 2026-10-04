@@ -130,6 +130,10 @@ describe("calculator flow", () => {
     await act(async () => release(undefined as never));
     await waitFor(() => expect(screen.queryByText(/이전 설정 · 바뀐 조건으로 재계산 중/)).not.toBeInTheDocument());
     expect(screen.getByRole("img", { name: /GPU 사용량/ })).toBeInTheDocument();
+
+    // The recomputed numbers are not in the stored analysis that the exports are made from.
+    await user.click(screen.getByRole("button", { name: "결과 내보내기" }));
+    expect(within(screen.getByRole("dialog", { name: "결과 내보내기" })).getByRole("note")).toHaveTextContent("서버에 저장된 기준 분석");
   });
 
   it("answers NEEDS_INPUT inline and starts a new analysis", async () => {
