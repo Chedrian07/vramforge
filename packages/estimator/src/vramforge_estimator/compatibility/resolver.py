@@ -20,8 +20,10 @@ from vramforge_estimator.schemas import (
     AttentionBackend,
     BackendProfileInfo,
     BackendProfilesResponse,
+    ColumnMapping,
     CompatibilityReport,
     ConfigResolution,
+    DatasetFormat,
     DpoResolved,
     EffectiveDtypes,
     EmptySystemPolicy,
@@ -38,6 +40,7 @@ from vramforge_estimator.schemas import (
     ModelInventory,
     Objective,
     OptimizerResolved,
+    Precision,
     QuantFormat,
     QuantizationResolved,
     ReferenceStrategy,
@@ -59,6 +62,7 @@ from .profiles import AnalyticProfile, EnvironmentProfile, load_registry
 from .validation import validate_request
 
 LINEAR_ATTENTION = "linear_attention"
+MixedPrecision = Literal["bf16", "fp16", "none"]
 
 
 def _issue(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
@@ -360,6 +364,85 @@ def _loss_path(request: AnalysisRequest, profile: AnalyticProfile, res: _Resolut
     return res.set("training.loss_kernel", t.loss_kernel.value, path, rule.note or rule.default)
 
 
+def _mixed_precision(
+    request: AnalysisRequest, load_dtype: str, res: _Resolution
+) -> tuple[MixedPrecision, str]:
+    """(accelerate native AMP mode, compute dtype). fp16/fp32 have no memory model and are
+    blocked by `validate_request`; they are still recorded as what would run."""
+    requested = request.training.precision
+    mode: MixedPrecision
+    if requested is Precision.FP16:
+        mode, compute = "fp16", "float16"
+        reason = "fp16 autocast (TrainingArguments fp16=True)"
+    elif requested is Precision.FP32:
+        mode, compute = "none", load_dtype
+        reason = "autocast 없음: 연산은 load dtype 그대로입니다."
+    else:
+        mode, compute = "bf16", "bfloat16"
+        reason = "TRL 기본 bf16 mixed precision (accelerate native AMP)"
+    res.set("training.precision", requested.value, mode, reason)
+    return mode, compute
+
+
+def _packing(request: AnalysisRequest, paths: dict[str, str], res: _Resolution) -> bool:
+    """`validate_request` already blocks packing in strict mode. The linear-attention torch
+    fallback drops `cu_seqlens`, so packed rows would also share conv/recurrent state across
+    sequence boundaries (docs/research/architecture-memory.md §2.1): an explicit blocker."""
+    packing = request.training.packing
+    if packing and paths.get(LINEAR_ATTENTION) == LinearAttentionKernel.TORCH_FALLBACK.value:
+        res.blockers.append(
+            _issue(
+                ErrorCode.UNSUPPORTED_BACKEND_COMBINATION,
+                "linear attention의 torch fallback 경로는 packing된 sequence 경계(cu_seqlens)를 "
+                "무시해 conv·recurrent state가 이웃 sample과 섞입니다. 이 조합은 지원하지 "
+                "않습니다.",
+                "training.packing",
+            )
+        )
+    return res.set("training.packing", packing, packing, "요청값 (엄격 무절단 모드에서는 차단)")
+
+
+def _sft_prompt_completion(mapping: ColumnMapping) -> bool | None:
+    """Whether an SFT mapping is TRL's prompt-completion type (mirrors
+    `preprocessing.trl_sft.resolve_sft_layout`); None when the mapping does not decide it."""
+    fmt = mapping.format
+    if fmt in (DatasetFormat.MESSAGES, DatasetFormat.TEXT, DatasetFormat.PROMPT_ONLY):
+        return False
+    if fmt is DatasetFormat.AUTO and (mapping.messages or mapping.text):
+        return False
+    if fmt in (DatasetFormat.PROMPT_COMPLETION, DatasetFormat.PREFERENCE):
+        return True
+    if mapping.prompt and (mapping.completion or mapping.chosen):
+        return True
+    return None
+
+
+def _loss_masks(request: AnalysisRequest, res: _Resolution) -> tuple[bool, bool | None]:
+    """(assistant_only_loss, completion_only_loss) of SFTConfig. TRL's `completion_only_loss=None`
+    trains only the completion of prompt-completion rows and every token of language-modeling
+    rows (docs/research/trl-sft-dpo.md §2); the prompt-completion case is recorded as True."""
+    if request.training.objective is not Objective.SFT:
+        return False, None
+    mapping = request.dataset.mapping
+    layout = _sft_prompt_completion(mapping) if mapping is not None else None
+    completion_only = True if layout else None
+    res.set(
+        "training.assistant_only_loss",
+        None,
+        False,
+        "TRL 기본값 (내보내는 설정에 고정): template의 {% generation %} 구간 대신 전체 응답",
+    )
+    res.set(
+        "training.completion_only_loss",
+        None,
+        completion_only,
+        "prompt-completion 형식: TRL 기본값이 completion만 학습합니다."
+        if completion_only
+        else "TRL 기본값(None): 데이터 형식에 따라 정해집니다 (언어 모델링 형식은 전체 token).",
+    )
+    return False, completion_only
+
+
 def _dpo(
     request: AnalysisRequest, profile: AnalyticProfile, microbatch: int, res: _Resolution
 ) -> DpoResolved:
@@ -435,6 +518,9 @@ def _dpo(
         loss_type=d.loss_type,
         precompute_batch_size=d.precompute_batch_size,
         sync_ref_model=d.sync_ref_model,
+        # standalone reference identity only when it is a different checkpoint; None = the
+        # policy checkpoint (or a strategy that never loads a reference model)
+        reference_model=separate,
     )
 
 
@@ -507,8 +593,16 @@ def _grpo(
         budgets,
         "지정한 budget" if g.completion_budget else "budget이 없어 후보마다 시나리오를 만듭니다.",
     )
+    # Only a local reward model can sit on the training GPU; rule and remote rewards never do.
     on_gpu = g.reward.kind is RewardKind.LOCAL_MODEL and g.reward.on_training_gpu
-    res.set("grpo.reward.on_training_gpu", g.reward.on_training_gpu, on_gpu, "reward 배치")
+    res.set(
+        "grpo.reward.on_training_gpu",
+        g.reward.on_training_gpu,
+        on_gpu,
+        "local reward 모델만 학습 GPU에 올라갈 수 있습니다 (CPU 규칙·원격 reward는 GPU 밖)."
+        if g.reward.kind is not RewardKind.LOCAL_MODEL
+        else "요청한 reward 모델 배치",
+    )
     peft = request.training.strategy is not Strategy.FULL
     if g.beta == 0:
         mode, why = "none", "beta = 0: reference 모델과 reference log-prob pass가 없습니다."
@@ -545,6 +639,7 @@ def _grpo(
         reference_needed=g.beta != 0,
         reward_kind=g.reward.kind,
         reward_model_reference=g.reward.model_reference,
+        reward_on_training_gpu=on_gpu,
         rollout_backend=g.rollout_backend,
         live_sequences=batch.live_sequences,
         update_microbatch=microbatch,
@@ -713,8 +808,7 @@ def _build(
     scope = _loading_scope(request, facts, profile, res)
     load_dtype = _load_dtype(request, profile, res)
     quantized = t.strategy is Strategy.QLORA
-    compute = "bfloat16"
-    res.set("training.precision", t.precision.value, "bf16", "TRL 기본 bf16 mixed precision")
+    mixed_precision, compute = _mixed_precision(request, load_dtype, res)
     if quantized:
         adapter_dtype = "bfloat16"
         adapter_reason = "TRL이 양자화 모델의 학습 파라미터를 bf16으로 변환합니다."
@@ -778,6 +872,8 @@ def _build(
     )
     paths = _attention(request, facts, profile, env, res)
     loss_path = _loss_path(request, profile, res)
+    packing = _packing(request, paths, res)
+    assistant_only_loss, completion_only_loss = _loss_masks(request, res)
     processing = "tokenizer"
     res.set(
         "training.processing_class",
@@ -800,6 +896,7 @@ def _build(
         else:
             template_kwargs["enable_thinking"] = thinking
     dpo = _dpo(request, profile, microbatch, res) if t.objective is Objective.DPO else None
+    has_linear_attention = LINEAR_ATTENTION in facts.layer_types
     grpo = (
         _grpo(
             request,
@@ -807,9 +904,16 @@ def _build(
             accumulation,
             res,
             load_dtype=load_dtype,
-            has_linear_attention=LINEAR_ATTENTION in facts.layer_types,
+            has_linear_attention=has_linear_attention,
         )
         if t.objective is Objective.GRPO
+        else None
+    )
+    # The linear-attention conv cache exists only while generating (GRPO rollout) and takes the
+    # dtype of that forward (`_rollout_precision`).
+    conv_state = (
+        _rollout_precision(request, load_dtype, True)["conv_state"]
+        if has_linear_attention and t.objective is Objective.GRPO
         else None
     )
     mapping = request.dataset.mapping
@@ -838,6 +942,7 @@ def _build(
             loss="float32",
             kv_cache=load_dtype,
             recurrent_state="float32",
+            conv_state=conv_state,
         ),
         quantization=quant,
         upcast_to_fp32_patterns=[],
@@ -850,6 +955,10 @@ def _build(
         accumulation=accumulation,
         pad_to_multiple_of=t.pad_to_multiple_of,
         gradient_checkpointing=t.gradient_checkpointing,
+        mixed_precision=mixed_precision,
+        packing=packing,
+        assistant_only_loss=assistant_only_loss,
+        completion_only_loss=completion_only_loss,
         checkpointing_granularity="per_decoder_layer" if t.gradient_checkpointing else "none",
         attention_path_by_layer_type=paths,
         loss_path=loss_path,

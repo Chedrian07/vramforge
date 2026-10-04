@@ -385,3 +385,137 @@ def test_grpo_records_reference_mode_and_rollout_precision(adapter, changes, mod
     low = field(fp32, "grpo.rollout_precision").resolved
     assert low["kv_cache"] == "float32"
     assert low["conv_state"] == ("bfloat16" if full else "float32")
+
+
+# ---------------------------------------------------------------- typed fields (task: contract)
+
+
+def test_typed_fields_carry_precision_packing_and_loss_masks(adapter) -> None:
+    cfg, _ = resolve(request(), hybrid_inventory(), None)
+    assert cfg is not None
+    assert (cfg.mixed_precision, cfg.packing) == ("bf16", False)
+    assert field(cfg, "training.precision").resolved == "bf16"
+    # completion_only_loss is an SFTConfig field: None (not applicable) for GRPO
+    assert (cfg.assistant_only_loss, cfg.completion_only_loss) == (False, None)
+    sft, _ = resolve(request(training__objective="sft"), hybrid_inventory(), None)
+    assert sft is not None
+    # prompt + chosen mapping: SFT trains prompt-completion rows, TRL's default loss mask is
+    # completion-only for that format
+    assert (sft.assistant_only_loss, sft.completion_only_loss) == (False, True)
+    assert field(sft, "training.completion_only_loss").resolved is True
+    messages = request(
+        training__objective="sft",
+        dataset__mapping={"format": "messages", "messages": "conversation"},
+    )
+    lm, _ = resolve(messages, hybrid_inventory(), None)
+    assert lm is not None and lm.completion_only_loss is None
+
+
+@pytest.mark.parametrize(
+    ("precision", "mode", "compute"),
+    [("auto", "bf16", "bfloat16"), ("bf16", "bf16", "bfloat16"), ("fp16", "fp16", "float16")],
+)
+def test_mixed_precision_modes(precision, mode, compute) -> None:
+    res = resolver_mod._Resolution()
+    got = resolver_mod._mixed_precision(request(training__precision=precision), "bfloat16", res)
+    assert got == (mode, compute)
+    assert res.records[-1].field == "training.precision"
+    # fp32: no autocast, the forward runs in the load dtype
+    none = resolver_mod._mixed_precision(request(training__precision="fp32"), "float32", res)
+    assert none == ("none", "float32")
+
+
+def test_fp16_and_fp32_precision_stay_blocked(adapter) -> None:
+    for precision in ("fp16", "fp32"):
+        cfg, report = resolve(request(training__precision=precision), hybrid_inventory(), None)
+        assert cfg is None
+        assert "training.precision" in {b.affected_component for b in report.blockers}
+
+
+def test_packing_on_the_linear_attention_torch_fallback_is_an_explicit_blocker(adapter) -> None:
+    cfg, report = resolve(request(training__packing=True), hybrid_inventory(), None)
+    assert cfg is None
+    packing = [b for b in report.blockers if b.affected_component == "training.packing"]
+    assert len(packing) == 2  # strict no-truncation mode + torch fallback boundaries
+    assert any("cu_seqlens" in b.user_message for b in packing)
+    dense = make_inventory()  # full attention only: the strict-mode blocker alone
+    _, report2 = resolve(request(training__packing=True), dense, None)
+    assert [b.affected_component for b in report2.blockers].count("training.packing") == 1
+
+
+def test_conv_state_dtype_follows_the_rollout_forward(adapter) -> None:
+    inv = hybrid_inventory()
+    peft, _ = resolve(request(), inv, None)
+    assert peft is not None and peft.effective_dtypes.conv_state == "bfloat16"
+    fp32, _ = resolve(request(training__load_dtype="float32"), inv, None)
+    assert fp32 is not None and fp32.effective_dtypes.conv_state == "float32"  # no autocast
+    full = {"training__strategy": "full", "training__quantization": {"enabled": False}}
+    full_fp32, _ = resolve(request(**full, training__load_dtype="float32"), inv, None)
+    assert full_fp32 is not None and full_fp32.effective_dtypes.conv_state == "bfloat16"
+    sft, _ = resolve(request(training__objective="sft"), inv, None)
+    assert sft is not None and sft.effective_dtypes.conv_state is None  # no rollout
+    dense, _ = resolve(request(), make_inventory(), None)
+    assert dense is not None and dense.effective_dtypes.conv_state is None  # no conv cache
+
+
+def test_dpo_reference_model_is_a_typed_field(adapter) -> None:
+    full = {
+        "training__objective": "dpo",
+        "training__strategy": "full",
+        "training__quantization": {"enabled": False},
+    }
+    inv = hybrid_inventory()
+    separate, _ = resolve(request(**full, dpo={"reference_model": "org/other"}), inv, None)
+    assert separate is not None and separate.dpo.reference_model == "org/other"
+    assert field(separate, "dpo.reference_model").resolved == "org/other"  # audit trail kept
+    policy_ref = request().model.reference
+    same, _ = resolve(request(**full, dpo={"reference_model": policy_ref}), inv, None)
+    assert same is not None and same.dpo.reference_model is None  # the policy checkpoint
+    unused, _ = resolve(
+        request(
+            training__objective="dpo",
+            dpo={"reference_model": "org/other", "reference_strategy": "frozen_base_switch"},
+        ),
+        inv,
+        None,
+    )
+    assert unused is not None and unused.dpo.reference_model is None
+
+
+@pytest.mark.parametrize(
+    ("reward", "on_gpu"),
+    [
+        ({"kind": "unspecified"}, False),
+        ({"kind": "cpu_rule"}, False),
+        ({"kind": "remote"}, False),
+        ({"kind": "local_model", "model_reference": "org/rm"}, True),
+        ({"kind": "local_model", "model_reference": "org/rm", "on_training_gpu": False}, False),
+    ],
+)
+def test_grpo_reward_placement_is_a_typed_field(adapter, reward, on_gpu) -> None:
+    cfg, _ = resolve(request(grpo__reward=reward), hybrid_inventory(), None)
+    assert cfg is not None and cfg.grpo is not None
+    assert cfg.grpo.reward_on_training_gpu is on_gpu
+    assert field(cfg, "grpo.reward.on_training_gpu").resolved is on_gpu
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"prompt": "q", "chosen": "c", "rejected": "r"},
+        {"prompt": "q", "completion": "a"},
+        {"format": "prompt_completion", "prompt": "q", "completion": "a"},
+        {"format": "preference", "prompt": "q", "chosen": "c", "rejected": "r"},
+        {"messages": "m"},
+        {"format": "messages", "messages": "m"},
+        {"text": "t"},
+        {"format": "text", "text": "t"},
+    ],
+)
+def test_sft_layout_rule_matches_the_preprocessing_adapter(mapping) -> None:
+    from vramforge_estimator.preprocessing.trl_sft import resolve_sft_layout
+    from vramforge_estimator.schemas import ColumnMapping
+
+    m = ColumnMapping.model_validate(mapping)
+    layout, _ = resolve_sft_layout(m)
+    assert resolver_mod._sft_prompt_completion(m) is (layout == "prompt_completion")
