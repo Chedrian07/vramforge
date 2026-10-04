@@ -156,7 +156,7 @@ class GrpoTrainer:
                 prefix="reference",
                 category=AllocationCategory.WEIGHTS_OTHER_MODELS,
             )
-        if reward_on_gpu:
+        if reward_tp is not None:
             b.add(
                 unknown(
                     "reward_model.weights",

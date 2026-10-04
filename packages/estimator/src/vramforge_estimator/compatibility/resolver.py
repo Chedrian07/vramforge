@@ -62,18 +62,17 @@ LINEAR_ATTENTION = "linear_attention"
 
 
 def _issue(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
-    return make_issue(code, message, stage=Stage.RESOLVING, component=component, **details)
+    issue = make_issue(code, message, stage=Stage.RESOLVING, component=component)
+    issue.details.update(details)
+    return issue
 
 
 def _warning(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
-    return make_issue(
-        code,
-        message,
-        severity=Severity.WARNING,
-        stage=Stage.RESOLVING,
-        component=component,
-        **details,
+    issue = make_issue(
+        code, message, severity=Severity.WARNING, stage=Stage.RESOLVING, component=component
     )
+    issue.details.update(details)
+    return issue
 
 
 def _support(profile: AnalyticProfile) -> list[SupportEntry]:
@@ -143,6 +142,7 @@ def _loading_scope(
 
 def _load_dtype(request: AnalysisRequest, profile: AnalyticProfile, res: _Resolution) -> str:
     requested = request.training.load_dtype
+    dtype: str
     if requested is LoadDtype.AUTO:
         dtype = profile.loading.default_load_dtype
         return res.set(

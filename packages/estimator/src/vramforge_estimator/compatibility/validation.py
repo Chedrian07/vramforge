@@ -40,18 +40,17 @@ PRESET_ACCUMULATION = {Objective.SFT: 8, Objective.DPO: 8, Objective.GRPO: 4}
 
 
 def _err(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
-    return make_issue(code, message, stage=Stage.REQUEST, component=component, **details)
+    issue = make_issue(code, message, stage=Stage.REQUEST, component=component)
+    issue.details.update(details)
+    return issue
 
 
 def _warn(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
-    return make_issue(
-        code,
-        message,
-        severity=Severity.WARNING,
-        stage=Stage.REQUEST,
-        component=component,
-        **details,
+    issue = make_issue(
+        code, message, severity=Severity.WARNING, stage=Stage.REQUEST, component=component
     )
+    issue.details.update(details)
+    return issue
 
 
 def _unsupported(message: str, component: str) -> Issue:

@@ -28,14 +28,11 @@ class GrpoBatch:
 
 
 def _constraint(message: str, trl_message: str, component: str, **details: object) -> Issue:
-    return make_issue(
-        ErrorCode.TRAINER_BATCH_CONSTRAINT,
-        message,
-        stage=Stage.REQUEST,
-        component=component,
-        trl_message=trl_message,
-        **details,
+    issue = make_issue(
+        ErrorCode.TRAINER_BATCH_CONSTRAINT, message, stage=Stage.REQUEST, component=component
     )
+    issue.details.update(trl_message=trl_message, **details)
+    return issue
 
 
 def resolve_grpo_batch(

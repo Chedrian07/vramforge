@@ -42,7 +42,7 @@ def scenario_shapes(
     """(scenario_id, Korean label, params, shape) for every scenario to estimate."""
     if cfg.objective is not Objective.GRPO or cfg.grpo is None:
         shape = plan.worst_case
-        params = {
+        params: dict[str, Any] = {
             "rows_per_microbatch": shape.rows_per_microbatch,
             "sequences_per_forward": shape.sequences_per_forward,
             "padded_length": shape.padded_length,
