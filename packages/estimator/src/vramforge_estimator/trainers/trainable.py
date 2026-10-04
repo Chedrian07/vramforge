@@ -39,13 +39,17 @@ class TrainableSlice:
     note: str = ""
 
 
-def lora_rank(module_name: str, cfg: ResolvedConfig) -> int:
+def rank_for(module_name: str, r: int, rank_pattern: dict[str, int]) -> int:
     """PEFT 0.21.2 `get_pattern_key`: first rank_pattern key with re.match(r"(.*\\.)?(key)$")."""
-    assert cfg.lora is not None
-    for key, rank in cfg.lora.rank_pattern.items():
+    for key, rank in rank_pattern.items():
         if re.match(rf"(.*\.)?({key})$", module_name):
             return rank
-    return cfg.lora.r
+    return r
+
+
+def lora_rank(module_name: str, cfg: ResolvedConfig) -> int:
+    assert cfg.lora is not None
+    return rank_for(module_name, cfg.lora.r, cfg.lora.rank_pattern)
 
 
 def lora_targets(inventory: ModelInventory, cfg: ResolvedConfig) -> list[tuple[LinearModule, int]]:
@@ -157,4 +161,11 @@ def executed_slices(
     return out
 
 
-__all__ = ["EXECUTED_COMPONENTS", "TrainableSlice", "executed_slices", "lora_rank", "lora_targets"]
+__all__ = [
+    "EXECUTED_COMPONENTS",
+    "TrainableSlice",
+    "executed_slices",
+    "lora_rank",
+    "lora_targets",
+    "rank_for",
+]
