@@ -58,7 +58,7 @@ def fake_hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
             raise EstimatorError(make_issue(ErrorCode.SOURCE_REVISION_CHANGED, "missing"))
         return path
 
-    def local(self: SourceFiles, rel_path: str) -> Path:
+    def local(self: SourceFiles, rel_path: str, **kwargs: Any) -> Path:  # kwargs: issue stage
         return resolve(self, rel_path, "download")
 
     def opener(self: SourceFiles, rel_path: str) -> Callable[[], Any]:

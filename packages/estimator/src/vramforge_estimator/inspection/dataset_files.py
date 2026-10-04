@@ -10,11 +10,19 @@
 Integrity (plan §7.7 "manifest 일치", §16.2): before a shard is read its size and, when the
 manifest has one, its content digest (sha256, or the git blob id for non-LFS repo files) are
 compared with the manifest; local files are re-checked (size, mtime, inode) after reading.
+
+Failed Hub requests (a download, or a ranged read of a previewed file) never surface as raw
+library errors: `remote_issue` turns them into an `EstimatorError` with SOURCE_ACCESS_DENIED
+(401/403, repository no longer visible), SOURCE_REVISION_CHANGED (the pinned revision or file is
+gone) or, for network errors, timeouts and server errors, a retryable MODEL_METADATA_UNAVAILABLE.
+The issue carries `request` ("download" | "read"), the file and the exception type, never the
+exception text (it can contain URLs and credentials).
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,6 +36,7 @@ from vramforge_estimator.sources import ResolvedSource, SourceAccess
 from .readers import FileSource, ReaderLimits
 
 SourceKind = Literal["hf", "local_dir", "local_file"]
+RemoteRequest = Literal["download", "read"]
 _HASH_BLOCK = 4 << 20
 # Hub files up to this size are downloaded for the preview (the scan reuses the cached copy);
 # larger ones are previewed with ranged reads so inspection stays fast.
@@ -178,7 +187,7 @@ class SourceFiles:
         if data_file.size is not None and data_file.size > self.limits.max_file_bytes:
             raise _quota_file(data_file)
         if self.kind == "hf":
-            path = self._download(data_file.location)
+            path = self._download(data_file.location, stage=Stage.TOKENIZING)
         else:
             path = Path(data_file.location)
             self.check_inside(path, data_file.shard_id)
@@ -239,7 +248,7 @@ class SourceFiles:
     def _cache_dir(self) -> Path | None:
         return self.access.hf_home / "hub" if self.access.hf_home is not None else None
 
-    def _download(self, rel_path: str) -> Path:
+    def _download(self, rel_path: str, *, stage: Stage = Stage.INSPECTING) -> Path:
         from huggingface_hub import hf_hub_download
 
         assert self.source.repo_id is not None
@@ -253,8 +262,8 @@ class SourceFiles:
                 token=self._token(),
                 etag_timeout=self.access.http_timeout_s,
             )
-        except Exception as exc:
-            raise EstimatorError(_download_issue(exc, rel_path)) from None
+        except Exception as exc:  # incl. Xet transfer errors that are not OSError subclasses
+            raise EstimatorError(remote_issue(exc, rel_path, "download", stage)) from None
         return Path(str(path))
 
     def _remote_opener(self, rel_path: str) -> Callable[[], IO[bytes]]:
@@ -263,12 +272,67 @@ class SourceFiles:
 
             fs = HfFileSystem(token=self._token(), skip_instance_cache=True)
             remote = f"datasets/{self.source.repo_id}@{self.source.revision}/{rel_path}"
-            try:
-                return cast(IO[bytes], fs.open(remote, "rb", block_size=1 << 20))
-            except Exception as exc:
-                raise EstimatorError(_download_issue(exc, rel_path)) from None
+            # Opening resolves the revision and stats the file (requests); reads are ranged GETs.
+            handle = _request(rel_path, fs.open, remote, "rb", block_size=1 << 20)
+            return cast(IO[bytes], RemoteFile(cast(IO[bytes], handle), rel_path))
 
         return opener
+
+
+class RemoteFile(io.RawIOBase):
+    """A remote Hub file read with ranged requests; a failed request raises the `remote_issue`.
+
+    Errors that are not request failures (e.g. fsspec's ValueError for a seek before the start of
+    a corrupt file) pass through unchanged, so the readers still report them as data problems.
+    """
+
+    def __init__(self, raw: IO[bytes], rel_path: str) -> None:
+        super().__init__()
+        self._raw = raw
+        self._rel_path = rel_path
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return bool(self._raw.seekable())
+
+    def read(self, size: int | None = -1) -> bytes:
+        return _request(self._rel_path, self._raw.read, -1 if size is None else size)
+
+    def readinto(self, buffer: Any) -> int:
+        view = memoryview(buffer).cast("B")
+        data = self.read(len(view))
+        view[: len(data)] = data
+        return len(data)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._raw.seek(offset, whence)  # positions only; the next read fetches
+
+    def tell(self) -> int:
+        return self._raw.tell()
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        finally:
+            super().close()
+
+
+def _request[T](rel_path: str, call: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    try:
+        return call(*args, **kwargs)
+    except Exception as exc:
+        if not is_request_failure(exc):
+            raise
+        raise EstimatorError(remote_issue(exc, rel_path, "read")) from None
+
+
+def is_request_failure(exc: BaseException) -> bool:
+    """An HTTP status, transport, timeout or offline error of a Hub request (not a data error)."""
+    import httpx
+
+    return isinstance(exc, OSError | httpx.HTTPError)
 
 
 def _size(path: Path) -> int:
@@ -331,46 +395,75 @@ def _quota_file(data_file: DataFile) -> EstimatorError:
     )
 
 
-def _download_issue(exc: Exception, rel_path: str) -> Issue:
+def remote_issue(
+    exc: BaseException,
+    rel_path: str,
+    request: RemoteRequest,
+    stage: Stage = Stage.INSPECTING,
+) -> Issue:
+    """The contract issue of a failed Hub request for one dataset file (module docstring)."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
-        GatedRepoError,
-        HfHubHTTPError,
+        LocalEntryNotFoundError,
+        OfflineModeIsEnabled,
         RepositoryNotFoundError,
         RevisionNotFoundError,
     )
 
-    if isinstance(exc, GatedRepoError | RepositoryNotFoundError):
-        return _issue(
+    cause = exc
+    if isinstance(exc, FileNotFoundError) and isinstance(exc.__cause__, OSError):
+        cause = exc.__cause__  # HfFileSystem wraps repository/revision lookups this way
+    response = getattr(cause, "response", None)
+    status = getattr(response, "status_code", None)
+    details: dict[str, Any] = {
+        "request": request,
+        "file": rel_path,
+        "error_type": type(cause).__name__,
+    }
+    if isinstance(status, int):
+        details["http_status"] = status
+
+    def issue(code: ErrorCode, message: str, reason: str, retryable: bool = False) -> Issue:
+        return make_issue(
+            code,
+            message,
+            stage=stage,
+            retryable=retryable,
+            component="dataset",
+            reason=reason,
+            **details,
+        )
+
+    # A private, gated (GatedRepoError is a RepositoryNotFoundError) or deleted repository answers
+    # 401/403/404 "repository not found": the pinned snapshot is no longer readable with this token.
+    if isinstance(cause, RepositoryNotFoundError) or status in (401, 403):
+        return issue(
             ErrorCode.SOURCE_ACCESS_DENIED,
             "데이터셋에 접근할 수 없습니다. 접근 권한이나 토큰을 확인해 주세요.",
-            reason="access_denied",
-            file=rel_path,
+            "access_denied",
         )
-    if isinstance(exc, RevisionNotFoundError | EntryNotFoundError) and not isinstance(
-        exc, FileNotFoundError
+    if isinstance(cause, OfflineModeIsEnabled):
+        return issue(
+            ErrorCode.MODEL_METADATA_UNAVAILABLE,
+            "서버가 오프라인 모드로 설정되어 Hugging Face에서 데이터셋 파일을 가져올 수 "
+            "없습니다. 관리자 설정을 확인해 주세요.",
+            "offline_mode",
+        )
+    # LocalEntryNotFoundError: the Hub was unreachable and the file is not cached (network).
+    if isinstance(cause, RevisionNotFoundError) or (
+        isinstance(cause, EntryNotFoundError | FileNotFoundError)
+        and not isinstance(cause, LocalEntryNotFoundError)
     ):
-        return _issue(
+        return issue(
             ErrorCode.SOURCE_REVISION_CHANGED,
-            "고정한 revision에서 데이터 파일을 찾을 수 없습니다.",
-            reason="entry_not_found",
-            file=rel_path,
+            "고정한 revision에서 데이터 파일을 찾을 수 없습니다. 데이터셋을 다시 확인해 주세요.",
+            "entry_not_found",
         )
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if isinstance(exc, HfHubHTTPError) and status in (401, 403):
-        return _issue(
-            ErrorCode.SOURCE_ACCESS_DENIED,
-            "데이터셋에 접근할 수 없습니다. 접근 권한이나 토큰을 확인해 주세요.",
-            reason="access_denied",
-            file=rel_path,
-        )
-    return make_issue(
-        ErrorCode.SOURCE_ACCESS_DENIED,
-        "네트워크 오류로 데이터 파일을 받지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        stage=Stage.INSPECTING,
+    action = "받지" if request == "download" else "읽지"
+    return issue(
+        ErrorCode.MODEL_METADATA_UNAVAILABLE,
+        f"Hugging Face에서 데이터셋 파일을 {action} 못했습니다(네트워크 오류, 시간 초과 또는 "
+        "서버 오류). 잠시 후 다시 시도해 주세요.",
+        "network",
         retryable=True,
-        component="dataset",
-        reason="download_failed",
-        error_type=type(exc).__name__,
-        file=rel_path,
     )

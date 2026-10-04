@@ -114,6 +114,21 @@ def test_example_dataset_viewer_url_selects_default_train(
     assert result.issues == []
 
 
+def test_example_dataset_preview_with_ranged_reads(
+    source: ResolvedSource, access: SourceAccess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real HfFileSystem behind the request-failure wrapper (no full download)."""
+    import vramforge_estimator.inspection.dataset_files as files_module
+
+    monkeypatch.setattr(files_module, "PREVIEW_DOWNLOAD_MAX", 1024)
+    budget = SourceAccess(hf_home=access.hf_home, max_metadata_bytes=256 * 1024)
+    details = inspect_dataset_details(source, ref(), budget, Objective.DPO)
+    assert details.preview is not None and details.preview.rows
+    assert details.file_formats == {DATA_FILE: "json_lines"}
+    assert details.inspection.suggested_mapping == EXPECTED_MAPPING
+    assert details.inspection.issues == []
+
+
 def test_example_dataset_is_detected_as_json_lines(
     source: ResolvedSource, access: SourceAccess
 ) -> None:

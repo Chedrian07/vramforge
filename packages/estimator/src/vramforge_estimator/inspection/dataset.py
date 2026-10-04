@@ -5,9 +5,11 @@ selects them only when the choice is unambiguous (otherwise DATASET_CONFIG_REQUI
 DATASET_SPLIT_REQUIRED with the options), previews at most 100 rows within
 `SourceAccess.max_metadata_bytes` (`dataset_schema`) and ranks column-mapping candidates for the
 objective (`dataset_mapping`). It raises `EstimatorError` only when there is nothing the user could
-choose to analyze (no loadable layout, the config that would be analyzed is unsupported, or the
-preview read the only split of the only config to its end without a row: EMPTY_DATASET); every
-other problem is an issue of the returned inspection (an empty split among others included).
+choose to analyze (no loadable layout, the config that would be analyzed is unsupported, the
+preview read the only split of the only config to its end without a row: EMPTY_DATASET, or a Hub
+request failed before any column was seen: the retryable or access issue of `remote_issue`);
+every other problem is an issue of the returned inspection (an empty split among others, or a
+failed request after some rows were previewed, included).
 
 The requested config/split are the request fields, or, when a field is empty, the
 `/viewer/<config>/<split>` path of a dataset viewer URL (`requested_selection`). A viewer value is
@@ -183,6 +185,9 @@ def inspect_dataset_details(
         if preview_split is not None:
             preview = read_preview(files, config, preview_split, access.max_metadata_bytes, limits)
             issues.extend(preview.issues)
+            unreadable = _request_failure_before_columns(preview)
+            if unreadable is not None:
+                raise EstimatorError(unreadable)
             if selected_split is not None and preview.split_is_empty:
                 others = len(layout.configs) > 1 or len(config.splits) > 1
                 empty = _empty_split_issue(config.name, selected_split, others)
@@ -423,6 +428,20 @@ def _check_eval_split(
             options=[name for name in names if name != train_split],
         )
     return None
+
+
+def _request_failure_before_columns(preview: Preview) -> Issue | None:
+    """A failed Hub request (`dataset_files.remote_issue`) before any column was seen.
+
+    Retrying (or fixing access) is then the only way forward; returning the inspection would end
+    in a column-mapping question about columns nobody could read.
+    """
+    if preview.rows or preview.features is not None:
+        return None
+    return next(
+        (issue for issue in preview.issues if issue.details.get("request") in ("download", "read")),
+        None,
+    )
 
 
 def _empty_split_issue(config: str, split: str, others: bool) -> Issue:
