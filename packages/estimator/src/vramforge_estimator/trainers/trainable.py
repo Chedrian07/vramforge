@@ -6,8 +6,8 @@ TRL never freezes a vision tower and text-only data never runs it, so such param
 weights resident but get no gradient and no AdamW state (docs/research/loading-quantization-peft.md
 §Q8.4, trl-sft-dpo.md V-19, trl-grpo.md verification #15).
 
-Adapters may extend `TrainableGroup` with a boolean `receives_grad` (the architecture adapters of
-this repository do); otherwise the groups are mapped onto inventory modules. When neither works the
+Adapters may report `TrainableGroup.receives_grad` (the architecture adapters of this repository
+do); when it is None the groups are mapped onto inventory modules. When neither works the
 whole bucket is treated as executed (conservative) and the slice says so.
 """
 
@@ -109,7 +109,7 @@ def _embedding_group(group: TrainableGroup, inventory: ModelInventory) -> bool:
 def _from_flags(
     name: str, kind: str, dtype: str, groups: Sequence[TrainableGroup], inventory: ModelInventory
 ) -> TrainableSlice:
-    executed = [g for g in groups if getattr(g, "receives_grad", True)]
+    executed = [g for g in groups if g.receives_grad is not False]
     tensors: list[tuple[int, bool]] = []
     per_tensor_known = True
     for g in executed:
@@ -216,7 +216,7 @@ def executed_slices(
     out: list[TrainableSlice] = []
     for (kind, dtype), members in buckets.items():
         name = kind if dtypes_per_kind[kind] == 1 else f"{kind}:{dtype}"
-        if all(isinstance(getattr(g, "receives_grad", None), bool) for g in members):
+        if all(isinstance(g.receives_grad, bool) for g in members):
             out.append(_from_flags(name, kind, dtype, members, inventory))
         else:
             out.append(_from_inventory(name, kind, dtype, members, inventory, cfg))

@@ -49,6 +49,23 @@ class TrainableGroup:
     dtype: str  # parameter dtype while training
     tensor_count: int
     note: str = ""
+    # False for parameters that never run on this data (e.g. vision LoRA on text-only data):
+    # they are allocated but get no gradient and no optimizer state (research Q8.4).
+    # None = not reported; trainer adapters then map the group onto the inventory themselves.
+    receives_grad: bool | None = None
+    component: str = "text"
+    # nn.Embedding parameters (bnb 8-bit optimizers keep 32-bit state for them).
+    is_embedding: bool = False
+
+
+FINAL_HIDDEN_SUFFIX = "final_hidden"
+
+
+def final_hidden_alias(prefix: str) -> str:
+    """Storage-alias group of the final hidden state produced by `train_step_ledger(prefix=...)`.
+
+    Trainer adapters reuse it so a trainable LM head's saved input is counted once."""
+    return f"{prefix}.{FINAL_HIDDEN_SUFFIX}"
 
 
 class ArchitectureAdapter(Protocol):
@@ -125,4 +142,11 @@ class ArchitectureAdapter(Protocol):
 
     def lm_head_dims(self, inventory: ModelInventory) -> tuple[int, int]:
         """(hidden_size, vocab rows of the output projection)."""
+        ...
+
+    def loading_budget_bytes(self, inventory: ModelInventory, cfg: ResolvedConfig) -> int:
+        """S_load: device bytes from_pretrained must fit before training starts (4-bit modules at
+        their packed size, everything else in the load dtype). With bnb 4-bit + device_map="auto"
+        on one GPU and no max_memory, loading needs free memory x 0.81 >= S_load
+        (docs/research/loading-quantization-peft.md §4.5)."""
         ...
