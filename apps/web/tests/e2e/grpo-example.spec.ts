@@ -72,6 +72,10 @@ test("GRPO example: progress, full coverage, budget scenarios, reward warning an
   await expect(stat(prompt, "row 수")).toHaveText(EXAMPLE_ROWS);
   await expect(stat(prompt, "최대")).toHaveText(new RegExp(`^${EXAMPLE_MAX_PROMPT}\\s*\\(train:\\d+\\)$`));
   await expect(data.getByRole("region", { name: /chosen|rejected/ })).toHaveCount(0);
+  // The context check uses the longest prompt plus the smallest completion budget (1,024).
+  const context = data.getByRole("region", { name: "context 검증" });
+  await expect(context.getByText("상한 이내")).toBeVisible();
+  await expect(stat(context, "prompt + 생성 예산")).toHaveText((Number(EXAMPLE_MAX_PROMPT) + 1_024).toLocaleString("ko-KR"));
 
   // A reload reconnects to the stored analysis through ?analysis=<id>.
   await page.reload();
