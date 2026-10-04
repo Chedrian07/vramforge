@@ -70,13 +70,14 @@ worker가 시작할 때와 대기 중 약 1분마다(`VRAMFORGE_MAINTENANCE_INTE
 ## 6. 로그
 
 - 로그 출력은 포맷 단계에서 `hf_...` token, `Authorization`/Bearer 값, `vf_owner`/`vf_access` 쿠키, URL 자격증명과 서명 파라미터를 가린다(traceback 포함).
-- 데이터셋 row 원문은 로그에 쓰지 않는다. 예기치 않은 오류의 세부 내용은 서버 로그에만 남고 사용자 응답에는 내부 정보 없는 한국어 메시지만 간다.
+- 서비스 코드는 데이터셋 row 원문을 로그에 쓰지 않는다. 예기치 않은 오류의 세부 내용(traceback)은 서버 로그에만 남고 사용자 응답에는 내부 정보 없는 한국어 메시지만 간다.
+- 단, 외부 라이브러리(datasets, pyarrow, tokenizer 등)가 예외 메시지에 입력 일부를 담으면 그 traceback이 서버 로그에 남을 수 있다. 서버 로그 접근은 운영자로 제한한다.
 
 ## 7. 내보내기
 
 - `analysis.json`, `resolved-plan.yaml`, `report.md`는 저장된 결과에서 사용자가 요청할 때 만들고, 문자열에 섞인 token·절대경로·사설 URL·URL 자격증명을 가린다.
-- `report.md`는 신뢰할 수 없는 문자열을 escape하므로 원시 HTML이나 활성 링크를 포함하지 않는다.
-- `trainer-config.yaml`은 학습 준비 상태가 `ready`일 때만 만든다. 원문 데이터는 포함하지 않는다.
+- `report.md`는 신뢰할 수 없는 문자열을 escape하므로 원시 HTML이나 Markdown 링크·이미지 문법을 포함하지 않는다. 가려지지 않은 공개 `http(s)` URL 문자열은 GFM 렌더러가 자동 링크로 표시할 수 있다.
+- `trainer-config.yaml`은 학습 준비 상태가 `ready`이고 파이프라인이 중단 없이 메모리 산정까지 끝난 결과에서만 만든다. 원문 데이터는 포함하지 않는다.
 
 ## 8. GPU 검증
 

@@ -2,8 +2,9 @@
 
 Every value that may come from user input or a source (references, column names, messages) is
 escaped: Markdown control characters are backslash-escaped and `<`, `>`, `&` become entities, so
-the report never carries raw HTML or active links (plan §18 XSS). Numbers are integer bytes with a
-one-decimal GiB rendering for display.
+the report never carries raw HTML and no Markdown link/image syntax can form (plan §18 XSS; a bare
+public http(s) URL that survived redaction may still be auto-linked by GFM renderers). Numbers are
+integer bytes with a one-decimal GiB rendering for display.
 """
 
 from __future__ import annotations
