@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from vramforge_estimator.compatibility import validate_request
 from vramforge_estimator.compatibility.grpo_rules import resolve_grpo_batch
@@ -201,23 +202,17 @@ def test_grpo_batch_constraints_use_trl_rules() -> None:
 
 
 def test_empty_budget_candidates_are_rejected() -> None:
-    issues = validate_request(request(grpo__completion_budget_candidates=[]))
-    assert ErrorCode.GRPO_BUDGET_UNSPECIFIED in codes(issues)
+    # The schema requires at least one candidate (min_length=1): rejected before validation.
+    with pytest.raises(ValidationError):
+        request(grpo__completion_budget_candidates=[])
 
 
 @pytest.mark.parametrize("bad", [0, -5, MAX_COMPLETION_BUDGET + 1])
 def test_budget_candidates_must_be_positive_and_bounded(bad: int) -> None:
-    # The schema bounds completion_budget but not the candidate items; a zero or negative budget
-    # would turn into zero/negative logits and grad buffers.
-    issues = validate_request(request(grpo__completion_budget_candidates=[bad, 1024]))
-    assert ErrorCode.INVALID_REQUEST in codes(issues)
-    issue = next(i for i in issues if i.code is ErrorCode.INVALID_REQUEST)
-    assert issue.details["invalid"] == [bad] and issue.user_message
-    # An explicit budget replaces the candidates, so they are not used.
-    explicit = validate_request(
-        request(grpo__completion_budget=2048, grpo__completion_budget_candidates=[bad])
-    )
-    assert codes(explicit) == set()
+    # Candidate items carry the same bound as completion_budget in the schema, so an out-of-range
+    # candidate is a 422 before validate_request runs (never zero/negative logits buffers).
+    with pytest.raises(ValidationError):
+        request(grpo__completion_budget_candidates=[bad, 1024])
 
 
 def test_candidate_bound_matches_the_schema_bound() -> None:

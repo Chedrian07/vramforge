@@ -54,6 +54,7 @@ class TokenizerManifest(VFModel):
     chat_template_sha256: str | None = None
     has_generation_markers: bool = False  # {% generation %} blocks (assistant-only loss)
     template_kwargs: list[str] = Field(default_factory=list)  # e.g. ["enable_thinking"]
+    template_parse_error: str | None = None  # Jinja parse failure (display-safe), if any
     files_sha256: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
 

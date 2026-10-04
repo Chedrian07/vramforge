@@ -10,7 +10,7 @@ Cross-field semantics (e.g. 4-bit + full fine-tune) are validated server-side by
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -265,8 +265,8 @@ class GrpoConfig(VFModel):
     num_iterations: int = Field(default=1, ge=1)
     # None = evaluate every candidate budget as a separate scenario (plan §5.4).
     completion_budget: int | None = Field(default=None, ge=1, le=1_048_576)
-    completion_budget_candidates: list[int] = Field(
-        default_factory=lambda: list(DEFAULT_COMPLETION_BUDGETS)
+    completion_budget_candidates: list[Annotated[int, Field(ge=1, le=1_048_576)]] = Field(
+        default_factory=lambda: list(DEFAULT_COMPLETION_BUDGETS), min_length=1, max_length=16
     )
     max_live_sequences: int | None = Field(default=None, ge=1)
     beta: float = Field(default=0.0, ge=0.0)
