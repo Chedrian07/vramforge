@@ -37,3 +37,30 @@ def datasets_rows(
         return {str(name): list(split) for name, split in loaded.items()}
 
     return load
+
+
+@pytest.fixture
+def fake_hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Serve Hub downloads from local mirror directories: {repo_id: directory}.
+
+    Records every downloaded or remotely opened repo path in `fake_hub["__log__"]`.
+    """
+    from vramforge_estimator.errors import EstimatorError, make_issue
+    from vramforge_estimator.inspection.dataset_files import SourceFiles
+    from vramforge_estimator.schemas import ErrorCode
+
+    mirrors: dict[str, Any] = {"__log__": []}
+
+    def local(self: SourceFiles, rel_path: str) -> Path:
+        path = mirrors[self.source.repo_id] / rel_path
+        mirrors["__log__"].append(rel_path)
+        if not path.is_file():
+            raise EstimatorError(make_issue(ErrorCode.SOURCE_REVISION_CHANGED, "missing"))
+        return path
+
+    def opener(self: SourceFiles, rel_path: str) -> Callable[[], Any]:
+        return lambda: local(self, rel_path).open("rb")
+
+    monkeypatch.setattr(SourceFiles, "_download", local)
+    monkeypatch.setattr(SourceFiles, "_remote_opener", opener)
+    return mirrors

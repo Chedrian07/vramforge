@@ -45,3 +45,19 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> Path:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return path
+
+
+def hf_source(
+    repo_dir: Path, repo_id: str = "acme/demo-set", revision: str = "a" * 40
+) -> ResolvedSource:
+    """A pinned Hub dataset whose manifest lists `repo_dir` (served by the `fake_hub` fixture)."""
+    manifest = SourceManifest(
+        kind="dataset",
+        source_type=SourceType.HUGGINGFACE,
+        reference=f"hf:{repo_id}",
+        repo_id=repo_id,
+        resolved_revision=revision,
+        files=file_entries(repo_dir),
+        fingerprint=revision,
+    )
+    return ResolvedSource(kind="dataset", manifest=manifest, repo_id=repo_id, revision=revision)
