@@ -194,4 +194,19 @@ def test_grpo_live_sequence_mismatch_is_flagged(make_resolved, make_grpo, make_t
     config = make_grpo(live_sequences=1)
     plan = plan_batches(make_table(prompt_tokens=[10]), make_resolved(GRPO, grpo=config), seed=1)
     assert plan.grpo.live_sequences == 4
-    assert any(i.code is ErrorCode.CONFLICTING_OPTIONS for i in plan.issues)
+    conflicts = [i for i in plan.issues if i.code is ErrorCode.CONFLICTING_OPTIONS]
+    assert [i.details["trl_live_sequences"] for i in conflicts] == [4]
+
+
+def test_grpo_common_batch_settings_mismatch_is_flagged(
+    make_resolved, make_grpo, make_table
+) -> None:
+    config = make_grpo(update_microbatch=1, accumulation=4)
+    plan = plan_batches(
+        make_table(prompt_tokens=[10]),
+        make_resolved(GRPO, grpo=config, microbatch=2, accumulation=1),
+        seed=1,
+    )
+    assert (plan.microbatch, plan.accumulation) == (1, 4)  # GRPO settings win
+    conflict = next(i for i in plan.issues if i.code is ErrorCode.CONFLICTING_OPTIONS)
+    assert conflict.details["resolved_microbatch"] == 2

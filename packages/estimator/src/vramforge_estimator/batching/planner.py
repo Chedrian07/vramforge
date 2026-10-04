@@ -380,6 +380,23 @@ def _grpo_issues(
                 trl_live_sequences=layout.live_sequences,
             )
         )
+    if (resolved.microbatch, resolved.accumulation) != (
+        layout.update_microbatch,
+        layout.accumulation,
+    ):
+        issues.append(
+            _issue(
+                ErrorCode.CONFLICTING_OPTIONS,
+                Severity.WARNING,
+                f"공통 microbatch/accumulation({resolved.microbatch}/{resolved.accumulation})이 "
+                f"GRPO 설정({layout.update_microbatch}/{layout.accumulation})과 다릅니다. 계획은 "
+                "GRPO 설정(per_device_train_batch_size, gradient_accumulation_steps)을 따릅니다.",
+                resolved_microbatch=resolved.microbatch,
+                resolved_accumulation=resolved.accumulation,
+                grpo_update_microbatch=layout.update_microbatch,
+                grpo_accumulation=layout.accumulation,
+            )
+        )
     return issues
 
 

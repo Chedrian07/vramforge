@@ -24,12 +24,17 @@ from vramforge_estimator.schemas import (
 def resolved(
     objective: Objective,
     *,
-    microbatch: int = 1,
-    accumulation: int = 1,
+    microbatch: int | None = None,
+    accumulation: int | None = None,
     pad_to_multiple_of: int | None = None,
     loss_path: str = "chunked_nll",
     grpo: GrpoResolved | None = None,
 ) -> ResolvedConfig:
+    """Like the compatibility resolver, GRPO's common microbatch/accumulation mirror `grpo`."""
+    if microbatch is None:
+        microbatch = grpo.update_microbatch if grpo else 1
+    if accumulation is None:
+        accumulation = grpo.accumulation if grpo else 1
     bf16 = "bfloat16"
     return ResolvedConfig(
         objective=objective,
