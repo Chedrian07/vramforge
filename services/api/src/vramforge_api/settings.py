@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     max_concurrent_jobs_per_owner: int = Field(default=2, ge=1)
     job_timeout_s: int = Field(default=21_600, ge=60)
     max_upload_bytes: int = Field(default=2 * GiB, ge=1)
+    # Total size of one owner's unexpired uploads (all files together).
+    max_upload_bytes_per_owner: int = Field(default=10 * GiB, ge=1)
     max_json_body_bytes: int = Field(default=1024 * 1024, ge=1024)
     retention_days: int = Field(default=7, ge=1)
     inspect_timeout_s: float = Field(default=60.0, gt=0)

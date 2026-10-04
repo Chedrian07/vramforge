@@ -29,11 +29,13 @@ from vramforge_estimator.schemas import (
     Stage,
     UploadResponse,
 )
+from vramforge_estimator.units import GiB
 
 from .. import store
 from ..access import hint_inspection, source_access
 from ..db import session_scope, utcnow
 from ..deps import OwnerDep, StateDep
+from ..errors import ApiError
 from ..inspect_service import inspect_sources as run_inspection
 from ..models import Upload
 from ..settings import Settings
@@ -111,6 +113,32 @@ async def inspect_sources(
     return hint_inspection(response, settings)
 
 
+def _gib(value: int) -> str:
+    return f"{value / GiB:,.1f} GiB"
+
+
+def _quota_error(settings: Settings, used: int) -> ApiError:
+    quota = settings.max_upload_bytes_per_owner
+    return ApiError(
+        413,
+        make_issue(
+            ErrorCode.UPLOAD_TOO_LARGE,
+            f"사용자별 업로드 보관 한도({_gib(quota)})를 넘습니다. 지금 보관 중인 업로드는 "
+            f"{_gib(used)}입니다. 보존 기간이 지나거나 업로드를 쓰는 분석을 삭제하면 공간이 "
+            "비워집니다.",
+            stage=Stage.API,
+            reason="owner_quota",
+            quota_bytes=quota,
+            used_bytes=used,
+        ),
+    )
+
+
+def _owner_usage(db_factory: sessionmaker[Session], owner: str) -> int:
+    with session_scope(db_factory) as db:
+        return store.owner_upload_bytes(db, owner)
+
+
 def _record_upload(
     settings: Settings,
     db_factory: sessionmaker[Session],
@@ -121,6 +149,12 @@ def _record_upload(
     now = utcnow()
     with session_scope(db_factory) as db:
         store.ensure_owner(db, owner)
+        # Re-checked under the owner lock: concurrent uploads of one owner may each have passed
+        # the check made before streaming.
+        store.lock_owner(db, owner)
+        used = store.owner_upload_bytes(db, owner)
+        if used + saved.size_bytes > settings.max_upload_bytes_per_owner:
+            raise _quota_error(settings, used)
         row = Upload(
             id=upload_id,
             owner_id=owner,
@@ -158,10 +192,17 @@ def _record_upload(
 async def upload_dataset(request: Request, state: StateDep, owner: OwnerDep) -> UploadResponse:
     """Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.
 
-    Streams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap; the
-    extension must match the content. Use the returned `reference` as the dataset reference.
+    Streams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap and the
+    owner's remaining `VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER` quota (413 UPLOAD_TOO_LARGE, with
+    `details.reason = "owner_quota"` for the quota); the extension must match the content. Use
+    the returned `reference` as the dataset reference.
     """
     settings = state.settings
+    used = await run_in_threadpool(_owner_usage, state.sessions, owner)
+    remaining = settings.max_upload_bytes_per_owner - used
+    if remaining <= 0:
+        raise _quota_error(settings, used)
+    cap = min(settings.max_upload_bytes, remaining)
     upload_id = store.new_id()
     target_dir = store.owner_uploads_dir(settings, owner) / upload_id
     try:
@@ -169,7 +210,10 @@ async def upload_dataset(request: Request, state: StateDep, owner: OwnerDep) -> 
             request.headers.get("content-type"),
             request.stream(),
             target_dir,
-            settings.max_upload_bytes,
+            cap,
+            too_large=(lambda: _quota_error(settings, used))
+            if cap < settings.max_upload_bytes
+            else None,
         )
     except BaseException:
         await run_in_threadpool(_remove_dir_quietly, target_dir)

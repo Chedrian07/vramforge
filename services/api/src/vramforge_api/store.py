@@ -399,6 +399,16 @@ def get_owned_upload(db: Session, owner_key: str, upload_id: str) -> Upload | No
     return upload
 
 
+def owner_upload_bytes(db: Session, owner_key: str) -> int:
+    """Total size of the owner's unexpired uploads (what the per-owner quota counts)."""
+    total = db.scalar(
+        select(func.coalesce(func.sum(Upload.size_bytes), 0)).where(
+            Upload.owner_id == owner_key, Upload.expires_at > utcnow()
+        )
+    )
+    return int(total or 0)
+
+
 def referenced_upload_ids(request: AnalysisRequest) -> list[str]:
     ids: list[str] = []
     for ref in (request.model, request.dataset):
@@ -487,6 +497,7 @@ __all__ = [
     "lock_analysis",
     "lock_owner",
     "new_id",
+    "owner_upload_bytes",
     "owner_uploads_dir",
     "parse_upload_id",
     "referenced_upload_ids",

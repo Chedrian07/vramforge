@@ -13,7 +13,7 @@ import hashlib
 import os
 import secrets
 import unicodedata
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -143,9 +143,15 @@ class _PartState:
 class _UploadSink:
     """Collects exactly one file part from a multipart stream into `target_dir`."""
 
-    def __init__(self, target_dir: Path, max_bytes: int) -> None:
+    def __init__(
+        self,
+        target_dir: Path,
+        max_bytes: int,
+        too_large: Callable[[], ApiError] | None = None,
+    ) -> None:
         self.target_dir = target_dir
         self.max_bytes = max_bytes
+        self.too_large = too_large or (lambda: _too_large(max_bytes))
         self.part = _PartState()
         self.filename: str | None = None
         self.format: str | None = None
@@ -209,7 +215,7 @@ class _UploadSink:
             return
         self.size += len(chunk)
         if self.size > self.max_bytes:
-            self._fail(_too_large(self.max_bytes))
+            self._fail(self.too_large())
             return
         if len(self.head) < HEAD_BYTES:
             self.head += chunk[: HEAD_BYTES - len(self.head)]
@@ -260,14 +266,22 @@ class _UploadSink:
 
 
 async def receive_upload(
-    content_type: str | None, body: AsyncIterator[bytes], target_dir: Path, max_bytes: int
+    content_type: str | None,
+    body: AsyncIterator[bytes],
+    target_dir: Path,
+    max_bytes: int,
+    *,
+    too_large: Callable[[], ApiError] | None = None,
 ) -> SavedUpload:
-    """Stream a `multipart/form-data` body with one `file` part into `target_dir`."""
+    """Stream a `multipart/form-data` body with one `file` part into `target_dir`.
+
+    `too_large` builds the error for a file over `max_bytes` (default: the per-file cap message;
+    the caller passes its own when the binding limit is the owner's remaining quota)."""
     ctype, params = parse_options_header(content_type or "")
     boundary = params.get(b"boundary")
     if ctype != b"multipart/form-data" or not boundary:
         raise _bad_request("multipart/form-data 형식으로 파일을 보내야 합니다.")
-    sink = _UploadSink(target_dir, max_bytes)
+    sink = _UploadSink(target_dir, max_bytes, too_large)
     callbacks = {
         "on_part_begin": sink.on_part_begin,
         "on_part_data": sink.on_part_data,
