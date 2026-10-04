@@ -196,9 +196,15 @@ def create_analysis(
     )
 
 
+def _status(state: AppState, db: DbDep, analysis: Analysis) -> AnalysisStatus:
+    return store.to_status(db, analysis, retention_days=state.settings.retention_days)
+
+
 @router.get("/{analysis_id}", response_model=AnalysisStatus)
-def get_analysis(analysis_id: str, db: DbDep, owner: OwnerDep) -> AnalysisStatus:
-    return store.to_status(db, _owned(db, owner, analysis_id))
+def get_analysis(analysis_id: str, state: StateDep, db: DbDep, owner: OwnerDep) -> AnalysisStatus:
+    """Status, progress, the stored request and the partial/final result. `expires_at` is when
+    retention deletes a finished analysis (None while it runs)."""
+    return _status(state, db, _owned(db, owner, analysis_id))
 
 
 def _stream_precheck(
@@ -287,7 +293,7 @@ def cancel_analysis(
     analysis = _owned(db, owner, analysis_id)
     db.refresh(analysis, with_for_update=True)
     if store.is_terminal(analysis):
-        return store.to_status(db, analysis)
+        return _status(state, db, analysis)
     if analysis.status == JobStatus.QUEUED.value and analysis.lease_owner is None:
         try:
             jobs.cancel_queued_job(state.redis, analysis.id, analysis.attempt)
@@ -305,7 +311,7 @@ def cancel_analysis(
         store.request_cancel(db, analysis)
         db.commit()
         schedule_stop(state, analysis.id, analysis.attempt)
-    return store.to_status(db, analysis)
+    return _status(state, db, analysis)
 
 
 @router.post("/{analysis_id}/scenarios", response_model=ScenarioResponse)

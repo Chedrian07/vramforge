@@ -249,3 +249,25 @@ def test_worker_burst_runs_queued_jobs_with_json_serializer(
     simple.work(burst=True)
     assert ran == [(aid, 1)]
     worker.run_maintenance_tasks()  # reaper + retention hooks run without errors
+
+
+def test_status_expiry_matches_what_retention_deletes(settings, sessions) -> None:
+    """`AnalysisStatus.expires_at` (store.expires_at) is the retention rule the cleanup applies."""
+    from vramforge_api import store
+
+    now = utcnow()
+    old = create_analysis(
+        sessions, status="COMPLETED", finished_at=now - timedelta(days=7, hours=1)
+    )
+    fresh = create_analysis(sessions, status="FAILED", finished_at=now - timedelta(days=6))
+    running = create_analysis(sessions, status="TOKENIZING", created_at=now - timedelta(days=30))
+    with session_scope(sessions) as db:
+        expiry = {
+            aid: store.expires_at(db.get(Analysis, aid), settings.retention_days)
+            for aid in (old, fresh, running)
+        }
+    assert expiry[old] < now < expiry[fresh]
+    assert expiry[running] is None
+    report = cleanup_expired(settings, sessions)
+    assert report.analyses == [old]
+    assert get(sessions, fresh) is not None and get(sessions, running) is not None

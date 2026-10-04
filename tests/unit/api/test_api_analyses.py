@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import fakeredis
 import pytest
@@ -333,3 +333,33 @@ def test_sse_of_a_finished_analysis_never_waits_for_more(client: TestClient) -> 
         events = _read_sse(resp)
     assert [int(e["id"]) for e in events] == [late]
     assert time.monotonic() - started < 2  # sse_max_duration_s is 5 s in these tests
+
+
+def test_status_echoes_the_request_and_the_retention_deadline(
+    settings_factory: Callable[..., Settings], client_factory: Callable[..., TestClient]
+) -> None:
+    from vramforge_estimator.schemas import AnalysisRequest
+
+    client = client_factory(settings_factory(retention_days=3))
+    body = example_request(**{"training.lora.r": 32})
+    aid = _create(client, **{"training.lora.r": 32})["analysis_id"]
+    queued = client.get(f"/api/v1/analyses/{aid}").json()
+    assert queued["expires_at"] is None  # still running: retention does not apply yet
+    # the stored request, so the UI can restore the form after a reload
+    assert queued["request"] == AnalysisRequest.model_validate(body).model_dump(mode="json")
+
+    cancelled = client.post(f"/api/v1/analyses/{aid}/cancel").json()
+    finished = datetime.fromisoformat(cancelled["finished_at"])
+    assert datetime.fromisoformat(cancelled["expires_at"]) == finished + timedelta(days=3)
+    again = client.get(f"/api/v1/analyses/{aid}").json()
+    assert again["expires_at"] == cancelled["expires_at"]
+    assert again["request"]["training"]["lora"]["r"] == 32
+
+
+def test_status_survives_a_stored_request_from_an_older_schema(client: TestClient) -> None:
+    aid = _create(client)["analysis_id"]
+    with session_scope(_sessions(client)) as db:
+        db.get(Analysis, aid).request = {"schema_version": "0.1", "legacy": True}
+    resp = client.get(f"/api/v1/analyses/{aid}")
+    assert resp.status_code == 200
+    assert resp.json()["request"] is None

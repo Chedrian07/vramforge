@@ -275,11 +275,24 @@ def load_request(analysis: Analysis) -> AnalysisRequest:
     return AnalysisRequest.model_validate(analysis.request)
 
 
-def to_status(db: Session, analysis: Analysis) -> AnalysisStatus:
+def expires_at(analysis: Analysis, retention_days: int) -> datetime | None:
+    """When retention deletes the analysis (the worker's cleanup uses the same rule): a finished
+    analysis `retention_days` after it finished; None while it is still running."""
+    if not is_terminal(analysis):
+        return None
+    return (analysis.finished_at or analysis.created_at) + timedelta(days=retention_days)
+
+
+def to_status(db: Session, analysis: Analysis, *, retention_days: int) -> AnalysisStatus:
     error = Issue.model_validate(analysis.error) if analysis.error else None
     result = load_result(analysis)
     if analysis.result and result is None and error is None:
         error = internal_error_issue("저장된 분석 결과를 현재 형식으로 읽을 수 없습니다.")
+    try:
+        request: AnalysisRequest | None = load_request(analysis)
+    except ValidationError:
+        log.error("stored request of %s does not match the current schema", analysis.id)
+        request = None
     return AnalysisStatus(
         analysis_id=analysis.id,
         status=JobStatus(analysis.status),
@@ -288,7 +301,9 @@ def to_status(db: Session, analysis: Analysis) -> AnalysisStatus:
         created_at=analysis.created_at,
         updated_at=analysis.updated_at,
         finished_at=analysis.finished_at,
+        expires_at=expires_at(analysis, retention_days),
         last_event_id=last_event_id(db, analysis.id),
+        request=request,
         result=result,
         error=error,
     )
@@ -448,6 +463,7 @@ __all__ = [
     "ensure_owner",
     "event_from_row",
     "events_after",
+    "expires_at",
     "find_by_idempotency_key",
     "finish",
     "get_owned_analysis",
