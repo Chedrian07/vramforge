@@ -20,8 +20,7 @@ from .plan_yaml import HEADER as PLAN_HEADER
 from .plan_yaml import build_plan
 from .report_md import render_report
 from .sanitize import sanitize
-from .trainer_config import HEADER as TRAINER_HEADER
-from .trainer_config import build_trainer_config
+from .trainer_config import build_trainer_config, header_for
 
 
 class _Dumper(yaml.SafeDumper):
@@ -51,7 +50,8 @@ def export_report_md(result: AnalysisResult) -> bytes:
 
 def export_trainer_config(result: AnalysisResult) -> bytes:
     """Raises `EstimatorError` unless the result is ready for execution."""
-    return (TRAINER_HEADER + _yaml(sanitize(build_trainer_config(result)))).encode("utf-8")
+    config = sanitize(build_trainer_config(result))
+    return (header_for(config) + _yaml(config)).encode("utf-8")
 
 
 __all__ = ["export_json", "export_plan_yaml", "export_report_md", "export_trainer_config"]

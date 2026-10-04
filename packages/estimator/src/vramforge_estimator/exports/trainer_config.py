@@ -18,12 +18,19 @@ The model, quantization (`transformers.BitsAndBytesConfig`), PEFT (`peft.LoraCon
 options were analyzed), processing-class and (DPO) reference sections describe the launcher
 inputs; raw data, tokens, absolute paths and private URLs are never included. A result whose
 pipeline halted or whose memory estimate is missing is never ready.
+
+- `peft.target_modules` follows PEFT semantics (`architectures.trainable.peft_target_spec`):
+  "all-linear" and a single regex are emitted as a plain string (PEFT expands/fullmatches only
+  strings; in a list they would match nothing), module-name suffixes as a list.
+- `processing_class` is `AutoProcessor` when the resolved config says the trainer uses the
+  processor (the training environment then needs Pillow and torchvision), else `AutoTokenizer`.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from vramforge_estimator.architectures.trainable import peft_target_spec
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.pipeline import halting_issue
 from vramforge_estimator.schemas import (
@@ -405,7 +412,8 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
             "r": lora.r,
             "lora_alpha": lora.alpha,
             "lora_dropout": lora.dropout,
-            "target_modules": list(lora.target_module_patterns),
+            # "all-linear" / one regex must be a plain string for PEFT (a list matches nothing)
+            "target_modules": peft_target_spec(list(lora.target_module_patterns)),
             "exclude_modules": list(lora.exclude_modules) or None,
             "modules_to_save": list(lora.modules_to_save) or None,
             "bias": lora.bias,
@@ -447,15 +455,25 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
         dataset_section["chat_template_kwargs_note"] = (
             "모든 row의 chat_template_kwargs 열에 이 값을 넣습니다. 분석에 쓴 template 옵션입니다."
         )
-    processing_class = {
-        "type": "tokenizer",
-        "class": "AutoTokenizer",
-        "from_pretrained": {
-            "pretrained_model_name_or_path": model_id,
-            "revision": model.resolved_revision,
-            **({"padding_side": "left"} if objective is Objective.GRPO else {}),
-        },
+    from_pretrained = {
+        "pretrained_model_name_or_path": model_id,
+        "revision": model.resolved_revision,
+        **({"padding_side": "left"} if objective is Objective.GRPO else {}),
     }
+    if resolved.processing_class == "processor":
+        processing_class: dict[str, Any] = {
+            "type": "processor",
+            "class": "AutoProcessor",
+            "from_pretrained": from_pretrained,
+            "requires": list(PROCESSOR_REQUIREMENTS),
+            "note": PROCESSOR_NOTE,
+        }
+    else:
+        processing_class = {
+            "type": "tokenizer",
+            "class": "AutoTokenizer",
+            "from_pretrained": from_pretrained,
+        }
     config: dict[str, Any] = {
         "kind": "vramforge.trainer-config",
         "schema_version": result.schema_version,
@@ -503,6 +521,24 @@ HEADER = (
     "# Pass trl.args to the config class as-is; quantization -> transformers.BitsAndBytesConfig,\n"
     "# peft -> peft.LoraConfig, processing_class -> AutoTokenizer.from_pretrained(...).\n"
 )
+PROCESSOR_REQUIREMENTS = ("Pillow", "torchvision")
+PROCESSOR_NOTE = (
+    "AutoProcessor는 이미지·비디오 processor도 함께 불러오므로 학습 환경에 Pillow와 torchvision이 "
+    "설치되어 있어야 합니다. 없으면 processor를 불러오지 못해 Trainer를 만들 수 없습니다."
+)
+PROCESSOR_HEADER = (
+    "# processing_class가 AutoProcessor입니다: 학습 환경에 Pillow와 torchvision이 필요합니다.\n"
+    "# processing_class -> AutoProcessor.from_pretrained(...); the training environment needs\n"
+    "# Pillow and torchvision (AutoProcessor also loads the image/video processor).\n"
+)
+
+
+def header_for(config: dict[str, Any]) -> str:
+    """The comment block for `config` (the processor variant names its extra requirements)."""
+    processing = config.get("processing_class") or {}
+    if processing.get("type") == "processor":
+        return HEADER + PROCESSOR_HEADER
+    return HEADER
 
 
 __all__ = [
@@ -515,4 +551,5 @@ __all__ = [
     "SFT_FIELDS",
     "build_trainer_config",
     "check_ready",
+    "header_for",
 ]

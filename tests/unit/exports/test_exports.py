@@ -409,3 +409,47 @@ def test_refusals_name_the_real_cause(tmp_path: Path, monkeypatch: pytest.Monkey
         export_trainer_config(needs_input)
     assert exc.value.issue.code is ErrorCode.COLUMN_MAPPING_REQUIRED
     assert needs_input.needs_input.choices[0].reason in exc.value.issue.user_message
+
+
+@pytest.mark.parametrize(
+    ("patterns", "emitted"),
+    [
+        (["q_proj", "k_proj", "v_proj", "o_proj"], ["q_proj", "k_proj", "v_proj", "o_proj"]),
+        (["all-linear"], "all-linear"),  # PEFT expands only the plain string
+        ([r".*\.(q_proj|v_proj)"], r".*\.(q_proj|v_proj)"),  # one regex: re.fullmatch
+        (["self_attn.q_proj"], ["self_attn.q_proj"]),  # dots alone keep suffix semantics
+        (["q_proj", r".*\.v_proj"], ["q_proj", r".*\.v_proj"]),  # lists stay lists
+    ],
+)
+def test_lora_targets_follow_peft_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patterns: list[str], emitted: object
+) -> None:
+    lora = fakes.resolved_config(Objective.SFT).lora.model_copy(
+        update={"target_module_patterns": patterns}
+    )
+    result = build_result("sft", tmp_path, monkeypatch, resolved_overrides={"lora": lora})
+    data = yaml.safe_load(export_trainer_config(result))
+    assert data["peft"]["target_modules"] == emitted
+
+
+@pytest.mark.parametrize("objective", ["sft", "grpo"])
+def test_processor_processing_class_names_its_requirements(
+    objective: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = build_result(
+        objective, tmp_path, monkeypatch, resolved_overrides={"processing_class": "processor"}
+    )
+    text = export_trainer_config(result).decode()
+    data = yaml.safe_load(text)
+    processing = data["processing_class"]
+    assert (processing["type"], processing["class"]) == ("processor", "AutoProcessor")
+    assert processing["requires"] == ["Pillow", "torchvision"]
+    assert "Pillow" in processing["note"] and "torchvision" in processing["note"]
+    assert processing["from_pretrained"]["revision"] == fakes.MODEL_SHA
+    if objective == "grpo":
+        assert processing["from_pretrained"]["padding_side"] == "left"
+    header = text.split("\nkind:", 1)[0]
+    assert "AutoProcessor.from_pretrained" in header and "torchvision" in header
+
+    plain = export_trainer_config(build_result(objective, tmp_path / "t", monkeypatch)).decode()
+    assert "AutoProcessor" not in plain and "torchvision" not in plain
