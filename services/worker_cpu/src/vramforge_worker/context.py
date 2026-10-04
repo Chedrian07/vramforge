@@ -19,6 +19,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from vramforge_api import store
+from vramforge_api.access import with_access_hint
 from vramforge_api.db import session_scope, utcnow
 from vramforge_api.models import Analysis, ScanCacheEntry
 from vramforge_api.settings import Settings
@@ -191,6 +192,7 @@ class WorkerJobContext:
 
     def warn(self, issue: Issue) -> None:
         self.flush_progress()
+        issue = with_access_hint(issue, self.settings)
         with session_scope(self.sessions) as db:
             store.lock_analysis(db, self.analysis_id)
             if self._still_leased(db):

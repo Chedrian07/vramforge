@@ -18,7 +18,7 @@ from rq.timeouts import JobTimeoutException
 from sqlalchemy.orm import Session, sessionmaker
 
 from vramforge_api import store
-from vramforge_api.access import source_access
+from vramforge_api.access import hint_result, source_access
 from vramforge_api.db import get_engine, session_factory, session_scope
 from vramforge_api.models import Analysis
 from vramforge_api.settings import Settings, get_settings
@@ -147,7 +147,8 @@ def run_analysis(analysis_id: str, attempt: int) -> str:
     issue: Issue | None
     try:
         request = AnalysisRequest.model_validate(request_json)
-        result = pipeline.analyze(request, ctx)
+        # Access-denied issues say whether the operator could share the server HF token.
+        result = hint_result(pipeline.analyze(request, ctx), settings)
         status = pipeline.terminal_status(result)
         issue = _terminal_issue(result, status)
     except ValidationError:
