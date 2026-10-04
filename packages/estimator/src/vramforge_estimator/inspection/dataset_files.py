@@ -52,7 +52,8 @@ class FileSignature:
 
 
 class ManifestIndex:
-    """Looks up manifest entries by relative path (exact first, then a unique path suffix)."""
+    """Looks up manifest entries by relative path. Matches are exact: a file outside the pinned
+    list must never be verified against another entry with the same name."""
 
     def __init__(self, entries: list[FileEntry]) -> None:
         self._by_path = {_norm(entry.path): entry for entry in entries}
@@ -61,11 +62,7 @@ class ManifestIndex:
         return len(self._by_path)
 
     def find(self, rel_path: str) -> FileEntry | None:
-        key = _norm(rel_path)
-        if key in self._by_path:
-            return self._by_path[key]
-        matches = [entry for path, entry in self._by_path.items() if path.endswith("/" + key)]
-        return matches[0] if len(matches) == 1 else None
+        return self._by_path.get(_norm(rel_path))
 
 
 def _norm(path: str) -> str:

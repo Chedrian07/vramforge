@@ -383,3 +383,16 @@ def test_column_datasets_turns_into_json_text_is_reported(
     assert warning.severity.value == "warning"
     assert (warning.details["column"], warning.details["row_index"]) == ("c", 5)
     assert got[5] == {"c": '"first"'}  # the first JSON-encoded row is the reported one
+
+
+def test_new_file_is_not_verified_against_another_entry(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    write_jsonl(root / "sub" / "train.jsonl", [{"a": 1}])
+    entries = file_entries(root)  # the snapshot: only sub/train.jsonl
+    (root / "train.jsonl").write_bytes((root / "sub" / "train.jsonl").read_bytes())
+    stream = stream_for(local_source(root, entries))
+    assert sorted(stream.shards) == ["sub/train.jsonl", "train.jsonl"]
+    list(stream)
+    assert not stream.complete
+    assert stream.issues[-1].details["reason"] == "not_in_manifest"
+    assert stream.issues[-1].details["shard_id"] == "train.jsonl"
