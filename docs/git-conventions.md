@@ -152,9 +152,10 @@ git commit -m "feat(memory): add phase-aware peak evaluation" \
 
 | 공용 파일 (기본 오케스트레이터 소유) |
 |---|
-| 루트 `pyproject.toml`, `uv.lock`, `compose.yaml`, `.env.example`, `.gitignore`, `README.md`, `plan.md` |
-| `apps/web/package.json`, `pnpm-lock.yaml`, `.github/` |
-| `docs/git-conventions.md`, `docs/goals.md` |
+| 루트 `pyproject.toml`, `uv.lock`, `.gitignore`, `.gitattributes`, `README.md`, `plan.md` |
+| `docs/git-conventions.md`, `docs/goals.md`, `docs/architecture.md` |
+
+작업 배정이 명시하면 그 배정이 우선한다. 예: `apps/web/package.json`·`apps/web/pnpm-lock.yaml`은 웹 담당, `compose.yaml`·`.env.example`·`.github/`는 인프라 담당 에이전트가 소유한다 (`docs/architecture.md` §8).
 
 ### 6.2 의존성 변경
 

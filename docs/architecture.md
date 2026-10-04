@@ -18,12 +18,12 @@ migrate (one-shot) ── alembic upgrade head 후 종료
 
 | 서비스 | 이미지 | 비고 |
 |---|---|---|
-| `proxy` | `caddy` (alpine) | same-origin 단일 진입점, `/api` SSE flush |
-| `web` | `infra/docker/web.Dockerfile` | Next.js `output: 'standalone'` |
-| `api` | `infra/docker/python.Dockerfile` | `vramforge-api` |
-| `worker` | 같은 Python 이미지, 다른 command | `vramforge-worker` |
-| `migrate` | 같은 Python 이미지 | `alembic upgrade head` |
-| `postgres`, `redis` | 공식 alpine 이미지 | named volume |
+| `proxy` | `infra/docker/proxy.Dockerfile` (caddy alpine + `infra/proxy/Caddyfile` 내장) | same-origin 단일 진입점, `/api` SSE 즉시 flush, 유일하게 host 포트를 연다 |
+| `web` | `infra/docker/web.Dockerfile` (context `apps/web`) | Next.js `output: 'standalone'`, `HOSTNAME=0.0.0.0` |
+| `api` | `infra/docker/python.Dockerfile` | `vramforge-api` (uvicorn :8000) |
+| `worker` | 같은 Python 이미지 | `vramforge-worker`, healthcheck `vramforge-worker healthcheck` |
+| `migrate` | 같은 Python 이미지 | `vramforge-api migrate` 후 종료 (`service_completed_successfully`) |
+| `postgres`, `redis` | `${POSTGRES_IMAGE:-postgres:18.6-alpine}`, `${REDIS_IMAGE:-redis:8.10.2-alpine}` | 내부 전용 `backend` 네트워크(api·worker·migrate만 연결), named volume `pgdata`·`redisdata` |
 
 - `.env` 없이 `docker compose up -d --build`만으로 기동한다. 모든 값은 `${VAR:-default}` 기본값을 갖는다.
 - GPU worker는 기본 구성에 없다(M5 범위 밖). API는 `GPU_WORKER_UNAVAILABLE`, UI는 `GPU 검증 미연결`을 표시한다.
