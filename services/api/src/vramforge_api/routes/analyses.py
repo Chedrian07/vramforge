@@ -1,4 +1,5 @@
-"""Analysis jobs: create, status, SSE events, cancel, scenarios, export, delete, GPU profile.
+"""Analysis jobs: create, status, SSE events, cancel, scenarios (and their export), export, delete,
+GPU profile.
 
 Every handler resolves the analysis through the caller's owner id first; an id that belongs to
 someone else is indistinguishable from an unknown id (404).
@@ -8,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -46,6 +47,7 @@ from .. import jobs, store
 from ..db import session_scope
 from ..deps import DbDep, OwnerDep, StateDep
 from ..errors import ApiError, api_error, not_found
+from ..http_models import ExportFormat, ScenarioExportRequest
 from ..models import Analysis
 from ..sse import SSE_HEADERS, event_stream, parse_last_event_id
 from ..state import AppState
@@ -55,8 +57,6 @@ from .sources import upload_reference_issue
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analyses", tags=["analyses"], responses=ERROR_RESPONSES)
-
-ExportFormat = Literal["json", "yaml", "md", "trainer-config"]
 
 EXPORTS = {
     "json": (export_json, "application/json", "analysis.json"),
@@ -314,48 +314,36 @@ def cancel_analysis(
     return _status(state, db, analysis)
 
 
-@router.post("/{analysis_id}/scenarios", response_model=ScenarioResponse)
-def scenarios(
-    analysis_id: str, body: ScenarioRequest, state: StateDep, db: DbDep, owner: OwnerDep
+def _recompute(
+    state: AppState,
+    db: DbDep,
+    owner: str,
+    analysis_id: str,
+    request: AnalysisRequest,
+    client_fingerprint: str | None,
 ) -> ScenarioResponse:
-    """Recompute batch plan and memory from cached artifacts, or report re-analysis is needed."""
     analysis = _owned(db, owner, analysis_id)
     if not store.is_terminal(analysis):
         raise api_error(
             409, ErrorCode.INVALID_REQUEST, "분석이 끝난 뒤에 조건을 바꿔 재계산할 수 있습니다."
         )
-    validate_request_or_422(body.request)
+    validate_request_or_422(request)
     base = store.load_result(analysis)
     if base is None:
         return ScenarioResponse(
-            fingerprint=request_fingerprint(body.request),
-            client_fingerprint=body.client_fingerprint,
+            fingerprint=request_fingerprint(request),
+            client_fingerprint=client_fingerprint,
             requires_reanalysis=True,
             reanalysis_reasons=["저장된 분석 결과가 없어 데이터 재분석이 필요합니다."],
         )
     artifact_dir = store.resolve_data_path(state.settings, analysis.artifact_dir)
     if artifact_dir is None:
         raise not_found()
-    response = pipeline.recompute(base, body.request, artifact_dir)
-    return response.model_copy(update={"client_fingerprint": body.client_fingerprint})
+    response = pipeline.recompute(base, request, artifact_dir)
+    return response.model_copy(update={"client_fingerprint": client_fingerprint})
 
 
-@router.get(
-    "/{analysis_id}/export",
-    responses={
-        200: {"content": {"application/json": {}, "application/yaml": {}, "text/markdown": {}}}
-    },
-)
-def export_analysis(
-    analysis_id: str,
-    db: DbDep,
-    owner: OwnerDep,
-    format: Annotated[ExportFormat, Query()] = "json",
-) -> Response:
-    analysis = _owned(db, owner, analysis_id)
-    result: AnalysisResult | None = store.load_result(analysis)
-    if result is None:
-        raise api_error(409, ErrorCode.INVALID_REQUEST, "내보낼 분석 결과가 아직 없습니다.")
+def _export_file(result: AnalysisResult, format: ExportFormat) -> Response:
     exporter, media_type, filename = EXPORTS[format]
     try:
         content = exporter(result)
@@ -371,6 +359,60 @@ def export_analysis(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+EXPORT_RESPONSES: dict[int | str, dict[str, object]] = {
+    200: {"content": {"application/json": {}, "application/yaml": {}, "text/markdown": {}}}
+}
+
+
+@router.post("/{analysis_id}/scenarios", response_model=ScenarioResponse)
+def scenarios(
+    analysis_id: str, body: ScenarioRequest, state: StateDep, db: DbDep, owner: OwnerDep
+) -> ScenarioResponse:
+    """Recompute batch plan and memory from cached artifacts, or report re-analysis is needed."""
+    return _recompute(state, db, owner, analysis_id, body.request, body.client_fingerprint)
+
+
+@router.post("/{analysis_id}/scenarios/export", responses=EXPORT_RESPONSES)
+def export_scenario(
+    analysis_id: str, body: ScenarioExportRequest, state: StateDep, db: DbDep, owner: OwnerDep
+) -> Response:
+    """Export the result of a scenario: recomputed exactly like `/scenarios` with the same form
+    state, then exported like `/export` (same formats and file names).
+
+    409 REANALYSIS_REQUIRED when the change needs a new analysis (the reasons are in
+    `details.reasons`); `trainer-config` is 409 unless the recomputed result is ready.
+    """
+    response = _recompute(state, db, owner, analysis_id, body.request, body.client_fingerprint)
+    if response.requires_reanalysis or response.result is None:
+        reasons = response.reanalysis_reasons
+        raise ApiError(
+            409,
+            make_issue(
+                ErrorCode.REANALYSIS_REQUIRED,
+                "이 조건은 데이터를 다시 분석해야 해서 저장된 분석으로 내보낼 수 없습니다. "
+                + " ".join(reasons),
+                stage=Stage.EXPORT,
+                reasons=reasons,
+                fingerprint=response.fingerprint,
+            ),
+        )
+    return _export_file(response.result, body.format)
+
+
+@router.get("/{analysis_id}/export", responses=EXPORT_RESPONSES)
+def export_analysis(
+    analysis_id: str,
+    db: DbDep,
+    owner: OwnerDep,
+    format: Annotated[ExportFormat, Query()] = "json",
+) -> Response:
+    analysis = _owned(db, owner, analysis_id)
+    result: AnalysisResult | None = store.load_result(analysis)
+    if result is None:
+        raise api_error(409, ErrorCode.INVALID_REQUEST, "내보낼 분석 결과가 아직 없습니다.")
+    return _export_file(result, format)
 
 
 @router.delete("/{analysis_id}", status_code=204)

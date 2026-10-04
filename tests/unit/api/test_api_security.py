@@ -52,6 +52,7 @@ def test_state_changing_requests_require_csrf_header(
         ("POST", "/api/v1/sources/inspect"),
         ("DELETE", "/api/v1/analyses/" + "a" * 32),
         ("POST", "/api/v1/analyses/" + "a" * 32 + "/cancel"),
+        ("POST", "/api/v1/analyses/" + "a" * 32 + "/scenarios/export"),
     ):
         resp = bare.request(method, url, json={})
         assert resp.status_code == 403, url

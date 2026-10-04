@@ -52,6 +52,12 @@ def test_foreign_owner_cannot_reach_anything(
         assert resp.json() == alice.get("/api/v1/analyses/" + "e" * 32).json()  # same body
     resp = mallory.post(f"/api/v1/analyses/{aid}/scenarios", json={"request": kit.request_body()})
     assert resp.status_code == 404
+    resp = mallory.post(
+        f"/api/v1/analyses/{aid}/scenarios/export",
+        json={"request": kit.request_body(), "format": "json"},
+    )
+    assert resp.status_code == 404
+    assert resp.json() == alice.get("/api/v1/analyses/" + "e" * 32).json()
     assert alice.get(f"/api/v1/analyses/{aid}").status_code == 200
 
 

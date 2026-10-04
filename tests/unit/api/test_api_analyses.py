@@ -120,6 +120,7 @@ def test_other_owners_get_404_everywhere(
         ("GET", f"/api/v1/analyses/{aid}/export?format=json", None),
         ("POST", f"/api/v1/analyses/{aid}/cancel", None),
         ("POST", f"/api/v1/analyses/{aid}/scenarios", {"request": example_request()}),
+        ("POST", f"/api/v1/analyses/{aid}/scenarios/export", {"request": example_request()}),
         ("POST", f"/api/v1/analyses/{aid}/profile", None),
         ("DELETE", f"/api/v1/analyses/{aid}", None),
     ):

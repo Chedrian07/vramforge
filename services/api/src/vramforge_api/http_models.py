@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from vramforge_estimator.schemas import AnalysisRequest
+
+ExportFormat = Literal["json", "yaml", "md", "trainer-config"]
 
 
 class SessionStatus(BaseModel):
@@ -20,4 +26,18 @@ class SessionLogin(BaseModel):
     token: str = Field(min_length=1, max_length=512)
 
 
-__all__ = ["SessionLogin", "SessionStatus"]
+class ScenarioExportRequest(BaseModel):
+    """`POST /analyses/{id}/scenarios/export`: the form state of `/scenarios` plus the file format.
+
+    The server recomputes exactly like `/scenarios` and exports that result, so the file matches
+    the scenario shown on screen.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request: AnalysisRequest
+    format: ExportFormat = "json"
+    client_fingerprint: str | None = Field(default=None, max_length=256)
+
+
+__all__ = ["ExportFormat", "ScenarioExportRequest", "SessionLogin", "SessionStatus"]
