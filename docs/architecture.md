@@ -119,19 +119,21 @@ QUEUED → RESOLVING → INSPECTING → (NEEDS_INPUT | TOKENIZING) → VALIDATIN
 
 | Method | Path | 응답 |
 |---|---|---|
-| GET | `/api/v1/health` | 서비스·DB·Redis·worker 상태 |
+| GET | `/api/v1/health` | 서비스·DB·Redis·worker 상태, 서버 HF 토큰 모드(`hf_token`, 값은 노출하지 않음) |
 | POST | `/api/v1/sources/inspect` | `InspectResponse` (동기, 시간 제한) |
 | POST | `/api/v1/uploads` | `UploadResponse` |
 | GET | `/api/v1/backend-profiles` | 지원 조합·환경·하드웨어 preset |
 | GET | `/api/v1/local-roots` | 허용된 로컬 root 목록 |
 | POST | `/api/v1/analyses` | 202 `AnalysisCreated` (멱등 키 `Idempotency-Key`) |
 | GET | `/api/v1/analyses/{id}` | `AnalysisStatus` (진행·부분/최종 결과) |
-| GET | `/api/v1/analyses/{id}/events` | SSE (`Last-Event-ID` 재개) |
+| GET | `/api/v1/analyses/{id}/events` | SSE (`Last-Event-ID` 헤더 또는 `?after=` 재개, 끝난 분석의 마지막 id 뒤는 204) |
 | POST | `/api/v1/analyses/{id}/cancel` | `AnalysisStatus` |
 | POST | `/api/v1/analyses/{id}/scenarios` | `ScenarioResponse` |
-| GET | `/api/v1/analyses/{id}/export?format=json|yaml|md|trainer-config` | 파일 |
+| POST | `/api/v1/analyses/{id}/scenarios/export` | 재계산 시나리오의 파일 (body `{request, format}`; 재분석이 필요하면 409 `REANALYSIS_REQUIRED`) |
+| GET | `/api/v1/analyses/{id}/export?format=json|yaml|md|trainer-config` | 파일 (trainer-config는 학습 준비 ready에서만) |
 | DELETE | `/api/v1/analyses/{id}` | 204 |
 | POST | `/api/v1/analyses/{id}/profile` | 503 `GPU_WORKER_UNAVAILABLE` |
+| GET·POST·DELETE | `/api/v1/session` | `VRAMFORGE_ACCESS_TOKEN` 사용 시 토큰 ↔ `vf_access` cookie 교환 (EventSource용) |
 
 - 오류 응답은 항상 `ErrorResponse { error: Issue }` 형식이다. stack trace·token·절대경로를 넣지 않는다.
 - 소유권: API가 발급하는 `vf_owner` httpOnly cookie(SameSite=Strict)로 익명 소유자를 식별한다. 상태 변경 요청은 `X-VramForge-Request: 1` 헤더를 요구한다(CSRF). `VRAMFORGE_ACCESS_TOKEN`을 설정하면 모든 API가 토큰을 요구한다.
