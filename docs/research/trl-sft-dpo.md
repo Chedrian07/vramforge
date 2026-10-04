@@ -6,6 +6,7 @@
 | 문서 | `docs/research/trl-sft-dpo.md` |
 | 작성일 | 2026-10-04 |
 | 작성 | `research-trl-sft-dpo` (Milestone M0) |
+| 검증 | `verify-trl-sft-dpo` (2026-10-04). 핵심 주장 20개를 설치된 소스와 독립 실험으로 다시 확인했다. 틀렸거나 과장된 부분은 본문에서 고쳤고, 판정과 근거는 문서 끝 "검증 로그"에 있다 |
 | 대상 환경 (pinned) | torch==2.14.1, transformers==5.18.0, trl==1.14.1, peft==0.21.2, bitsandbytes==0.50.2, accelerate==1.15.0, datasets==5.0.1, huggingface_hub==1.33.0, tokenizers==0.23.2, safetensors==0.8.0 |
 | 예시 모델 | `XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B` @ `2367e865d009c13ac81713a2878291d33ab28177` (config·tokenizer·processor 파일만 사용, 가중치 미다운로드) |
 | 예시 데이터 | `CyberNative/Code_Vulnerability_Security_DPO` @ `81aeacf06cf43b16d7278a3a01f019a496a53c51` (`secure_programming_dpo.json`, JSON Lines 4,656 rows) |
@@ -65,7 +66,7 @@
 | `optim` | `"adamw_torch_fused"` | transformers==5.18.0 transformers/training_args.py:804-811 | torch>=2.8이면 fused AdamW |
 | `dataloader_drop_last` | `False` | TrainingArguments | §9 |
 | `remove_unused_columns` | `True` | TrainingArguments | SFT signature: `input_ids`, `labels`, `seq_lengths` (sft_trainer.py:1712-1721) |
-| `train_sampling_strategy` | `"random"` | training_args.py:1362-1367 | 5.18 신규: `random`/`sequential`/`group_by_length`/`batch_rebalance` |
+| `train_sampling_strategy` | `"random"` | training_args.py:1362-1367 | 값: `random`/`sequential`/`group_by_length`/`batch_rebalance` (어느 버전에서 도입됐는지는 설치본만으로 확인할 수 없음, UNKNOWN) |
 
 ### 1.2 `max_length`: 절단 위치와 `None` 지원
 
@@ -101,8 +102,8 @@ if args.max_length is not None and not packing:
 
 근거: trl==1.14.1 trl/data_utils.py:739-826 (`_pack_bfd`), 829-843 (`_pack_wrapped`), 846-933 (`pack_dataset`). 실측(exp05, `max_length=32`, 토큰 길이 32/7/14/52의 4 rows, 합 105): `bfd` → 3 rows·85 tokens(52→32 절단), `bfd_split` → 4 rows·105 tokens(`seq_lengths=[[32],[32],[20,7],[14]]`), `wrapped` → 4 rows·105 tokens·`seq_lengths` 없음. VERIFIED
 
-- `_pack_bfd`는 길이 0인 시퀀스를 **조용히 제거**한다 (data_utils.py:749-752). VERIFIED(소스)
-- packing은 `dataset.map(..., batched=True)` 안에서 수행되므로 bin은 map 배치(datasets 기본 1,000 rows) 안에서만 만들어진다. INFERRED
+- `_pack_bfd`는 길이 0인 시퀀스를 **조용히 제거**한다 (data_utils.py:749-752). `bfd`와 `bfd_split`이 같은 함수를 쓰므로 두 전략 모두 해당한다. VERIFIED(소스)
+- packing은 `dataset.map(..., batched=True)` 안에서 수행되므로 bin은 map 배치(datasets 기본 1,000 rows) 안에서만 만들어진다. VERIFIED: `pack_dataset`이 `batch_size`를 넘기지 않는다(trl/data_utils.py:910-925). datasets==5.0.1 datasets/arrow_dataset.py:3221 (`Dataset.map`)의 기본값은 `batch_size=1000`이다. 실험(검증 로그 V-15): 1-token row 1,500개를 `seq_length=4000`으로 packing하면 세 전략 모두 2 rows(`[1000, 500]`)가 나온다.
 - bfd 계열 packing에서 attention 구현이 FlashAttention 계열이 아니면 "cross-contamination" 경고만 내고 진행한다 (sft_trainer.py:1248-1256). Qwen3.5 hybrid의 linear-attention 층이 packed `position_ids`/`seq_lengths` 경계를 지키는지는 UNKNOWN.
 - 결론: **무절단·무분할·무연결**을 동시에 만족하는 packing 설정은 없다. `bfd` + `max_length ≥ 전체 최대 길이`는 절단·분할은 없지만 서로 다른 샘플을 한 행에 잇는다(plan §7.4 엄격 모드 위반).
 
@@ -132,7 +133,7 @@ if args.max_length is not None and not packing:
 
 ### 1.7 gradient checkpointing, bf16, dtype, activation offloading
 
-- `create_model_from_path`는 `dtype` 미지정 시 `"float32"`, `device_map` 미지정 시 CPU면 `None`, 아니면 `"auto"`를 쓴다. 클래스는 `config.architectures[0]`이다. VERIFIED
+- `create_model_from_path`는 `dtype` 미지정 시 `"float32"`, `device_map` 미지정 시 CPU면 `None`, 아니면 `"auto"`를 쓴다. 클래스는 `config.architectures[0]`이다. VERIFIED. 실측(V-07, V-12): bf16으로 저장한 tiny 체크포인트를 `model_init_kwargs` 없이 넘기면 policy와 자동 생성된 reference가 모두 `float32`로 로드된다. 분산 실행(`MULTI_GPU`/`DEEPSPEED`)에서는 Trainer가 `device_map=None`으로 덮어쓴다 (sft_trainer.py:981-983; dpo_trainer.py:562-564, 922-924). VERIFIED(소스)
 
 ```python
 # trl==1.14.1 trl/trainer/utils.py:1292-1309 (create_model_from_path), 발췌
@@ -147,7 +148,8 @@ if architecture is None:
 
 - TRL CLI의 `ModelConfig.dtype` 기본값도 `"float32"`이고 (trl/trainer/model_config.py:89-95), QLoRA의 `bnb_4bit_compute_dtype`은 이 `dtype`을 그대로 쓴다 (trl/trainer/utils.py:252-268). VERIFIED(소스)
 - 양자화 모델이면 학습 가능한 파라미터(LoRA 등)를 bf16으로 바꾼다 (sft_trainer.py:1160-1167; dpo_trainer.py:705-708). VERIFIED(소스)
-- gradient checkpointing은 `Trainer.train()`에서 켠다. transformers 5.18 기본은 `use_reentrant=False`, `every_n_layers=1`, `offload=False`이고, 두 신규 key(`every_n_layers`, `offload`)는 `gradient_checkpointing_kwargs`로 전달한다 (transformers/trainer.py:1490-1501; transformers/modeling_utils.py:3113-3179). VERIFIED(소스). PEFT + checkpointing이면 TRL이 `enable_input_require_grads()`를 호출한다 (sft_trainer.py:1155-1158).
+- (검증 시 추가) **양자화하지 않은 모델 + LoRA**에서는 TRL이 adapter dtype을 바꾸지 않는다. 따라서 PEFT 기본값(`autocast_adapter_dtype=True`)대로 adapter 파라미터는 **fp32**다. 실측(V-17): bf16 base에서 trainable 파라미터는 `float32`, frozen 파라미터는 `bfloat16`이었다. 예외로 DeepSpeed ZeRO-3 + 비양자화이면 TRL이 `autocast_adapter_dtype=False`를 넘겨 adapter가 base dtype을 따른다 (sft_trainer.py:1131-1134; dpo_trainer.py:642-645). VERIFIED(실측 + 소스)
+- gradient checkpointing은 `Trainer.train()`에서 켠다. transformers 5.18 기본은 `use_reentrant=False`, `every_n_layers=1`, `offload=False`이다. `every_n_layers`와 `offload` 두 key는 `gradient_checkpointing_kwargs`에 넣어 전달한다(도입 버전은 확인하지 않음) (transformers/trainer.py:1490-1501; transformers/modeling_utils.py:3113-3179). VERIFIED(소스 + 실측 V-16: `__init__` 직후 `is_gradient_checkpointing=False`, `train()` 후 `True`, checkpoint 함수의 kwargs는 `{'use_reentrant': False}`. checkpoint 대상은 `Qwen3_5DecoderLayer`와 비전 타워의 `Qwen3_5VisionBlock` 모두다). PEFT + checkpointing이면 TRL이 `enable_input_require_grads()`를 호출한다 (sft_trainer.py:1155-1158). PEFT + DeepSpeed ZeRO-3 + checkpointing에서는 TRL이 `use_reentrant=True`로 강제한다 (sft_trainer.py:1136-1153; dpo_trainer.py:677-694). VERIFIED(소스)
 - `activation_offloading=True`면 `training_step`을 `OffloadActivations`(saved-tensor hook)로 감싼다. 기본 인자: `use_pin_memory=True`, `use_streams=True`, `min_offload_size=1024` bytes, `max_fwd_stash_size=5`. `lm_head` forward 동안은 offload하지 않는다 (trl/models/activation_offloading.py:662-742; sft_trainer.py:1421-1425, 1924-1927). VERIFIED(소스). chunked_nll은 `lm_head` 모듈을 호출하지 않으므로 이 예외가 적용되지 않는다. INFERRED
 
 ---
@@ -180,7 +182,7 @@ trl==1.14.1 trl/trainer/sft_trainer.py:1460-1710 (`SFTTrainer._prepare_dataset`)
 근거: sft_trainer.py:1542-1614, trl/data_utils.py:401-437 (`_tokenize`). VERIFIED
 
 - prompt가 전체의 접두사가 아니면 **경고만** 하고 `len(prompt_ids)` 위치로 mask를 만든다 (sft_trainer.py:1578-1587). 예시 데이터에서는 위반 0건. VERIFIED
-- `aol=True`인데 어떤 row에도 assistant token이 없으면 `RuntimeError`(삭제가 아니라 실패) (sft_trainer.py:1607-1613). VERIFIED(소스)
+- `aol=True`일 때 **한 row라도** assistant token이 0개면 `RuntimeError`가 난다. 그 row만 지우는 것이 아니라 전처리 전체가 실패한다 (sft_trainer.py:1607-1613, example 단위 검사). VERIFIED(소스)
 - row별 `tools`(JSON 문자열 허용)와 `chat_template_kwargs`가 템플릿에 전달된다 (sft_trainer.py:1543-1549). VERIFIED(소스)
 
 ### 2.3 chat template 적용과 special token (BOS 중복 위험)
@@ -219,8 +221,9 @@ if self.tokenizer.bos_token is not None and single_prompt.startswith(self.tokeni
 | 절단 | `max_length` 정수 & packing 꺼짐 | 앞 `max_length` tokens만 유지 | sft_trainer.py:1659-1674 |
 | fully-masked 삭제 | 위 절단과 같은 조건 | label 전부 -100인 row 삭제 (조용히) | sft_trainer.py:1676-1683 |
 | packing `bfd` | packing 켜짐 | 초과분 폐기 + 빈 시퀀스 삭제 | data_utils.py:749-755 |
-| packing `bfd_split`/`wrapped` | packing 켜짐 | 분할 / 중간 절단 | data_utils.py:756-769, 829-843 |
-| aol 마스크 없음 | `aol=True` | 삭제가 아니라 `RuntimeError` | sft_trainer.py:1607-1613 |
+| packing `bfd_split` | packing 켜짐 | 초과분 분할 + 빈 시퀀스 삭제 | data_utils.py:749-752, 756-769 |
+| packing `wrapped` | packing 켜짐 | 경계 무시 중간 절단 | data_utils.py:829-843 |
+| aol 마스크 없음 | `aol=True` | 삭제가 아니라 `RuntimeError` (한 row라도 assistant token이 없으면) | sft_trainer.py:1607-1613 |
 
 `max_length=None`, `packing=False`이면 이 중 어느 것도 일어나지 않는다. VERIFIED (exp04: 6가지 조합 모두 4,656→4,656)
 
@@ -235,10 +238,10 @@ if self.tokenizer.bos_token is not None and single_prompt.startswith(self.tokeni
 |---|---|
 | `AutoProcessor` | `Qwen3VLProcessor` (`ProcessorMixin`) → `_is_vlm=True` |
 | tokenizer | `Qwen3_5Tokenizer`, backend `tokenizers` |
-| BOS / EOS / PAD | `None` / `<|im_end|>`=248046 / `<|endoftext|>`=248044 |
+| BOS / EOS / PAD | `None` / `<\|im_end\|>`=248046 / `<\|endoftext\|>`=248044 |
 | `padding_side` / `model_max_length` | `right` / 262,144 |
 | `len(tokenizer)` vs config `vocab_size` | 248,077 vs 248,320 |
-| `<think>`, `</think>`, `<|im_start|>` | added tokens 248068, 248069, 248045 |
+| `<think>`, `</think>`, `<\|im_start\|>` | added tokens 248068, 248069, 248045 |
 | model config `text_config.eos_token_id` | 248044 (tokenizer EOS와 다름 → 학습 시 transformers가 248046으로 정렬한다는 로그 확인) |
 
 - **의존성 함정**: Pillow·torchvision이 없는 공용 venv에서 `AutoProcessor`는 image processor(`Qwen2VLImageProcessor[Pil]`) 단계에서 `ValueError`, Pillow만 있으면 `Qwen3VLVideoProcessor` 단계에서 torchvision `ImportError`로 실패했다. 즉 TRL CLI처럼 `processing_class`를 주지 않는 경로는 학습 환경에 **Pillow와 torchvision이 있어야** Trainer가 생성된다. VERIFIED (exp01)
@@ -247,7 +250,7 @@ if self.tokenizer.bos_token is not None and single_prompt.startswith(self.tokeni
 - `processing_class=AutoTokenizer...`를 직접 넘기면 `_is_vlm=False`가 되고 같은 ids를 내며 Pillow/torchvision이 필요 없다. 단 TRL CLI 스크립트는 `processing_class`를 넘기지 않는다 (trl/scripts/sft.py:101-108, trl/scripts/dpo.py:99-106). VERIFIED
 - 모델 클래스는 `config.architectures[0]` = `Qwen3_5ForConditionalGeneration`이다(ref model 타입으로 확인). 텍스트만 학습해도 **비전 타워가 생성·로드된다**. VERIFIED(클래스) / 비전 타워 가중치가 GPU에 상주한다는 메모리 영향은 INFERRED
 - `Qwen3_5ForConditionalGeneration.accepts_loss_kwargs = False`라서 `Trainer.model_accepts_loss_kwargs=False`이고 `num_items_in_batch`가 모델에 전달되지 않는다 (transformers==5.18.0 transformers/models/qwen3_5/modeling_qwen3_5.py:1768; transformers/trainer.py:503-511). VERIFIED (exp04/exp06 출력)
-- `peft==0.21.2`에서 이 VLM 클래스에 `target_modules="all-linear"`를 주면 **비전 타워 linear(qkv, proj, mlp)까지 LoRA가 붙는다**(tiny 모델: 21개 중 6개가 `model.visual.*`, lm_head 제외). VERIFIED (exp13 부속 실험). 상세는 PEFT 조사 범위.
+- `peft==0.21.2`에서 이 VLM 클래스에 `target_modules="all-linear"`를 주면 **비전 타워 linear에도 LoRA가 붙는다**. 대상은 block마다 `attn.qkv`, `attn.proj`, `mlp.linear_fc1`, `mlp.linear_fc2`이고, `visual.merger.linear_fc1/fc2`도 포함된다. `lm_head`는 제외된다. VERIFIED (exp13 부속 실험, 재실험 V-08: depth 1인 tiny 모델에서 21개 중 6개가 `model.visual.*`였고 그중 2개가 merger). 실제 MiMo(depth 27, `deepstack_visual_indexes=[]`)에서는 27×4+2 = 110개 비전 모듈이 대상이 될 것으로 본다. 이 숫자는 모듈 구조에서 셈한 값이다(INFERRED). 상세는 PEFT 조사 범위다.
 
 ---
 
@@ -302,8 +305,8 @@ for start in range(0, n_padded, chunk_size):
 - 패치된 forward는 backbone(`self.base_model`, VLM이면 멀티모달 wrapper)만 돌려 `last_hidden_state`를 얻고 lm_head 모듈을 호출하지 않는다. 반환 `logits=None` (sft_trainer.py:275-381). VERIFIED (exp06: hidden `(2,58,64)` bf16, `logits=None`)
 - **lm_head 투영은 shift 후 `labels != -100`인 위치에만** 256개씩 수행한다. 마지막 chunk는 -100으로 채워 버린다. 최소 1 chunk는 항상 돈다. entropy와 accuracy도 chunk 안에서 계산한다 (`_chunk`, sft_trainer.py:100-118). VERIFIED(소스)
 - 따라서 padding·prompt(completion-only/assistant-only일 때)는 lm_head 메모리에 들어가지 않지만 **backbone activation에는 그대로 들어간다**(plan §8.1과 일치).
-- 메모리 성격 (INFERRED, GPU 보정 필요): `hidden[order]` 복사본 `B·(T−1)·H·bytes(hidden)`가 backward까지 남는다. chunk 하나의 forward 순간 텐서는 `256×V`의 bf16 matmul 결과 + fp32 logits + fp32 log-softmax + entropy용 fp32 임시 2개 정도(≈ 256·V·18 bytes; V=248,320이면 ≈ 1.07 GiB)이고 chunk마다 해제된다. backward는 chunk를 재계산하므로 비슷한 크기의 일시 텐서가 생긴다.
-- `_chunk`는 `w.to(h.dtype)`로 lm_head weight를 hidden dtype에 맞춘다. 모델을 bf16으로 로드하면 복사가 없다(hidden도 bf16, exp06). 모델을 fp32(TRL 기본)로 로드하면 bf16 autocast matmul을 위해 `V×H` weight의 bf16 사본이 생길 수 있다(예시 모델 ≈ 2.0 GB). INFERRED
+- 메모리 성격: `hidden[order]` 복사본 `B·(T−1)·H·bytes(hidden)`가 backward까지 남는다(INFERRED, 소스 sft_trainer.py:186-199). chunk 하나의 순간 텐서는 `256×V` 크기의 bf16 matmul 결과, fp32 logits, fp32 log-softmax, entropy용 fp32 임시값 정도다. 원저자는 이를 ≈ 256·V·18 bytes로 잡았다. **검증 실측(V-14e, CPU, storage 단위 `MemTracker`)**: 입력과 grad를 뺀 peak가 `256·V` 원소당 forward 15.0–15.5 B, forward+backward 16.0–16.5 B였다. V=248,320이면 0.92–0.98 GiB다. 따라서 18 B(≈1.07 GiB)는 약간 보수적인 상한으로 쓸 수 있다. 이 peak는 chunk 수(1–8)와 무관하게 일정했다(chunk마다 해제됨). 단 이는 `SFTTrainer`처럼 backward 전에 `outputs`(`entropy_sum`의 graph)를 버릴 때에 한한다. `entropy_sum`을 backward까지 살려 두면 peak가 chunk 하나마다 `8·256·V` bytes씩 늘어났다(V-14c, 격리 실험: 1/2/4/8 chunk에서 15.5/24/40/72 B). 원인은 재계산된 entropy 경로의 saved tensor가 소비되지 않고 남기 때문으로 보인다(INFERRED). CUDA 커널 workspace와 caching allocator 반올림은 GPU 보정이 필요하다(INFERRED).
+- `_chunk`는 `w.to(h.dtype)`로 lm_head weight를 hidden dtype에 맞춘다. 모델을 bf16으로 로드하면 복사가 없다(hidden도 bf16, exp06·V-07). 모델을 fp32(TRL 기본)로 로드하면 autocast가 켜져 있어도 hidden이 **fp32**로 들어온다(V-07 실측: `chunked_ce.hidden torch.float32`, autocast True). 이때 bf16 autocast matmul을 위해 `V×H` weight의 bf16 사본이 생길 수 있다(예시 모델 ≈ 2.0 GB). INFERRED
 
 ### 5.2 `nll` / `dft` — (B,T,V) 여러 개
 
@@ -316,6 +319,7 @@ for start in range(0, n_padded, chunk_size):
 
 - Trainer는 gradient accumulation 창의 배치를 **항상 미리 모두 가져온다**(`get_batch_samples`). `labels[..., 1:] != -100` 개수는 `model_accepts_loss_kwargs` 또는 `compute_loss_func`가 있을 때만 센다 (transformers/trainer.py:2236-2290). 미리 가져온 배치(정수 텐서, 크기는 작다)는 device에 올라가 있다. VERIFIED(소스)/INFERRED(상주 위치)
 - 예시 모델은 `accepts_loss_kwargs=False`라 `num_items_in_batch=None`이다(exp06 로그). chunked loss는 로컬 평균을 내고 Trainer가 accumulation 횟수로 나눈다 (trainer.py:2064-2066; sft_trainer.py:225-231). 메모리와는 무관하다. VERIFIED
+- (검증 시 추가) 같은 Qwen3.5라도 text 전용 `Qwen3_5ForCausalLM`은 `accepts_loss_kwargs`를 선언하지 않는다(modeling_qwen3_5.py에서 선언은 1313 `Qwen3_5Model`과 1768 `Qwen3_5ForConditionalGeneration`뿐). 그래서 Trainer가 forward의 `**kwargs` 존재로 판정하고, SFT에서 `model_accepts_loss_kwargs=True`가 되며 `num_items_in_batch`가 전달된다(V-21 실측: `tensor(22)`). §11 parity 테스트의 tiny 모델이 이 클래스이므로, loss 정규화는 실제 MiMo 경로와 다르다. DPOTrainer는 모델과 무관하게 `False`로 고정한다 (dpo_trainer.py:949-952). VERIFIED
 
 ---
 
@@ -439,7 +443,7 @@ per_token_logps, per_token_entropies = selective_log_softmax_and_entropy(
 | precompute | `precompute_ref_log_probs=True` | 학습 중 reference forward 없음. 배치의 `ref_chosen_logps`/`ref_rejected_logps` 사용 | dpo_trainer.py:1366-1367 |
 
 - 실측: full FT → `ref_model=Qwen3_5ForConditionalGeneration`, LoRA → `ref_model=None`, precompute → `ref_model=None`. VERIFIED (exp06)
-- reference forward는 `torch.no_grad()`와 `disable_gradient_checkpointing` 안에서 돌고, **policy forward가 끝나 graph가 살아 있는 상태에서** 실행된다. `ref_outputs`는 `_compute_loss`가 끝날 때까지 지역 변수로 남는다 (dpo_trainer.py:1366-1422). VERIFIED(소스) → policy logits와 reference logits가 동시에 존재한다. INFERRED (메모리 결론)
+- reference forward는 `torch.no_grad()`와 `disable_gradient_checkpointing` 안에서 돈다. 실행 시점은 **policy forward가 끝나 graph가 살아 있는 상태**다. `ref_outputs`는 `_compute_loss`가 끝날 때까지 지역 변수로 남는다 (dpo_trainer.py:1366-1422). VERIFIED(소스). 따라서 policy logits와 reference logits가 동시에 존재한다. 검증 실측(V-07, CPU): reference의 `selective_log_softmax`가 호출되는 순간, policy의 `shift_logits` 텐서(fp32, `requires_grad=True`)가 weakref 기준으로 살아 있었다(standalone ref와 LoRA 두 경로 모두). 텐서 수명은 VERIFIED이고, CUDA에서의 byte peak는 INFERRED다.
 - 비호환 (VERIFIED, exp13): `sync_ref_model` + PEFT → `NotImplementedError`, `sync_ref_model` + precompute → `ValueError`, `use_liger_kernel=True` → liger 미설치로 `ImportError`, `model is ref_model` → `ValueError` (dpo_trainer.py:583-587).
 
 ### 8.4 logits dtype: accelerate가 fp32로 바꾼다
@@ -455,7 +459,7 @@ if self.native_amp:
 ```
 
 - bf16이면 CUDA에서 `native_amp = is_bf16_available(True)`, CPU에서 `True`다. DeepSpeed·Megatron-LM이면 이 분기를 타지 않아 `native_amp=False`이고 이 변환도 없다 (accelerator.py:586-593). `convert_to_fp32`는 출력의 fp16/bf16 텐서를 모두 `.float()`로 바꾼다 (accelerate/utils/operations.py:889-943). VERIFIED(소스)
-- 모델은 `train()` 안의 `_prepare_for_training`에서 prepare된다 (transformers/trainer.py:1712-1743). 따라서 **학습 중** policy·reference(PEFT 끄기든 별도 모델이든) logits는 fp32이고, **`__init__`에서 실행되는 precompute**는 wrapper가 없어 모델 dtype 그대로다. VERIFIED (exp06, CPU, bf16 모델): 학습 policy/ref `float32 (4,57,V)`, precompute `bfloat16 (4,55,V)`/`(4,57,V)`, `no_grad`.
+- **policy** 모델은 `train()` 안의 `_prepare_for_training`에서 prepare된다 (transformers/trainer.py:1712-1743). 반면 **자동 생성되거나 사용자가 넘긴 별도 reference 모델**은 `DPOTrainer.__init__`에서 `accelerator.prepare_model(..., evaluation_mode=True)`로 바로 prepare되므로, wrapper가 `__init__`부터 붙어 있다 (dpo_trainer.py:957-963). 따라서 **학습 중** policy·reference logits는 PEFT 끄기든 별도 모델이든 fp32다. `__init__`에서 도는 precompute는 `self.ref_model or self.model`을 쓴다. 그래서 `ref_model=None`(full FT·PEFT 기본)이면 wrapper가 없는 policy가 돌아 **모델 dtype** logits가 나온다. 반대로 **사용자가 `ref_model`을 넘기면** wrapper가 붙은 ref가 돌아 **fp32** logits가 나온다. VERIFIED (exp06, CPU, bf16 모델: 학습 policy/ref `float32 (4,57,V)`, precompute `bfloat16 (4,55,V)`/`(4,57,V)`, `no_grad`). 검증 재실험(V-07, V-12): 학습 중 policy/ref `float32 (4,49,V)`. precompute는 `ref_model=None`일 때 `bfloat16`(fp32 로드 시 `float32`), bf16 `ref_model`을 넘겼을 때 `float32`였다. `__init__` 직후 `hasattr(ref_model, "_original_forward")=True`, policy는 `False`였다.
 
 ### 8.5 precompute: 언제, 무엇을, 어디에
 
@@ -463,7 +467,7 @@ if self.native_amp:
 - 모델: `self.ref_model or self.model`. full FT + `ref_model=None`이면 **학습 전 policy 자체**를 reference로 쓴다(그래서 reference 모델을 로드하지 않는다). PEFT면 adapter를 끄고 돈다 (1164-1169, 1281-1286). VERIFIED(소스)
 - 데이터: `DataLoader(batch_size=precompute_ref_batch_size or per_device_train_batch_size, collate_fn=self.data_collator, shuffle=False)`(drop_last 기본 False → 전 row), 배치마다 `(2B_pre, T, V)` logits를 만든 뒤 행별 합만 CPU로 옮긴다 (1151-1186). VERIFIED(소스)
 - 저장: 두 컬럼 `ref_chosen_logps`, `ref_rejected_logps`를 Arrow 파일 `cache-<fingerprint>.arrow`로 데이터셋 캐시 디렉터리에 쓰고 `concatenate_datasets(axis=1)`로 붙인다. fingerprint = hash(dataset fingerprint, `hash_module(ref or policy)`) (1140-1149, 1188-1207). 메모리 데이터셋이면 임시 디렉터리에 무작위 이름으로 쓴다 (datasets==5.0.1 datasets/arrow_dataset.py:3203-3211). VERIFIED(소스) + exp06(컬럼 추가 확인)
-- `hash_module`은 `state_dict()`의 모든 텐서를 CPU로 옮기고 bf16을 fp32로 바꿔 hash한다 (trl/trainer/utils.py:1324-1332). 가장 큰 텐서 기준 host RAM 일시 사용(예시 모델 embed/lm_head: 248,320×4,096 fp32 ≈ 4.07 GB). INFERRED
+- `hash_module`은 `state_dict()`의 모든 텐서를 하나씩 CPU로 옮기고, bf16을 fp32로 바꾼 뒤 `tensor.numpy().tobytes()`로 hash한다 (trl/trainer/utils.py:1324-1332). VERIFIED(소스). **정정(검증)**: host RAM 순간 사용량은 가장 큰 텐서의 fp32 크기 1배가 아니라 **약 2배**다. `tobytes()`가 fp32 텐서와 같은 크기의 bytes 사본을 하나 더 만들기 때문이다. 실측(V-13, CPU): bf16 268,435,456원소 파라미터 하나로 peak RSS가 fp32 크기의 **2.00배**(2,147,876,864 bytes) 늘었다. 예시 모델의 embed/lm_head(248,320×4,096)는 fp32로 4,068,474,880 bytes이므로 ≈ 8.14 GB(7.58 GiB)가 순간적으로 필요하다. GPU에 상주하는 모델에서는 `.cpu()`가 bf16 host 사본을 먼저 만든다. 다만 `.to(float32)` 뒤에 해제되므로 peak는 그대로 2×fp32다(INFERRED).
 - `IterableDataset`과 비전 데이터는 precompute 불가 (1135-1139, 733-739). 학습 시작 후 full FT + precompute로 새 eval 데이터를 넘기면 `ValueError` (1715-1727). VERIFIED(소스)
 
 ### 8.6 Liger 선택 시(참고)
@@ -521,7 +525,7 @@ if self.native_amp:
 ### 10.3 YAML 파서의 함정
 
 - TRL 스크립트의 `__main__`은 `parse_args_and_config(fail_with_unknown_args=False)`라 YAML의 **알 수 없는 key를 조용히 무시**한다. 실측: `max_prompt_length: 512`가 들어간 YAML이 DPO parser에서 오류 없이 파싱되고 값은 사라짐, `max_length: null` → `None`. `fail_with_unknown_args=True`면 `ValueError`. VERIFIED (trl/scripts/utils.py:303-359, exp11)
-- `trl dpo --config` CLI 명령은 남은 문자열을 accelerate launch 인자로 넘긴다 (trl/cli/commands/training.py:51-72). 알 수 없는 key의 최종 처리는 INFERRED.
+- **CLI 경로는 다르다(검증 시 확인, 미확정 사항 7 해소)**: `trl sft|dpo --config x.yaml`은 `parse_args_and_config(..., return_remaining_strings=True, separate_remaining_strings=True)`로 YAML의 알 수 없는 key를 `["--max_prompt_length", "512"]` 같은 문자열로 모은다. 이 문자열은 `accelerate launch` parser 인자 앞부분에 붙는다 (trl/cli/commands/training.py:51-72; trl/cli/accelerate_launcher.py:22-47; trl/scripts/utils.py:361-388 `set_defaults_with_config`). 그 결과 accelerate parser가 `error: unrecognized arguments: --max_prompt_length`로 종료한다(`SystemExit 2`). VERIFIED (V-10: `TrainingCommand.run`의 parse 단계를 그대로 재현하고 launch는 하지 않음). 정리하면, 스크립트를 직접 실행하면(`python trl/scripts/dpo.py --config ...` 또는 `accelerate launch .../dpo.py --config ...`) **조용히 무시**되고, `trl` CLI로 실행하면 **실패**한다. 이름이 accelerate launch 옵션과 겹치는 key(예: `num_processes`, `mixed_precision`)는 오류 없이 accelerate가 받아 버린다(INFERRED, parser 정의 기준).
 
 ---
 
@@ -763,7 +767,7 @@ dataloader_drop_last: false
 max_steps: -1
 ```
 
-3. **제거된 필드를 내보내지 않는다**: `max_prompt_length`, `max_completion_length`, `use_logits_to_keep`, `model_adapter_name`, `ref_adapter_name`, `force_use_ref_model`, `label_pad_token_id`, `padding_value`, `rpo_alpha`, `reference_free`, `max_seq_length`, `dataset_batch_size`, `num_of_sequences`, `chars_per_token`. TRL 스크립트는 YAML의 알 수 없는 key를 **조용히 무시**하므로 우리 쪽에서 검증해야 한다. parity 테스트에서 내보낸 YAML을 `TrlParser(...).parse_args_and_config(fail_with_unknown_args=True)`로 파싱하는 테스트를 둔다(exp11 방식). production은 1.14.1 필드 목록을 profile에 버전 고정해 검사한다.
+3. **제거된 필드를 내보내지 않는다**: `max_prompt_length`, `max_completion_length`, `use_logits_to_keep`, `model_adapter_name`, `ref_adapter_name`, `force_use_ref_model`, `label_pad_token_id`, `padding_value`, `rpo_alpha`, `reference_free`, `max_seq_length`, `dataset_batch_size`, `num_of_sequences`, `chars_per_token`. TRL 스크립트를 직접 실행하면 YAML의 알 수 없는 key가 **조용히 무시**된다. `trl` CLI로 실행하면 그 key가 accelerate launch 인자로 넘어가 **실행 시작 전에 실패**한다(§10.3). 어느 쪽이든 우리 쪽에서 미리 검증해야 한다. parity 테스트에 내보낸 YAML을 `TrlParser(...).parse_args_and_config(fail_with_unknown_args=True)`로 파싱하는 테스트를 둔다(exp11 방식). production은 1.14.1 필드 목록을 profile에 버전 고정해 검사한다. 검증 시 위 B-1/B-2 YAML(placeholder를 실제 값으로 바꾸고 `dataset_name`, `output_dir`만 추가)을 SFT·DPO parser에 `fail_with_unknown_args=True`로 넣었고, 오류 없이 파싱되며 CLI 경로의 `config_remaining`도 `[]`였다. VERIFIED (V-20)
 4. **데이터 참조**: 내보내기는 매핑이 끝난 데이터(`prompt/chosen/rejected` 또는 `messages`)를 가리켜야 한다. `dataset_name: CyberNative/...` 원본을 TRL CLI에 그대로 주면 DPO는 잘못된 prompt로 조용히 학습하고 SFT는 실패한다(§7.1). 매핑 스크립트나 매핑된 데이터 artifact를 함께 내보내고, 매핑이 없으면 `ready`로 표시하지 않는다.
 5. **실행 환경 요구**: `processing_class`를 넘기지 않는 TRL CLI 경로에서 Qwen3.5 VLM 체크포인트는 Pillow와 torchvision이 있어야 Trainer가 생성된다. environment profile에 두 패키지를 넣거나, `AutoTokenizer`를 `processing_class`로 넘기는 launcher를 내보낸다(두 경로의 ids는 동일 검증).
 6. **PEFT target**: SFT `chunked_nll`에서는 `lm_head`를 target에 넣으면 실패한다. `all-linear`는 lm_head를 빼지만 VLM 비전 타워 linear는 포함하므로, text-only preset은 `language_model` 범위로 한정하거나 `exclude_modules`로 `visual`을 뺀다(PEFT 조사와 교차 확인).
@@ -795,16 +799,16 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 | allocation | shape × bytes | 살아 있는 구간 | 근거 |
 |---|---|---|---|
 | SFT chunked: 정렬된 hidden 복사 | `B(T−1) × H × 2` | loss → backward(loss) | INFERRED (sft_trainer.py:197-199) |
-| SFT chunked: chunk 순간값 | `256 × V × ~18` | loss chunk 순간, backward 재계산 순간 | INFERRED (sft_trainer.py:100-118) |
+| SFT chunked: chunk 순간값 | `256 × V × 16` (CPU 실측 15.0–16.5 B, 보수적 상한 18 B) | loss chunk 순간, backward 재계산 순간 (chunk 수와 무관) | CPU 실측 VERIFIED (V-14e), CUDA INFERRED (sft_trainer.py:100-118) |
 | SFT chunked: lm_head weight cast | `V × H × 2` | 모델이 fp32로 로드된 경우만 | INFERRED |
 | SFT nll: 출력 logits | `B × T × V × 4` (fp32) | forward 끝 → compute_loss 반환 | dtype VERIFIED (exp06), 수명 INFERRED |
 | SFT nll: CE log-softmax 저장 | `B·T × V × 4` | forward → backward | INFERRED (loss_utils.py:59-70) |
 | DPO policy logits bf16 | `N × T × V × 2` | lm_head 직후 순간 | INFERRED |
 | DPO policy logits fp32 | `N × T × V × 4` | forward → fused kernel backward | dtype VERIFIED (exp06), 수명 INFERRED (logprob_entropy.py:192) |
 | DPO 지표 boolean-index 복사 | `n_completion × V × 4` | compute_loss 안 순간 | INFERRED (dpo_trainer.py:1643-1647) |
-| DPO reference logits fp32 | `N × T × V × 4` | ref forward → compute_loss 반환 (policy logits와 **동시**) | dtype VERIFIED, 수명 INFERRED (dpo_trainer.py:1366-1422) |
+| DPO reference logits fp32 | `N × T × V × 4` | ref forward → compute_loss 반환 (policy logits와 **동시**) | dtype VERIFIED, policy logits와 동시 생존 CPU VERIFIED (V-07), CUDA byte peak INFERRED (dpo_trainer.py:1366-1422) |
 | DPO backward grad_logits | `N × (T−1) × V × 4` → slice backward `N × T × V × 4` → bf16 cast `N × T × V × 2` | backward 순차 | INFERRED (logprob_entropy.py:210) |
-| DPO precompute logits | `2B_pre × T_pre × V × bytes(모델 dtype)` | precompute 배치 순간 (no_grad, activation 저장 없음) | dtype VERIFIED (exp06) |
+| DPO precompute logits | `2B_pre × T_pre × V × bytes(모델 dtype)`. 사용자가 `ref_model`을 넘기면 `× 4`(fp32) | precompute 배치 순간 (no_grad, activation 저장 없음) | dtype VERIFIED (exp06, V-07, V-12) |
 
 크기 감각(텐서 크기 산술일 뿐 VRAM 실측이 아님): V = 248,320에서 DPO 최악 row(N=2, T=2,272)의 fp32 logits 1개 = 4,513,464,320 bytes(4.20 GiB)이고, policy·reference fp32가 겹치면 8.41 GiB다. SFT `nll` B=1·T=2,272의 fp32 logits 1개 = 2.10 GiB, SFT `chunked_nll`의 `256 × V` fp32 버퍼 1개 = 254,279,680 bytes(0.24 GiB). 실제 피크는 plan §17 GPU 보정으로 확정한다.
 
@@ -813,8 +817,8 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 | plan 전략 | TRL 1.14.1 조건 | 메모리 의미 |
 |---|---|---|
 | `frozen_base_switch` | PEFT policy + `ref_model=None` | 추가 가중치 없음. 같은 모델을 adapter 끄고 no-grad forward. 기존 adapter가 붙은 `PeftModel`을 넘기면 `"ref"` adapter 사본이 추가로 상주 |
-| `standalone_model` | PEFT 아님 + precompute 아님 (또는 `ref_model` 지정) | **두 번째 전체 모델**. dtype·quantization은 policy와 같은 `model_init_kwargs`(기본 float32!) |
-| `precomputed_log_probs` | `precompute_ref_log_probs=True` | 학습 phase에 reference 없음. `REFERENCE_PRECOMPUTE` phase가 `__init__`에서 먼저 실행: no-grad forward, logits는 모델 dtype, 결과는 row당 scalar 2개를 Arrow cache로 저장. full FT면 policy 자체를 reference로 씀 |
+| `standalone_model` | PEFT 아님 + precompute 아님 (또는 `ref_model` 지정) | **두 번째 전체 모델**. dtype·quantization은 policy와 같은 `model_init_kwargs`(기본 float32!, V-12 실측). `__init__`에서 바로 prepare되므로 policy보다 먼저 device에 올라가고 autocast·fp32 출력 wrapper가 붙는다 (dpo_trainer.py:957-963) |
+| `precomputed_log_probs` | `precompute_ref_log_probs=True` | 학습 phase에 reference 없음. `REFERENCE_PRECOMPUTE` phase가 `__init__`에서 먼저 실행된다: no-grad forward를 돌리고, logits는 모델 dtype이다(`ref_model`을 직접 넘기면 fp32). 결과는 row당 scalar 2개로 Arrow cache에 저장한다. full FT면 policy 자체를 reference로 쓴다. host RAM은 `hash_module` 때문에 가장 큰 텐서 fp32 크기의 약 2배가 순간적으로 필요하다(§8.5) |
 
 차단 규칙: `sync_ref_model`은 PEFT·precompute와 함께 쓸 수 없다. precompute는 `IterableDataset`·비전 데이터와 함께 쓸 수 없다. VERIFIED
 
@@ -827,10 +831,11 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 - SFT `padding_free`: `max_length=null` + FlashAttention 계열 필요. Qwen3.5 hybrid의 linear-attention 경계 처리는 UNKNOWN → 미검증 표시.
 - `assistant_only_loss`: `{% generation %}` 마커 또는 TRL 동봉 템플릿 일치가 필요하다.
 - QLoRA: TRL이 학습 가능한 파라미터를 bf16으로 바꾼다. CLI 경로의 `bnb_4bit_compute_dtype`은 `dtype`을 따른다.
+- 비양자화 LoRA: adapter 파라미터는 fp32다(PEFT 기본 `autocast_adapter_dtype=True`, V-17 실측). 예외는 ZeRO-3로, 이때는 base dtype을 따른다. adapter weight·grad·optimizer state bytes는 이 dtype으로 계산한다.
 
 ### G. resolved config에 기록할 기본 동작
 
-- gradient checkpointing: TRL 기본 켜짐, transformers 5.18에서 `use_reentrant=False`, `every_n_layers=1`(decoder layer마다), `offload=False`. `every_n_layers`/`offload`는 `gradient_checkpointing_kwargs`의 신규 key로 activation ledger에 영향을 준다.
+- gradient checkpointing: TRL 기본으로 켜져 있다. transformers 5.18에서 `use_reentrant=False`, `every_n_layers=1`(decoder layer마다, 비전 block 포함), `offload=False`다. `every_n_layers`/`offload`는 `gradient_checkpointing_kwargs`의 key로 activation ledger에 영향을 준다. PEFT + ZeRO-3이면 TRL이 `use_reentrant=True`로 강제한다.
 - SFT·DPO forward 모두 `use_cache=False`.
 - DPO는 policy·reference의 dropout을 0으로 만든다(`disable_dropout=True`).
 - 기본 optimizer는 `adamw_torch_fused`.
@@ -844,9 +849,9 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 2. **fp32 로드(TRL 기본) + bf16 autocast의 weight cast cache**: 학습 가능한 weight의 bf16 사본이 autocast 구간 동안 유지되는지, LoRA의 frozen weight가 op마다 다시 cast되는지 GPU에서 확인해야 한다. 내보내기는 bf16을 명시하므로 기본 시나리오에는 영향이 없다.
 3. **Qwen3.5 hybrid + padding_free/packing**: GatedDeltaNet(linear attention)이 packed `position_ids`/`seq_lengths` 경계를 지키는지 UNKNOWN. 확인 전까지 해당 조합은 unsupported.
 4. **비전 타워 상주 크기**: TRL이 `Qwen3_5ForConditionalGeneration`을 로드한다는 것은 확인했지만 비전 타워 파라미터 수·4-bit 양자화 제외 여부는 model-inspection/quantization 조사 범위다.
-5. **`all-linear` LoRA가 비전 타워에 붙은 경우의 optimizer state**: text-only 학습에서 grad가 `None`이면 AdamW가 state를 만들지 않을 것으로 추정(INFERRED). PEFT 조사와 교차 확인 필요.
+5. **`all-linear` LoRA가 비전 타워에 붙은 경우의 optimizer state**: 검증 시 CPU에서 **해소**했다(V-19). text-only SFT 1 step 뒤 fused `AdamW`를 보면, 비전 LoRA 파라미터 12개는 optimizer param group에 등록돼 있지만 state가 0개였다. text LoRA 파라미터는 30개 모두 state가 있었다. 따라서 비전 adapter는 weight(fp32)만 상주하고 grad와 optimizer state는 생기지 않는다. CUDA fused 경로도 같은 `grad is None` skip 로직을 쓸 것으로 본다(INFERRED). 남은 일은 PEFT 조사와 weight bytes를 교차 확인하는 것이다.
 6. **다중 GPU coverage**: accelerate `even_batches=True`의 샘플 복제가 "전체 row 사용"을 어떻게 바꾸는지(중복 포함) 실행 검증 필요. 현재 범위는 단일 GPU.
-7. **`trl <cmd> --config` CLI의 알 수 없는 key 처리**: accelerate launcher로 넘어간 뒤 오류인지 무시인지 미확인(INFERRED). 우리 내보내기는 알 수 없는 key를 아예 만들지 않으므로 영향은 작다.
+7. **`trl <cmd> --config` CLI의 알 수 없는 key 처리**: 검증 시 **해소**했다(V-10, §10.3). 알 수 없는 key는 accelerate launch parser로 넘어가 `unrecognized arguments`로 실패한다. accelerate launch 옵션과 이름이 겹치는 key는 accelerate가 받아 들인다(INFERRED). 우리 내보내기는 알 수 없는 key를 아예 만들지 않으므로 영향은 작다.
 8. **parity 의존성 그룹**: 루트 `pyproject.toml`의 `parity` 그룹은 trl/torch/peft/accelerate만 고정한다. 학습 환경과 같게 transformers==5.18.0, datasets==5.0.1, tokenizers==0.23.2, huggingface_hub==1.33.0도 고정할지, processor 경로 테스트용 Pillow·torchvision을 넣을지는 오케스트레이터 결정이 필요하다(이 문서는 파일을 바꾸지 않음).
 9. **다른 모델의 processor/tokenizer 동등성**: BOS를 post-processor로 붙이는 tokenizer나 문자열 content만 받는 템플릿에서는 두 경로가 다를 수 있다. profile마다 parity로 확인한다.
 10. **liger-kernel 도입 여부**: 나중에 환경에 넣으면 SFT Liger 경로와 DPO chunked log-prob 경로의 메모리·호환성을 다시 조사해야 한다.
@@ -864,7 +869,7 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 | A-3 | `build_tiny.py` | tiny `Qwen3_5ForConditionalGeneration` 32,024,600 params, vocab 248,320, layer_types `['linear_attention','full_attention']`, 실제 processor 파일과 함께 저장 |
 | A-4 | `exp02_dpo_prep.py processor None` / `tokenizer None` | 두 경로 모두 `rows_in=4656 rows_out=4656`, `reimpl mismatches: 0 prefix violations: 0`, prompt 최대 268, branch 최대 2,272, 1,024 초과 28, collated `(4, 555)` |
 | A-5 | `exp03_dpo_default_trunc.py` | 기본 `max_length=1024`, row 2355 → `(2, 1024)`, completion 2,004/2,002 → 756/756. prompt 1,500단어 pair: 2→1 rows. `None`: 2 rows, prompt 1,508 |
-| A-6 | `exp04_sft_prep.py {messages,pc} {processor,tokenizer} {noaol,aol} None` (6조합) | 모두 4,656→4,656, `reimpl mismatches: 0`, `model_accepts_loss_kwargs=False`, `swapped_template=False`. aol 첫 loss token `<|im_start|>assistant\n<think>`(pos 95), pc 첫 loss token `<think></think>```c`(pos 98), loss tokens: no-aol 51–2,272 / aol 20–2,007 / pc 17–2,004 |
+| A-6 | `exp04_sft_prep.py {messages,pc} {processor,tokenizer} {noaol,aol} None` (6조합) | 모두 4,656→4,656, `reimpl mismatches: 0`, `model_accepts_loss_kwargs=False`, `swapped_template=False`. aol 첫 loss token `<\|im_start\|>assistant\n<think>`(pos 95), pc 첫 loss token `<think></think>```c`(pos 98), loss tokens: no-aol 51–2,272 / aol 20–2,007 / pc 17–2,004 |
 | A-7 | `exp05_sft_validations.py` | §1.2·§1.3 실측값. `padding_free` + 기본 `max_length` → `ValueError`, `packing` + `None` → `ValueError`, padding-free collated `(1, 1525)` + `position_ids` |
 | A-8 | `exp06_train_smoke.py {sft,sft_nll,dpo,dpo_lora,dpo_pre}` (CPU, `bf16=True`, `dtype=bfloat16`, 1 step) | sft: chunked loss hidden `(2,58,64) bf16`, `logits=None`. sft_nll: `logits=float32(2,58,248320)`. dpo: ref `Qwen3_5ForConditionalGeneration`, policy·ref `float32 (4,57,248320)`. dpo_lora: ref `None`, `float32`. dpo_pre: precompute `bfloat16 (4,55,V)`·`(4,57,V)` no-grad, 학습 중 ref forward 없음, 컬럼 `ref_chosen_logps`, `ref_rejected_logps` 추가 |
 | A-9 | `exp07_raw_unmapped.py` | DPO prompt = 두 코드 답변의 공통 접두사, `question` 미포함, 경계 불일치 경고. SFT `KeyError 'text'` |
@@ -876,3 +881,83 @@ bf16 mixed precision, 모델 dtype bf16, `V = vocab_size`(lm_head 출력 차원)
 | A-15 | `exp13_incompat.py` + LoRA `all-linear` 확인 | §1.6·§8.3의 오류 메시지 그대로. `all-linear`: 21개 중 비전 6개, lm_head 미포함 |
 | A-16 | `parity/test_trl_parity_doc.py` | `6 passed in 5.62s` (overlay venv), torch 없는 venv에서 `1 skipped` |
 | A-17 | collator 단독 실험 (인라인 python) | §4·§8.1의 shape 표 |
+
+---
+
+## 검증 로그 (Verification log)
+
+| 항목 | 값 |
+|---|---|
+| 검증자 | `verify-trl-sft-dpo` (적대적 사실 확인, Milestone M0) |
+| 날짜 | 2026-10-04 |
+| 방법 | 원저자의 실험 스크립트(exp01–exp13)는 재사용하지 않았다. 설치된 site-packages 소스를 다시 읽고 독립 스크립트 V-01–V-22를 새로 작성해 실행했다. tiny 모델도 따로 만들었다(`v02_build_tiny.py`). 하나는 실제 MiMo config에서 차원만 줄인 `Qwen3_5ForConditionalGeneration`(32,018,068 params, vocab 248,320)에 실제 processor 파일을 붙인 것이다. 다른 하나는 text 전용 `Qwen3_5ForCausalLM`에 실제 tokenizer를 붙인 것이다 |
+| 환경 | 공용 `/tmp/vf-research/.venv`는 바꾸지 않았다. 자체 오버레이 venv 3개를 썼다. `venv-verify-trl-sft-dpo`: Pillow 12.3.0, torchvision 0.29.1 `--no-deps`, pytest 9.1.1. `venv-verify-trl-sft-dpo-pilonly`: Pillow만. `venv-verify-trl-sft-dpo-notorch`: torch 미설치에 transformers 5.18.0, tokenizers 0.23.2, huggingface_hub 1.33.0, jinja2, numpy, pytest |
+| 스크립트 | `/tmp/vf-research/scratch/verify-trl-sft-dpo/` (저장소에는 넣지 않음) |
+| 한계 | CUDA 전용 경로는 이 호스트에서 실행할 수 없어 INFERRED로 남긴다. 해당 경로는 Triton fused kernel의 `grad_logits`, autocast weight cast cache, CUDA caching allocator, FlashAttention이다. 다중 GPU `even_batches`도 실행하지 않았다 |
+
+### 원저자 핵심 주장 20개
+
+| # | 주장 (원문 요약) | 판정 | 근거 (한 줄) |
+|---|---|---|---|
+| C1 | 두 config의 `max_length` 기본값은 1024이고, `None`이면 두 Trainer 모두 end-to-end로 자르지 않는다 | VERIFIED | sft_config.py:203-210, dpo_config.py:194-200. V-01 덤프(1024/1024, `None` 허용). V-04에서 8개 조합 모두 4,656→4,656. V-22에서 parity 1-step 테스트(T>1024 배치)가 통과했다 |
+| C2 | SFT 절단은 `_prepare_dataset`에서만 일어나고, 절단 뒤 label이 전부 -100인 row를 경고 없이 지운다 | VERIFIED | sft_trainer.py:1659-1683. V-06: aol + 1024에서 2→1 rows였고 drop/trunc 관련 경고는 0건이었다. aol을 끈 기본값은 지우지 않고 1024로 자른다 |
+| C3 | DPO는 collator에서 시퀀스별로 자르고, keep_start에서 `len(prompt_ids) >= max_length`인 pair를 조용히 지운다 | VERIFIED | dpo_trainer.py:151-164, 1103-1106. V-06: 2→1 rows, 경고 없음. 저장된 ids는 그대로이고 collator 출력만 `(2,1024)`다. V-18: row 2355의 completion 2,004/2,002가 756/756으로 줄었다 |
+| C4 | packing+`None`은 ValueError, bfd는 절단, bfd_split은 분할, wrapped는 중간 절단이다. bfd는 빈 시퀀스를 지운다. packing 없는 padding_free는 `None`이 필수다 | VERIFIED (보완) | sft_trainer.py:1686-1688, 1284-1289; data_utils.py:739-843. V-06: 길이 32/7/14/52의 4 rows가 bfd 3 rows·85 tok, bfd_split 4·105, wrapped 4·105(`seq_lengths` 없음)가 됐다. 두 ValueError 메시지도 확인했다. 보완: 빈 시퀀스 삭제는 같은 `_pack_bfd`를 쓰는 bfd_split에도 적용된다 |
+| C5 | SFT 기본 `loss_type`은 `"chunked_nll"`이다. `labels != -100` 위치만 256 단위 chunk로 lm_head를 돌리고 `logits=None`을 반환한다. LoRA-lm_head나 liger와 함께 쓰면 ValueError다 | VERIFIED | sft_config.py:332-334; sft_trainer.py:87, 121-232, 1338-1366. V-07: hidden `bf16 (2,50,64)`, `outputs.logits=None`. V-08에서 두 ValueError 메시지가 원문 그대로 나왔다 |
+| C6 | DPO는 chosen B행 뒤에 rejected B행을 붙여 2B행을 만들고, 최대 길이로 right-pad한 뒤 한 번의 forward로 모든 위치의 logits를 만든다 | VERIFIED | dpo_trainer.py:146-201, 1346-1350. V-07: B=2·T=50에서 policy `shift_logits (4,49,248320)`. V-04: row 2355 단독 collate가 `(2,2272)` |
+| C7 | bf16에서 accelerate가 autocast와 fp32 변환을 건다. 학습 중 policy/ref logits는 fp32다. 모델은 `train()`에서만 prepare되므로 `__init__` precompute는 모델 dtype이다 | CORRECTED | policy에 대한 부분은 맞다(accelerator.py:1824-1835; V-07 `float32 (4,49,V)`). 그러나 별도 reference 모델은 `__init__`에서 prepare된다(dpo_trainer.py:957-963; V-12에서 `_original_forward` 확인). 그래서 사용자가 `ref_model`을 주고 precompute하면 logits가 fp32다(V-12). §8.4, D 표, E 표를 고쳤다 |
+| C8 | full FT는 두 번째 전체 모델을 쓰고, PEFT는 `disable_adapter`(또는 `"ref"` adapter 사본)를 쓴다. precompute는 `__init__`에서 policy로 돌고 row당 scalar 2개를 Arrow cache에 쓴다 | VERIFIED | dpo_trainer.py:647-675, 911-927, 986-1005, 1134-1207, 1376-1387. V-07: ref 타입은 full FT에서 `Qwen3_5ForConditionalGeneration`, LoRA에서 `None`이고, precompute는 컬럼 2개를 추가했다. V-08: 기존 `PeftModel`이면 adapters가 `['default','ref']`. V-12: ref dtype이 policy dtype과 같다 |
+| C9 | 문자열로 넘긴 모델은 `dtype`이 없으면 float32로, GPU면 `device_map="auto"`로 로드한다. CLI `ModelConfig.dtype` 기본값은 `"float32"`이고 QLoRA compute dtype이 이를 따른다 | VERIFIED (보완) | utils.py:1292-1305, 252-268; model_config.py:89-95. V-01 `ModelConfig().dtype='float32'`, V-07/V-12 기본 로드 `float32`. 보완: 분산 실행에서는 `device_map=None`이다 (sft_trainer.py:981-983; dpo_trainer.py:562-564, 922-924) |
+| C10 | `processing_class=None`이면 `Qwen3VLProcessor`·`_is_vlm=True`가 되고 text 경로로 처리된다. processor와 tokenizer의 ids가 4,656 rows에서 같다. Pillow·torchvision이 없으면 실패한다 | VERIFIED | sft_trainer.py:1002-1016; data_utils.py:401-437. V-04: DPO와 SFT(messages, messages+aol, prompt-completion) 모두 두 경로에서 불일치 0. V-05: 공용 venv는 `ValueError`(image processor), Pillow만 있으면 `ImportError`(Qwen3VLVideoProcessor requires Torchvision), 둘 다 있으면 `Qwen3VLProcessor` |
+| C11 | tokenizer의 `apply_chat_template(tokenize=True)`는 항상 `add_special_tokens=False`를 쓰고, processor는 BOS로 시작할 때만 그렇게 한다. MiMo는 BOS가 없다 | VERIFIED | tokenization_utils_base.py:3123-3132; processing_utils.py:2225-2227. V-03: `bos_token=None`, `"Hello world"`는 True/False 모두 `[9419, 1814]` |
+| C12 | MiMo 템플릿은 macro 안의 `{% generation %}`이 assistant 턴 전체를 감싼다. 그래서 aol에 `<\|im_start\|>assistant\n<think></think>`가 들어가고 pc는 3 token 뒤부터 시작한다. 마커가 없고 TRL에 등록되지 않은 템플릿 + aol은 ValueError다 | VERIFIED | 템플릿 sha256 `59a64ebb…ff63`을 직접 확인했다. V-03: row 0의 첫 aol 위치는 95 `['<\|im_start\|>','assistant','Ċ','<think>']`, pc 첫 loss 위치는 98 `<think>`. V-09: 마커를 제거한 템플릿 + aol → `ValueError`, stop token trained `True`. 비교는 문자열 일치다(chat_template_utils.py:1032-1199) |
+| C13 | 제거된 DPO/SFT 필드는 TypeError, DPO `padding_free=True`는 False로 바뀐다. TRL 스크립트는 YAML의 알 수 없는 key를 무시한다 | VERIFIED (보완) | V-01: 14개 모두 `TypeError`. V-06: `trainer.padding_free=False` + 경고. V-10: 스크립트 경로에서 무시됨을 확인했다. 보완: `trl` CLI 경로는 accelerate launch parser에서 `unrecognized arguments`로 실패한다(§10.3) |
+| C14 | 매핑하지 않은 CyberNative를 넣으면 DPO는 코드 공통 접두사를 prompt로 잡고 `question`을 버린다. SFT는 `KeyError 'text'`다 | VERIFIED | dpo_trainer.py:1020-1025; data_utils.py:557-641. V-09: prompt가 ```` ```c++\n#include <cstring>\n\nvoid copyString(... while ( ````였고 `question`은 없었다. SFT는 `KeyError: 'text'`. `extract_prompt('abc','abcdef')`의 prompt는 `'ab'` |
+| C15 | golden 값(최대 branch 2,272 등, 빈 system +4)과 torch 없는 재현 | VERIFIED | V-03(tokenizer만), V-03b(torch 미설치 venv, `torch imported: False`), V-04(TRL 출력)가 모두 같았다. prompt 최대 268, row 2355/3169 2,272, Σ 1,007,173/841,963, rejected가 더 긴 row 411, 1024 초과 SFT 17·DPO 28, p50/p90/p99 207/316/453.35, aol 20–2,007, pc 17–2,004. 빈 system을 넣으면 모든 row가 +4 |
+| C16 | `dataloader_drop_last=False`, RandomSampler, 마지막 accumulation 나머지도 처리한다. `max_length=None`에 packing을 끄면 길이 기반 삭제가 없다 | VERIFIED | trainer.py:1032, 1058-1132, 1826-1842, 2468-2475. V-11: 5 rows·bs 2·GA 2에서 배치 `[2,2,1]`, `current_gradient_accumulation_steps` `[2,2,1]`, optimizer step 2, random·sequential 모두 전 row 사용 |
+| C17 | TRL 기본 `gradient_checkpointing=True`·`bf16=True`, TrainingArguments 기본 `per_device_train_batch_size=8`·`adamw_torch_fused`. GC는 `train()`에서 `use_reentrant=False`·`every_n_layers=1`·`offload=False`로 켜진다 | VERIFIED (보완) | base_config.py:61-74, 104-105; training_args.py:775, 804-811; trainer.py:1490-1501; modeling_utils.py:3138-3139. V-01·V-16: `__init__` 뒤 False, `train()` 뒤 True, kwargs `{'use_reentrant': False}`. 보완: PEFT + ZeRO-3 + GC는 `use_reentrant=True`로 강제된다 |
+| C18 | `Qwen3_5ForConditionalGeneration.accepts_loss_kwargs=False`라 `num_items_in_batch`가 넘어가지 않고, loss는 로컬 평균을 GA로 나눈 값이다 | VERIFIED (보완) | modeling_qwen3_5.py:1768; trainer.py:503-511, 2064-2066. V-04 `model_accepts_loss_kwargs False`, V-07 `num_items_in_batch None`. 보완: `Qwen3_5ForCausalLM`은 True다(V-21). DPO는 항상 False다(dpo_trainer.py:949-952) |
+| C19 | liger-kernel이 없어 SFT는 `train()`, DPO는 `__init__`에서 ImportError가 난다 | VERIFIED | transformers/integrations/liger.py:39-43 (trainer.py:1481-1482에서 호출); dpo_trainer.py:806-811. V-08: SFT는 생성까지 OK(`loss_type=nll`)이고 `train()`에서 ImportError, DPO는 생성 시 ImportError |
+| C20 | `all-linear`은 비전 linear를 감싸고 lm_head는 뺀다 | VERIFIED (보완) | V-08: 21개 중 비전 6개, `lm_head` 미포함. 보완: merger `linear_fc1/fc2`도 포함된다. 실제 모델은 110개로 추정한다(INFERRED) |
+
+### 추가 확인 항목
+
+| # | 항목 | 판정 | 근거 |
+|---|---|---|---|
+| X1 | §8.5 `hash_module` host RAM "≈ 4.07 GB" | CORRECTED | `tobytes()` 사본 때문에 가장 큰 텐서 fp32 크기의 약 2배가 필요하다. V-13 실측은 2.00배였다. 예시 모델에서는 ≈ 8.14 GB(7.58 GiB)다 |
+| X2 | §5.1 chunk 순간값 "≈ 256·V·18 bytes" | CORRECTED (정밀화) | V-14e CPU `MemTracker`: 256·V 원소당 15.0–16.5 B였고 chunk 수와 무관했다. 18 B는 보수적 상한으로 써도 된다. `entropy_sum`을 backward까지 붙잡으면 chunk마다 8 B씩 쌓인다(V-14c). `SFTTrainer`는 backward 전에 `outputs`를 버리므로 해당하지 않는다 |
+| X3 | §1.3 packing bin이 1,000-row map 배치 단위로 만들어진다 (원문 INFERRED) | VERIFIED | datasets/arrow_dataset.py:3221 `batch_size=1000`. V-15: 1,500 rows가 `[1000, 500]`으로 packing됐다 |
+| X4 | 미확정 사항 7 (CLI의 알 수 없는 key) | VERIFIED (해소) | V-10: `--max_prompt_length 512`가 accelerate launch 인자로 넘어가 `SystemExit 2` |
+| X5 | 미확정 사항 5 (비전 LoRA optimizer state) | VERIFIED (CPU, 해소) | V-19: fused AdamW에서 비전 LoRA 12개는 state가 0개, text 30개는 모두 state가 있었다 |
+| X6 | (신규) 비양자화 LoRA의 adapter dtype | VERIFIED | V-17: bf16 base에서 trainable 파라미터는 `float32`, frozen 파라미터는 `bfloat16`이었다. ZeRO-3 예외는 소스로 확인했다(sft_trainer.py:1131-1134) |
+| X7 | §11.2 parity 테스트 코드를 그대로 실행 | VERIFIED | 문서의 코드 블록을 그대로 추출해 실행했다(V-22): `6 passed in 5.98s`. torch 없는 venv에서는 수집 오류 없이 `1 skipped` |
+| X8 | 구현 시사점 B-1/B-2 YAML의 key가 유효한가 | VERIFIED | V-20: placeholder를 치환한 뒤 SFT·DPO parser를 `fail_with_unknown_args=True`로 통과했고, CLI `config_remaining=[]`이었다 |
+| X9 | `train_sampling_strategy`, `every_n_layers`/`offload`가 "5.18 신규"라는 서술 | UNVERIFIABLE | 설치본에는 이전 버전 이력이 없다. 문구를 "도입 버전 미확인"으로 낮췄다 |
+| X10 | §7.3 row 2355 절단 756/756, §8.1 rows 0–1 `(4, 555)` | VERIFIED | V-18 |
+
+### 검증 실험 목록
+
+| ID | 스크립트 | 주요 출력 |
+|---|---|---|
+| V-01 | `v01_configs.py` | 기본값 덤프(§1.1, §6), 제거 필드 14개 `TypeError`, `ModelConfig().dtype='float32'` |
+| V-02 | `v02_build_tiny.py --with-processor` | `tiny_vlm`(VLM 32,018,068 params + processor), `tiny_lm`(`Qwen3_5ForCausalLM` + tokenizer) |
+| V-03 / V-03b | `v03_golden_independent.py` / `v03b_golden_notorch.py` | golden 값 일체. torch 미설치 venv에서도 같은 값 |
+| V-04 | `v04_trl_prep_parity.py {dpo,sft_msg,sft_msg_aol,sft_pc} {processor,tokenizer}` | 8개 조합 모두 4,656→4,656, 독립 재구현과 불일치 0 |
+| V-05 | `v05_autoprocessor_deps.py` (3개 venv) | `ValueError` / `ImportError`(torchvision) / `Qwen3VLProcessor` |
+| V-06 | `v06_truncation_packing.py` | SFT·DPO 기본값 절단·삭제, packing 3전략, `ValueError` 2종, DPO `padding_free` 강제 off |
+| V-07 | `v07_train_smoke.py {sft,sft_nll,dpo,dpo_lora,dpo_pre} {bfloat16,default}` | logits dtype·shape, `logits=None`, policy logits 생존, precompute dtype |
+| V-08 | `v08_incompat_lora.py` | 비호환 오류 메시지, `all-linear` 대상 목록, `"ref"` adapter |
+| V-09 | `v09_misc.py` | 마커 제거 템플릿 → `ValueError`, 매핑 없는 CyberNative, `extract_prompt` 경계 사례 |
+| V-10 | `v10_cli.py` + `v10_cli.yaml` | 스크립트 경로 무시, `fail_with_unknown_args=True` 오류, CLI 경로 `SystemExit 2` |
+| V-11 | `v11_coverage.py` | sampler, drop_last, GA 나머지 처리 |
+| V-12 | `v12_ref_variants.py` | ref dtype = policy dtype, ref는 `__init__`에서 wrap, `ref_model`을 직접 넘기면 precompute fp32 |
+| V-13 | `v13_hash_module_rss.py` | peak RSS +2.00 × fp32 크기 |
+| V-14 | `v14b_chunk_rss.py`, `v14c_…`, `v14d_…`, `v14e_chunk_phases.py` | chunked CE peak 15.0–16.5 B/(256·V). entropy graph를 유지하면 chunk당 +8 B |
+| V-15 | `v15_pack_batches.py` | packing bin이 map 배치(1,000 rows) 단위 |
+| V-16 | `v16_gc.py` | GC 켜지는 시점과 kwargs |
+| V-17 | `v17_lora_dtype.py` | 비양자화 LoRA adapter `float32` |
+| V-18 | `v18_rows.py` | row 2355/3169/0/1 길이와 1024 절단 결과 |
+| V-19 | `v19_vision_lora_optstate.py` | 비전 LoRA optimizer state 0 |
+| V-20 | `yaml/check.py` + `yaml/{sft,dpo}.yaml` | B-1/B-2 YAML strict parse 통과 |
+| V-21 | `v21_loss_kwargs_lm.py` | `Qwen3_5ForCausalLM`에서 SFT `model_accepts_loss_kwargs=True`, `num_items_in_batch=tensor(22)`. DPO `False` |
+| V-22 | `parity/test_trl_parity_doc.py` (§11.2를 그대로 추출) | `6 passed in 5.98s`, torch 없는 venv에서 `1 skipped` |
