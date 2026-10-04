@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import type { DatasetInspection } from "@/lib/api/types";
+
 import { buildRequest, fromAnalysisRequest, toAnalysisRequest } from "@/lib/form/convert";
 import { canonicalJson } from "@/lib/form/fingerprint";
+import { mappingSyncAfterInspection } from "@/lib/form/inspect";
 import { datasetSourceType, isValidDatasetReference, isValidModelReference } from "@/lib/form/references";
 import { analysisRequestSchema } from "@/lib/form/request-schema";
 import { DEFAULT_FORM_VALUES, EXAMPLE_FORM_VALUES, formSchema, type FormValues } from "@/lib/form/values";
@@ -233,5 +236,37 @@ describe("form validation", () => {
     ).toContain("전체 용량 이하");
     expect(fieldErrors({ ...base, objective: "grpo", grpoBudgetMode: "explicit", grpoCompletionBudget: "x" }).grpoCompletionBudget).toBeDefined();
     expect(fieldErrors({ ...base, loraRankPattern: "q_proj=abc" }).loraRankPattern).toBeDefined();
+  });
+});
+
+describe("mapping after an inspection", () => {
+  const suggestion = { format: "preference" as const, system: "system", prompt: "question", chosen: "chosen", rejected: "rejected", completion: null, messages: null, text: null, empty_system_policy: "omit" as const };
+  const columns = ["system", "question", "chosen", "rejected", "lang"].map((name) => ({ name, dtype: "string", kind: "string" }));
+  const answer = (extra: Partial<DatasetInspection> = {}): DatasetInspection => ({
+    columns,
+    suggested_mapping: suggestion,
+    mapping_ambiguous: false,
+    split_auto_selected: false,
+    ...extra,
+  });
+  const auto: FormValues = { ...DEFAULT_FORM_VALUES };
+  const applied: FormValues = { ...DEFAULT_FORM_VALUES, mappingEnabled: true, mappingAutoApplied: true, mappingFormat: "preference", mapSystem: "system", mapPrompt: "question", mapChosen: "chosen", mapRejected: "rejected" };
+  const chosen: FormValues = { ...applied, mappingAutoApplied: false, mapPrompt: "lang" };
+
+  it("applies an unambiguous suggestion while the mapping is not the user's", () => {
+    expect(mappingSyncAfterInspection(answer(), auto)).toEqual({ clear: false, resetPolicy: false, apply: suggestion });
+    expect(mappingSyncAfterInspection(answer(), applied)).toEqual({ clear: false, resetPolicy: false, apply: suggestion });
+  });
+
+  it("drops an automatic mapping when the answer has no unambiguous suggestion", () => {
+    expect(mappingSyncAfterInspection(answer({ suggested_mapping: null, mapping_ambiguous: true }), applied)).toEqual({ clear: true, resetPolicy: false, apply: null });
+    expect(mappingSyncAfterInspection(answer({ mapping_ambiguous: true }), applied).apply).toBeNull();
+    expect(mappingSyncAfterInspection(answer({ suggested_mapping: null }), auto)).toEqual({ clear: false, resetPolicy: false, apply: null });
+  });
+
+  it("keeps the user's mapping while its columns exist and resets it when they are gone", () => {
+    expect(mappingSyncAfterInspection(answer({ suggested_mapping: null, mapping_ambiguous: true }), chosen)).toEqual({ clear: false, resetPolicy: false, apply: null });
+    const other = answer({ columns: [{ name: "instruction", dtype: "string", kind: "string" }], suggested_mapping: null });
+    expect(mappingSyncAfterInspection(other, chosen)).toEqual({ clear: true, resetPolicy: true, apply: null });
   });
 });

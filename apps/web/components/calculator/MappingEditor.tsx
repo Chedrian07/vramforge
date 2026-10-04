@@ -1,10 +1,11 @@
 "use client";
 
-import { useFormContext, useWatch, type UseFormSetValue } from "react-hook-form";
+import { useFormContext, useWatch, type UseFormGetValues, type UseFormSetValue } from "react-hook-form";
 
 import { Badge, Button, Field, Mono, NativeSelect } from "@/components/ui/primitives";
 import type { ColumnMapping, DatasetFormat, DatasetInspection } from "@/lib/api/types";
 import { DATASET_FORMAT_LABEL, OBJECTIVE_TRANSFORMATION } from "@/lib/format/labels";
+import { mappingSyncAfterInspection } from "@/lib/form/inspect";
 import { FORMAT_ROLES, MAPPING_ROLES, ROLE_FIELD, ROLE_LABEL, type RoleField } from "@/lib/form/mapping";
 import type { FormValues } from "@/lib/form/values";
 
@@ -12,10 +13,12 @@ const OPTS = { shouldDirty: true, shouldValidate: true } as const;
 
 /**
  * Applies a server mapping (suggestion or candidate) to the form. The empty-system policy stays
- * the user's choice: inspection suggestions only echo the default policy.
+ * the user's choice: inspection suggestions only echo the default policy. `auto` marks a
+ * suggestion applied without the user, which later inspections may replace.
  */
-export function applyMapping(setValue: UseFormSetValue<FormValues>, mapping: ColumnMapping) {
+export function applyMapping(setValue: UseFormSetValue<FormValues>, mapping: ColumnMapping, { auto = false } = {}) {
   setValue("mappingEnabled", true, OPTS);
+  setValue("mappingAutoApplied", auto, OPTS);
   setValue("mappingFormat", mapping.format, OPTS);
   for (const role of MAPPING_ROLES) setValue(ROLE_FIELD[role], mapping[role] ?? "", OPTS);
 }
@@ -23,13 +26,31 @@ export function applyMapping(setValue: UseFormSetValue<FormValues>, mapping: Col
 /**
  * Back to server auto-detection: no explicit roles left in the form, and the default empty-system
  * policy, because the policy travels with an explicit mapping only (ColumnMapping in
- * schemas/request.py; a null mapping is analysed with "omit").
+ * schemas/request.py; a null mapping is analysed with "omit"). `keepPolicy` keeps the user's policy
+ * for the next mapping of the same data.
  */
-export function clearMapping(setValue: UseFormSetValue<FormValues>) {
+export function clearMapping(setValue: UseFormSetValue<FormValues>, { keepPolicy = false } = {}) {
   setValue("mappingEnabled", false, OPTS);
+  setValue("mappingAutoApplied", false, OPTS);
   setValue("mappingFormat", "auto", OPTS);
   for (const role of MAPPING_ROLES) setValue(ROLE_FIELD[role], "", OPTS);
-  setValue("emptySystemPolicy", "omit", OPTS);
+  if (!keepPolicy) setValue("emptySystemPolicy", "omit", OPTS);
+}
+
+/** Drops a mapping that was applied automatically (it was ranked for an earlier objective/config). */
+export function dropAutoAppliedMapping(setValue: UseFormSetValue<FormValues>, getValues: UseFormGetValues<FormValues>) {
+  if (getValues("mappingEnabled") && getValues("mappingAutoApplied")) clearMapping(setValue, { keepPolicy: true });
+}
+
+/** Brings the form's mapping in line with a dataset inspection (lib/form/inspect.ts rules). */
+export function syncMappingWithInspection(
+  setValue: UseFormSetValue<FormValues>,
+  getValues: UseFormGetValues<FormValues>,
+  data: DatasetInspection,
+) {
+  const sync = mappingSyncAfterInspection(data, getValues());
+  if (sync.clear) clearMapping(setValue, { keepPolicy: !sync.resetPolicy });
+  if (sync.apply) applyMapping(setValue, sync.apply, { auto: true });
 }
 
 /** Column → role mapping (plan.md §7.2). Unmapped columns are metadata and never rendered. */
@@ -50,6 +71,7 @@ export function MappingEditor({ inspection }: { inspection: DatasetInspection | 
   // A first manual edit turns auto-detection into an explicit mapping. It starts from the
   // unambiguous suggestion (never from a guess) so that one changed role does not drop the others.
   const startEditing = (changed: RoleField | "mappingFormat") => {
+    setValue("mappingAutoApplied", false, OPTS); // a user edit makes the mapping a choice
     if (getValues("mappingEnabled")) {
       // A new format has other required roles: show what is missing right away.
       if (changed === "mappingFormat") void trigger(Object.values(ROLE_FIELD));

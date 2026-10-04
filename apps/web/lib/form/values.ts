@@ -90,6 +90,9 @@ export const formSchema = z
     datasetSplit: z.string().trim().max(256),
     datasetEvalSplit: z.string().trim().max(256),
     mappingEnabled: z.boolean(),
+    // True while the explicit mapping is a suggestion applied automatically (not chosen or edited
+    // by the user): it then follows the latest inspection, e.g. after an objective change.
+    mappingAutoApplied: z.boolean(),
     mappingFormat: z.enum(["auto", "preference", "prompt_completion", "prompt_only", "messages", "text"]),
     mapSystem: z.string(),
     mapPrompt: z.string(),
@@ -242,6 +245,7 @@ export const DEFAULT_FORM_VALUES: FormValues = {
   datasetSplit: "",
   datasetEvalSplit: "",
   mappingEnabled: false,
+  mappingAutoApplied: false,
   mappingFormat: "auto",
   mapSystem: "",
   mapPrompt: "",

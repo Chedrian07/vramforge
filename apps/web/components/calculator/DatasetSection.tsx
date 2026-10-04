@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 
 import { CopyButton } from "@/components/ui/controls";
@@ -11,13 +11,12 @@ import { useApi } from "@/lib/api/context";
 import type { DatasetInspection, UploadResponse } from "@/lib/api/types";
 import { formatCount, formatSize, shortDigest } from "@/lib/format/bytes";
 import { DATASET_FORMAT_LABEL } from "@/lib/format/labels";
-import { datasetInspectCall, referenceOfKey, shouldApplySuggestion } from "@/lib/form/inspect";
-import { mappingFitsColumns } from "@/lib/form/mapping";
+import { datasetInspectCall, referenceOfKey } from "@/lib/form/inspect";
 import { hasViewerRowParam } from "@/lib/form/references";
 import type { FormValues } from "@/lib/form/values";
 import { useLocalRoots, type useDatasetInspection } from "@/lib/hooks/useInspection";
 
-import { MappingEditor, applyMapping, clearMapping } from "./MappingEditor";
+import { MappingEditor, clearMapping, dropAutoAppliedMapping, syncMappingWithInspection } from "./MappingEditor";
 
 type Inspection = ReturnType<typeof useDatasetInspection>;
 
@@ -29,6 +28,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const { register, getValues, setValue, formState } = useFormContext<FormValues>();
   const reference = useWatch<FormValues, "datasetReference">({ name: "datasetReference" });
   const config = useWatch<FormValues, "datasetConfig">({ name: "datasetConfig" });
+  const objective = useWatch<FormValues, "objective">({ name: "objective" });
   const fileInput = useRef<HTMLInputElement>(null);
   const [upload, setUpload] = useState<{ status: "idle" | "uploading" | "done" | "error"; data?: UploadResponse; error?: ApiError }>({ status: "idle" });
   const roots = useLocalRoots();
@@ -57,19 +57,23 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
     if (!call) return;
     const run = force ? inspection.reinspect(call.key, call.body) : inspection.inspect(call.key, call.body);
     void run.then((data) => {
-      if (!data) return;
-      // A mapping kept across a config change or restored after a reload must still fit.
-      const columns = (data.columns ?? []).map((c) => c.name);
-      if (getValues("mappingEnabled") && columns.length > 0 && !mappingFitsColumns(getValues(), columns)) {
-        clearMapping(setValue);
-      }
-      // An unambiguous suggestion is applied (and shown) unless the user already edited it.
-      // An auto-selected split stays "auto" (null) so the result can report split_auto_selected.
-      if (data.suggested_mapping && shouldApplySuggestion(data, getValues("mappingEnabled"))) {
-        applyMapping(setValue, data.suggested_mapping);
-      }
+      // A chosen mapping stays while its columns exist; an automatic one follows this answer. An
+      // auto-selected split stays "auto" (null) so the result can report split_auto_selected.
+      if (data) syncMappingWithInspection(setValue, getValues, data);
     });
   };
+
+  // Mapping candidates and the suggestion are ranked for the objective: a new objective drops a
+  // mapping that was applied automatically and asks again for the dataset already inspected.
+  const objectiveSeen = useRef(objective);
+  const inspectedKey = inspection.state.key;
+  useEffect(() => {
+    if (objectiveSeen.current === objective) return;
+    objectiveSeen.current = objective;
+    dropAutoAppliedMapping(setValue, getValues);
+    const inspected = referenceOfKey(inspectedKey);
+    if (inspected != null && inspected === getValues("datasetReference").trim()) trigger(false);
+  });
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;

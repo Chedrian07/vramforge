@@ -14,7 +14,7 @@ import type { GpuPreset } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { buildRequest, fromAnalysisRequest } from "@/lib/form/convert";
 import { canonicalJson } from "@/lib/form/fingerprint";
-import { datasetInspectCall, modelInspectCall, shouldApplySuggestion } from "@/lib/form/inspect";
+import { datasetInspectCall, modelInspectCall } from "@/lib/form/inspect";
 import type { ExplicitAnalysisRequest } from "@/lib/form/request-schema";
 import { useRevalidateShownErrors } from "@/lib/form/revalidate";
 import { DEFAULT_FORM_VALUES, EXAMPLE_FORM_VALUES, formSchema, type FormValues } from "@/lib/form/values";
@@ -27,7 +27,7 @@ import { useRecompute } from "@/lib/hooks/useRecompute";
 import { AdvancedSettings, groupsWithErrors } from "./AdvancedSettings";
 import { DatasetSection } from "./DatasetSection";
 import { HardwareSection } from "./HardwareSection";
-import { applyMapping } from "./MappingEditor";
+import { syncMappingWithInspection } from "./MappingEditor";
 import { MethodSection } from "./MethodSection";
 import { ModelSection } from "./ModelSection";
 import { ProgressPanel } from "./ProgressPanel";
@@ -130,9 +130,7 @@ export function CalculatorApp() {
     const dataset = datasetInspectCall(EXAMPLE_FORM_VALUES);
     if (dataset) {
       void datasetInspection.inspect(dataset.key, dataset.body).then((data) => {
-        if (data?.suggested_mapping && shouldApplySuggestion(data, form.getValues("mappingEnabled"))) {
-          applyMapping(form.setValue, data.suggested_mapping);
-        }
+        if (data) syncMappingWithInspection(form.setValue, form.getValues, data);
       });
     }
   };
