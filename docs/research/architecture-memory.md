@@ -10,7 +10,7 @@
 | 작성 | research-arch-memory (Milestone M0) |
 | 검증 | verify-architecture-memory (2026-10-04). 원 저자와 다른 harness(autograd graph의 `_saved_*` 순회 + `TorchDispatchMode`/`StorageWeakRef` live-storage tracker, `FakeTensorMode`로 예시 모델 실제 차원 T=4096 측정)로 재검증했다. 고친 항목과 근거는 문서 끝 "검증 로그" 참고 |
 | 방법 | (1) 설치된 site-packages 소스 정독, (2) CUDA 전용 C++/Triton 경로는 tag `v2.14.1`의 torch 소스와 PyPI 배포본 소스 정독, (3) macOS arm64 CPU에서 tiny random-init 모델로 `torch.autograd.graph.saved_tensors_hooks` 기반 saved-tensor 측정과 `torch.profiler` `MemoryProfile` 기반 live-bytes timeline 측정, (4) `huggingface_hub.get_safetensors_metadata` header 조회와 meta-device 인스턴스화 |
-| 실험 코드 | `/tmp/vf-research/scratch/arch-memory/` (저장소 밖 scratch). 핵심: `vfmem.py`(측정 harness), `formulas.py`(검증된 닫힌식), `e1`–`e13*.py` |
+| 실험 코드 | `/tmp/vf-research/scratch/arch-memory/` (저장소 밖 scratch). 핵심: `vfmem.py`(측정 harness), `formulas.py`(검증된 닫힌식), `e1`–`e13*.py`. 검증 스크립트: `/tmp/vf-research/scratch/verify-arch-memory/` (`vh.py` graph-walk harness, `live.py` live-storage·peak tracker, `t1`–`t25*.py`, torch C++ 원본 `torchsrc/`) |
 
 증거 태그: **VERIFIED** = 설치본 소스에서 읽었거나 실행·측정함, **INFERRED** = 소스로 추론했으나 실행하지 못함(CUDA/Triton 전용 등), **UNKNOWN** = 근거 부족.
 인용 형식: `<pkg>==<ver> <site-packages 기준 경로>:<행> (<함수/클래스>)`. torch C++ 소스는 `torch v2.14.1 <repo 경로>:<행>`으로 적는다.
