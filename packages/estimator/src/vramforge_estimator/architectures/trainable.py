@@ -79,10 +79,12 @@ def resolve_lora_targets(
     """
     if isinstance(target, list) and len(target) == 1 and _REGEX_SYNTAX.search(target[0]):
         target = target[0]
+    # MTP modules are never loaded (`^mtp.*` is ignored on load), so PEFT never sees them.
+    loadable = [m for m in structure.linear_modules if m.component is not ModelComponent.MTP]
     if target == "auto_verified":
         chosen = [m for m in structure.text_linears() if m.kind in verified_kinds]
     elif target == "all-linear":
-        chosen = [m for m in structure.linear_modules if m.name != structure.output_embedding]
+        chosen = [m for m in loadable if m.name != structure.output_embedding]
     else:
         if isinstance(target, str):
             matched = sorted(
@@ -100,7 +102,7 @@ def resolve_lora_targets(
                 modules=non_linear[:10],
             )
         names = set(matched)
-        chosen = [m for m in structure.linear_modules if m.name in names]
+        chosen = [m for m in loadable if m.name in names]
     excluded = list(exclude)
     if excluded:
         chosen = [m for m in chosen if not matching.peft_name_match(m.name, excluded)]

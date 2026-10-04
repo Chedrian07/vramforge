@@ -214,6 +214,19 @@ def test_full_finetune_with_4bit_is_rejected(st: ModelStructure) -> None:
         trainable_group_list(st, make_cfg(strategy=Strategy.FULL, quant=True))
 
 
+def test_never_loaded_mtp_linears_are_not_targets(ib: ModuleType) -> None:
+    tc = dict(ib.TINY_Q35_TEXT, mtp_num_hidden_layers=1)
+    rows = [*ib.qwen35_text_rows(tc, prefix="model."), ("mtp.fc.weight", "bfloat16", [96, 192])]
+    st = ModelStructure(ib.inventory_from_tensors(tc, rows), "qwen3_5")
+    every = {m.name for m in resolve_lora_targets(st, "all-linear", [], VERIFIED)}
+    assert "mtp.fc" not in every and len(every) == 8 + 7  # text decoder only, no lm_head
+    for only_mtp in (["fc"], r".*fc"):  # only an unloaded module matches: nothing to adapt
+        with pytest.raises(EstimatorError):
+            resolve_lora_targets(st, only_mtp, [], VERIFIED)
+    mixed = {m.name for m in resolve_lora_targets(st, ["fc", "down_proj"], [], VERIFIED)}
+    assert mixed == {"model.layers.0.mlp.down_proj", "model.layers.1.mlp.down_proj"}
+
+
 def test_tied_lm_head_copy_uses_the_embedding_shape(ib: ModuleType) -> None:
     cfg_dict = dict(ib.TINY_DENSE, model_type="llama", architectures=["LlamaForCausalLM"])
     cfg_dict["tie_word_embeddings"] = True
