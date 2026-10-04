@@ -96,6 +96,15 @@ describe("request building", () => {
     expect(r.grpo.completion_budget).toBe(2048);
   });
 
+  it("keeps the preset total exact without waiting for the preset list", () => {
+    const restored = fromAnalysisRequest(
+      request({ ...base, hardwareMode: "gpu_preset", gpuPresetId: "a100-80", gpuPresetTotalBytes: String(80 * GIB) }),
+    );
+    expect(restored.gpuPresetTotalBytes).toBe(String(80 * GIB));
+    const built = buildRequest(restored, []);
+    expect(built.ok && built.request.hardware.device_total_bytes).toBe(80 * GIB);
+  });
+
   it("converts hardware GiB inputs to integer bytes", () => {
     const preset = request({ ...base, hardwareMode: "gpu_preset", gpuPresetId: "a100-80", externalReservedGiB: "1.5" });
     expect(preset.hardware).toEqual({

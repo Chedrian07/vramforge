@@ -36,11 +36,12 @@ function hardwareFrom(values: FormValues, presets: readonly GpuPreset[]): Explic
   const external = gibInputToBytes(values.externalReservedGiB) ?? 0;
   const base = { external_reserved_bytes: external, num_gpus: 1 };
   if (values.hardwareMode === "gpu_preset") {
+    const stored = values.gpuPresetTotalBytes ? Number(values.gpuPresetTotalBytes) : null;
     const preset = presets.find((p) => p.id === values.gpuPresetId);
     return {
       mode: "gpu_preset",
       gpu_preset: values.gpuPresetId || null,
-      device_total_bytes: preset?.total_bytes ?? null,
+      device_total_bytes: stored ?? preset?.total_bytes ?? null,
       usable_bytes: gibInputToBytes(values.hardwareUsableGiB),
       ...base,
     };
@@ -276,6 +277,8 @@ export function fromAnalysisRequest(request: AnalysisRequest): FormValues {
 
     hardwareMode: hardware?.mode ?? "capacity_only",
     gpuPresetId: hardware?.gpu_preset ?? "",
+    gpuPresetTotalBytes:
+      hardware?.mode === "gpu_preset" && hardware.device_total_bytes != null ? String(hardware.device_total_bytes) : "",
     hardwareTotalGiB: hardware?.mode === "custom" ? bytesToGibInput(hardware.device_total_bytes) : "",
     hardwareUsableGiB: bytesToGibInput(hardware?.usable_bytes),
     externalReservedGiB: bytesToGibInput(hardware?.external_reserved_bytes ?? 0) || "0",

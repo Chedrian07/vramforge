@@ -41,12 +41,16 @@ export function HardwareSection() {
             if (value === CAPACITY) {
               setValue("hardwareMode", "capacity_only", opts);
               setValue("gpuPresetId", "", opts);
+              setValue("gpuPresetTotalBytes", "", opts);
             } else if (value === CUSTOM) {
               setValue("hardwareMode", "custom", opts);
               setValue("gpuPresetId", "", opts);
+              setValue("gpuPresetTotalBytes", "", opts);
             } else {
+              const selected = presets.find((p) => p.id === value);
               setValue("hardwareMode", "gpu_preset", opts);
               setValue("gpuPresetId", value, opts);
+              setValue("gpuPresetTotalBytes", selected ? String(selected.total_bytes) : "", opts);
             }
           }}
           aria-describedby={describedBy("hardware-select", { hint: true, error: errors.gpuPresetId })}

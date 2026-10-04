@@ -67,6 +67,7 @@ describe("hardware section", () => {
     await user.selectOptions(select, "vf-fixture-gpu-24gb");
     expect(form().getValues("hardwareMode")).toBe("gpu_preset");
     expect(form().getValues("gpuPresetId")).toBe("vf-fixture-gpu-24gb");
+    expect(form().getValues("gpuPresetTotalBytes")).toBe(String(24 * 1_073_741_824));
     await user.selectOptions(select, "직접 입력 (GiB)");
     expect(form().getValues("hardwareMode")).toBe("custom");
     await user.type(screen.getByLabelText("GPU 전체 용량 (GiB)"), "48");

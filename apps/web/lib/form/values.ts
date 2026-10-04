@@ -159,6 +159,9 @@ export const formSchema = z
     // Hardware & planning margin
     hardwareMode: z.enum(["capacity_only", "gpu_preset", "custom"]),
     gpuPresetId: z.string(),
+    // Exact total of the selected preset (integer bytes as text); keeps the request independent of
+    // when /backend-profiles finishes loading.
+    gpuPresetTotalBytes: z.string().regex(/^\d*$/),
     hardwareTotalGiB: z.string().trim(),
     hardwareUsableGiB: z.string().trim(),
     externalReservedGiB: decimalText((n) => n >= 0, "0 이상 값을 입력하세요 (GiB)"),
@@ -298,6 +301,7 @@ export const DEFAULT_FORM_VALUES: FormValues = {
 
   hardwareMode: "capacity_only",
   gpuPresetId: "",
+  gpuPresetTotalBytes: "",
   hardwareTotalGiB: "",
   hardwareUsableGiB: "",
   externalReservedGiB: "0",
