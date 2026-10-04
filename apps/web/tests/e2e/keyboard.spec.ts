@@ -1,10 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+import { openApp } from "./helpers";
+
 test("method, advanced groups, tabs and export are keyboard operable", async ({ page }) => {
-  await page.goto("/");
+  await openApp(page);
   const sft = page.getByRole("radiogroup", { name: "Method" }).getByRole("radio", { name: "SFT" });
   await sft.focus();
   await page.keyboard.press("ArrowRight");
+  // Radix roving focus moves focus asynchronously; wait like a user would before selecting.
+  await expect(page.getByRole("radio", { name: "DPO" })).toBeFocused();
   await page.keyboard.press("Space");
   await expect(page.getByRole("radio", { name: "DPO" })).toHaveAttribute("aria-checked", "true");
 

@@ -19,6 +19,7 @@ import type { ExplicitAnalysisRequest } from "@/lib/form/request-schema";
 import { DEFAULT_FORM_VALUES, EXAMPLE_FORM_VALUES, formSchema, type FormValues } from "@/lib/form/values";
 import { useAnalysisRun } from "@/lib/hooks/useAnalysisRun";
 import { useFitsViewport } from "@/lib/hooks/useFitsViewport";
+import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useBackendProfiles, useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
 import { useRecompute } from "@/lib/hooks/useRecompute";
 
@@ -119,6 +120,7 @@ export function CalculatorApp() {
     }
   };
 
+  const hydrated = useHydrated();
   const summaryRef = useRef<HTMLDivElement>(null);
   const summaryFits = useFitsViewport(summaryRef);
   const running = runState.phase === "creating" || runState.phase === "running";
@@ -135,7 +137,8 @@ export function CalculatorApp() {
           </p>
         </div>
       ) : null}
-      <main className="mx-auto w-full max-w-[1320px] px-4 pb-16 sm:px-6">
+      {/* data-hydrated lets end-to-end tests wait until the client handlers are attached. */}
+      <main data-hydrated={hydrated ? "true" : "false"} className="mx-auto w-full max-w-[1320px] px-4 pb-16 sm:px-6">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,58fr)_minmax(0,42fr)]">
           <form onSubmit={submit} noValidate aria-label="계산 입력" className="flex min-w-0 flex-col gap-6 lg:col-start-1 lg:row-start-1">
             <Card title="모델 · 데이터" id="sources-title">

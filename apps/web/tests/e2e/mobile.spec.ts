@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { expectNoHorizontalScroll, loadExample } from "./helpers";
+import { expectNoHorizontalScroll, loadExample, openApp } from "./helpers";
 
 test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
 test("mobile layout keeps the page width and the input -> progress -> summary -> details order", async ({ page }) => {
-  await page.goto("/");
+  await openApp(page);
   await expectNoHorizontalScroll(page);
   await loadExample(page);
   await expectNoHorizontalScroll(page);

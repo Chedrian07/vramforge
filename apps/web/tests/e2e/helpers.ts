@@ -8,8 +8,14 @@ export async function isDevMock(page: Page): Promise<boolean> {
   return page.getByText(/개발용 mock 데이터 모드/).isVisible();
 }
 
+/** Opens the calculator and waits until React has hydrated (keyboard handlers attached). */
+export async function openApp(page: Page, path = "/") {
+  await page.goto(path);
+  await expect(page.locator('main[data-hydrated="true"]')).toBeAttached();
+}
+
 export async function loadExample(page: Page, objective?: "SFT" | "DPO" | "GRPO") {
-  await page.goto("/");
+  await openApp(page);
   await page.getByRole("button", { name: "예시 입력 불러오기" }).click();
   await expect(page.getByRole("textbox", { name: "Model", exact: true })).toHaveValue(MODEL_REF);
   if (objective) await method(page, objective).click();
