@@ -97,8 +97,35 @@ def literal_token_matcher(tokenizer: Any) -> tuple[dict[int, str], re.Pattern[st
         tokens[int(index)] = content
     if not tokens:
         return {}, None
-    literals = sorted(set(tokens.values()), key=len, reverse=True)
-    return tokens, re.compile("|".join(re.escape(t) for t in literals))
+    return tokens, re.compile(_trie_regex(set(tokens.values())))
+
+
+def _trie_regex(words: Iterable[str]) -> str:
+    """A regex matching any of `words`, shaped as a trie: a plain alternation slows down with
+    every word (some tokenizers define thousands of added tokens), a trie only branches where
+    the words differ. Single-child chains are walked iteratively, so long words cannot exhaust
+    the recursion limit."""
+    trie: dict[str, Any] = {}
+    for word in words:
+        node = trie
+        for char in word:
+            node = node.setdefault(char, {})
+        node[""] = {}  # a word ends here
+
+    def build(node: dict[str, Any]) -> str:
+        chain: list[str] = []
+        while len(node) == 1 and "" not in node:
+            ((char, node),) = node.items()
+            chain.append(re.escape(char))
+        branches = [re.escape(char) + build(child) for char, child in node.items() if char]
+        if not branches:
+            return "".join(chain)
+        group = "(?:" + "|".join(branches) + ")"
+        if "" in node:  # a shorter word ends here; longer ones continue
+            return "".join(chain) + group + "?"
+        return "".join(chain) + (branches[0] if len(branches) == 1 else group)
+
+    return build(trie)
 
 
 def check_template_kwargs(template_kwargs: Mapping[str, Any] | None) -> dict[str, Any]:

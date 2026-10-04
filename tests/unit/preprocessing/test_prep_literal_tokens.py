@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from vramforge_estimator.preprocessing import get_adapter
+from vramforge_estimator.preprocessing.trl_common import literal_token_matcher
 from vramforge_estimator.schemas import ColumnMapping, Objective
 
 PREF = ColumnMapping(system="system", prompt="question", chosen="chosen", rejected="rejected")
@@ -102,3 +103,48 @@ def test_plain_word_added_tokens_are_not_reported(make_handle) -> None:
     row = {**ROW, "chosen": "zzq 그리고 <extra_marker>"}
     rec = get_adapter(Objective.SFT, handle, PREF).process(row, "r")
     assert rec.extras["special_token_literal"] == ["<extra_marker>"]
+
+
+class _Added:
+    def __init__(self, content: str, *, special: bool = True) -> None:
+        self.content = content
+        self.special = special
+
+
+class _FakeTokenizer:
+    def __init__(self, tokens: list[str], *, split_special_tokens: bool = False) -> None:
+        self.added_tokens_decoder = {1000 + i: _Added(t) for i, t in enumerate(tokens)}
+        self.split_special_tokens = split_special_tokens
+
+
+def test_matcher_finds_exactly_the_added_token_strings() -> None:
+    import random
+
+    rng = random.Random(7)
+    alphabet = "<|>[]a.*\\"  # regex metacharacters must be literal
+    for _ in range(300):
+        words = {
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6)))
+            for _ in range(rng.randint(1, 8))
+        }
+        _, pattern = literal_token_matcher(_FakeTokenizer(sorted(words)))
+        assert pattern is not None
+        for _ in range(20):
+            text = "".join(rng.choice(alphabet + "xyz ") for _ in range(rng.randint(0, 30)))
+            assert (pattern.search(text) is not None) == any(w in text for w in words)
+
+
+def test_matcher_scales_to_thousands_of_tokens_and_long_ones() -> None:
+    tokens = [f"<|reserved_special_token_{i}|>" for i in range(6000)] + ["<" + "x" * 5000 + ">"]
+    _, pattern = literal_token_matcher(_FakeTokenizer(tokens))
+    assert pattern is not None
+    code = "template<typename T> std::vector<T> v; if (a < b) { x << 1; } <div>" * 50
+    assert pattern.search(code) is None
+    assert pattern.search(code + "<|reserved_special_token_4711|>") is not None
+    assert pattern.search("<|reserved_special_token_|>") is None
+    assert pattern.search("<" + "x" * 5000 + ">") is not None
+
+
+def test_split_special_tokens_drop_special_entries() -> None:
+    tokens, pattern = literal_token_matcher(_FakeTokenizer(["<s>"], split_special_tokens=True))
+    assert tokens == {} and pattern is None
