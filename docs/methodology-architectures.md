@@ -122,7 +122,8 @@ unquantized: ckpt == load → transient 없음 (allocation 없음)
 - `caching_allocator_warmup`은 `S_load = Σ_q 0.5·n + Σ_nq n·bytes(load)`(MiMo bf16 7,765,103,072 B) 크기의 tensor를 잠시 할당했다가
   reserved로 남긴다. 이 크기는 최종 가중치보다 작고 가중치 로드 전에 해제되므로 allocated 피크를 올리지 않는다(allocation 없음).
   같은 `S_load`는 단일 GPU·`device_map="auto"`·`max_memory` 미지정에서 **free × 0.81 ≥ S_load**여야 로딩된다는 조건에 쓰인다(LQ §4.5).
-  adapter의 `loading_budget_bytes()`가 이 값을 돌려준다.
+  `ArchitectureAdapter.loading_budget_bytes(inventory, cfg) -> int`(protocol 메서드)가 이 값을 돌려준다: 양자화 Linear weight는 0.5 B/param, 나머지 로드되는 tensor는 load dtype(tied tensor는 한 번, MTP 제외).
+  MiMo: bf16 load 7,765,103,072 B, fp32 load 11,845,364,672 B. 두 adapter가 protocol 메서드 10개를 같은 시그니처로 구현하는지는 `test_arch_registry.py`가 확인한다.
 
 <a id="trainable"></a>
 ## 5. 학습 가능 파라미터 (LQ §5, §Q6, §Q8)
@@ -155,8 +156,16 @@ alpha, rsLoRA, dropout은 파라미터 수를 바꾸지 않는다
 | `bias` (`all`: 이름이 `.bias`로 끝나는 모든 파라미터, `lora_only`: LoRA 모듈의 bias) | **base 가중치** (gradient·state만 추가) | 위와 같음 |
 | `full` | **base 가중치** | load dtype |
 
-- 그룹은 (이름, dtype, 실행 여부)와 tensor shape별로 나눈다. `numel / tensor_count`가 tensor 하나의 크기라서 8-bit optimizer의 크기 기준(4096)과 step scalar를 정확히 셀 수 있다. full FT의 `nn.Embedding`은 `:embedding:` 그룹으로 분리한다(8-bit optimizer가 32-bit state를 쓰는 대상, LQ §8.3).
-- `ArchTrainableGroup.receives_grad=False`: vision tower처럼 텍스트 전용 데이터에서 실행되지 않는 파라미터. 가중치는 상주하지만 gradient와 optimizer state는 생기지 않는다(LQ §Q8.4, E5d/V6). MiMo all-linear: 51,265,024 중 43,278,336만 gradient를 받는다.
+- 그룹은 (이름, dtype, 실행 여부, embedding 여부)와 tensor shape별로 나눈다. `numel / tensor_count`가 tensor 하나의 크기라서 8-bit optimizer의 크기 기준(4096)과 step scalar를 정확히 셀 수 있다.
+- 반환값은 adapter 전용 하위 클래스가 아닌 계약 그대로의 `TrainableGroup`이고, 아래 세 필드를 **항상 명시**한다(`receives_grad`가 `None`인 그룹은 없다).
+
+| 필드 | 값 | 근거 |
+|---|---|---|
+| `receives_grad` | `True`: 텍스트 데이터에서 실행되는 파라미터. `False`: vision tower·projector·audio처럼 실행되지 않는 파라미터. 가중치는 상주하지만 gradient와 optimizer state는 생기지 않는다. MiMo all-linear: 51,265,024 중 43,278,336만 gradient를 받는다 | LQ §Q8.4, E5d/V6 |
+| `component` | `"text"`(text·`other`) 또는 `"vision"`/`"projector"`/`"audio"` | inventory `component` |
+| `is_embedding` | `nn.Embedding` 파라미터. full FT의 embedding 그룹(`full:<component>:embedding:<shape>`, tied `lm_head`는 같은 파라미터라 한 번), `modules_to_save`가 고른 embedding 모듈의 복사본(예: `embed_tokens`). tied `lm_head`의 복사본은 embedding shape의 `nn.Linear`라 `False`, LoRA·bias 그룹도 `False` | 8-bit bnb optimizer를 쓰면 Trainer가 `nn.Embedding` 파라미터를 32-bit state로 등록한다(LQ §8.3) |
+
+  CPU parity: 실제 Qwen3.5 모델에서 `is_embedding` 그룹 합계 = `requires_grad`인 `nn.Embedding` 파라미터 합계(full FT, PEFT `modules_to_save=["embed_tokens", "lm_head"]` 둘 다, `test_arch_parity.py`).
 - `modules_to_save`는 점 경계 없는 `endswith`로 고르고(예: `"norm"`은 `input_layernorm`, `q_norm`도 고름), 그 안의 모듈은 LoRA 대상에서 빠진다(점 경계 정규식). 서로 포함되는 선택, 4-bit 모듈을 가리키는 선택(LQ 미확정 7)은 거절한다. tied `lm_head`는 자기 tensor가 없어도 embedding shape의 복사본을 만든다.
 - full fine-tune에서 `trainable_full_patterns`는 모듈 이름 정규식(`re.fullmatch`)이다. 비어 있거나 `.*`/`*`면 로드된 모든 파라미터가 학습된다(resolver 기본 `[".*"]`).
 - 4-bit + full fine-tune은 거절한다(`validate_quantization_for_training`).
@@ -169,9 +178,9 @@ alpha, rsLoRA, dropout은 파라미터 수를 바꾸지 않는다
 층 하나의 saved 합계 `S_layer = Σ terms`. GC가 없을 때 층 type × group allocation(`act.<type>.<group>`)의 `shape_expression`은 그 group의 항목 이름과 shape("layer당 query [B,nq,T,d] + ...")이고, CUDA 소스 정독만으로 정한 항목(fla, mask가 있는 mem-efficient, CUDA dropout mask)은 note에 `INFERRED`를 단다(GC면 재계산·transient 계수 allocation의 note에 붙는다).
 
 **검증**: AM §F 골든 표(3행 × 5열), fixture (a), §10.2 실제 차원 값(MiB 소수 둘째 자리)을 그대로 재현한다(`tests/unit/architectures/test_arch_formulas.py`).
-추가로 CPU에서 실제 transformers/PEFT 모델 layer의 autograd graph를 순회해 48개 점이 byte 단위로 일치함을 확인한다(`test_arch_parity.py`, parity marker): Qwen3.5 linear·full layer × 6 mode(full FT ± autocast, frozen + autocast, LoRA bf16 adapter + autocast, LoRA fp32 adapter ± autocast) × 3 shape(B,T = 1,40 / 2,100 / 3,150) = 36점, Llama·Qwen3 layer × 같은 6 mode(B = 2, T = 100) = 12점. CUDA 전용 경로(fla, mem-efficient mask, CUDA dropout mask)는 이 측정에 들어가지 않는다.
+추가로 CPU에서 실제 transformers/PEFT 모델 layer의 autograd graph를 순회해 51개 점이 byte 단위로 일치함을 확인한다(`test_arch_parity.py`, parity marker): Qwen3.5 linear·full layer × 6 mode(full FT ± autocast, frozen + autocast, LoRA bf16 adapter + autocast, LoRA fp32 adapter ± autocast) × 3 shape(B,T = 1,40 / 2,100 / 3,150) = 36점, Llama·Qwen3 layer × 같은 6 mode(B = 2, T = 100) = 12점, `A_log`/`dt_bias`를 따로 동결한 Qwen3.5 linear layer 3점(§6.3 정정). 각 mode는 `ResolvedConfig`로 표현되고(autocast 없음 = `mixed_precision="none"`), 측정 forward는 그 config가 autocast할 때만 CPU bf16 autocast로 돈다. CUDA 전용 경로(fla, mem-efficient mask, CUDA dropout mask)는 이 측정에 들어가지 않는다.
 
-**16-bit 전용**: 모든 식은 bf16/fp16 load(`b = 2`)에서 검증되었다. fp32 load에서는 RMSNorm의 `x.float()`가 복사하지 않는 등 saved set이 달라진다(AM §5, INFERRED). 따라서 fp32 load의 층별 saved set, final norm, 이를 기반으로 한 transient는 `unknown`이다. 경계 hidden state, cos/sin, mask는 load dtype으로 계산된다.
+**16-bit 전용**: 모든 식은 bf16/fp16 load(`b = 2`)에서 autocast 없이, 또는 load dtype과 같은 dtype의 autocast로 검증되었다. fp32 load에서는 RMSNorm의 `x.float()`가 복사하지 않는 등 saved set이 달라진다(AM §5, INFERRED). autocast dtype이 16-bit load dtype과 다르면(bf16 load + fp16 AMP, fp16 load + bf16 AMP) 모든 Linear가 입력과 weight의 cast 사본을 저장하게 된다(fp32 weight + bf16 autocast에서 측정된 현상, AM §4.3 / V20. 16-bit 조합은 미측정). 두 경우 모두 층별 saved set, final norm, 이를 기반으로 한 transient는 `unknown`이고 note에 사유를 적는다. 경계 hidden state, cos/sin, mask는 load dtype으로 계산된다.
 
 <a id="act-norm"></a>
 ### 6.1 RMSNorm, MLP (AM §5)
@@ -218,8 +227,12 @@ cos/sin은 층마다 세지 않고 모델당 1번(§6.5).
 mask가 생기는 조건(AM §3.1, transformers `masking_utils._ignore_causal_mask_sdpa`): batch에 padding이 있거나, sliding layer에서 `T ≥ sliding_window`. eager는 항상 float mask를 만든다.
 
 <a id="act-mask"></a>
-**padding 판정**: `SequenceShape`에는 padding 여부가 없다. `B > 1`, `pad_to_multiple_of > 1`, GRPO(왼쪽 padding된 prompt + 오른쪽 padding된 completion)이면 padding **가능**으로 보고
+**padding 판정**: trainer adapter가 `SequenceShape.has_padding`을 알려 주면 그 경로 하나만 계산한다(exact). `True`면 mask 경로(SDPA bool mask, 층별 additive mask, `repeat_kv` K/V, mem-efficient lse), `False`면 mask 없는 flash 경로다.
+이때 층별 group, mask kwargs, `S_max` 기반 transient·재계산 계수가 범위가 아닌 값 하나가 된다.
+`has_padding`이 `None`일 때만 예전 규칙을 쓴다. `B > 1`, `pad_to_multiple_of > 1`, GRPO(왼쪽 padding된 prompt + 오른쪽 padding된 completion)이면 padding **가능**으로 보고
 mask 없는 경로와 mask 경로를 둘 다 계산해 group마다 `low = min`, `high = max`로 낸다(어느 경로든 범위 안). `B = 1`이고 padding이 없으면 `enable_gqa` + `is_causal`로 mask가 없다.
+`generation_ledger`는 shape를 받지 않으므로 prefill·decode에 항상 이 범위 규칙을 쓴다.
+hybrid 모델에서는 가장 큰 층이 padding과 무관한 linear-attention 층이라 `S_max`가 그대로일 수 있다(MiMo). 이 경우 padding은 full-attention 층의 group과 mask에만 반영된다.
 모델 수준 mask(`act.attn_mask.<layer_type>`): SDPA bool `[B,1,T,T]` 1 B/원소(padding이면), eager float `[B,1,T,T]` load dtype(항상). GC면 checkpoint kwargs로 backward까지, GC가 없으면 forward 동안만 산다.
 linear-attention layer의 padding mask 곱(`apply_mask_to_padding_states`)은 Linear 입력을 masked tensor로 바꿀 뿐 크기가 같고, 추가되는 `[B,T,1]` mask는 무시할 만하다.
 
@@ -241,9 +254,28 @@ gated RMSNorm = f·N·Vd + f·N·Hv + [b·N·Vd if norm 학습] + 2·f·N·Vd + 
 | `fla` | causal-conv1d는 x만, fla는 정규화 q/k(Hv head) `2·b·N·Hv·dk` + rstd `2·f·N·Hv` + v 복사 `b·N·Vd` + g cumsum `f·N·Hv` + A `b·N·Hv·64` | analytic (INFERRED: CUDA 미실행, 소스 정독) |
 | hub kernels, fla 대체 backend, 그 밖 | — | unknown |
 
-- **정정(측정)**: AM §4.3은 frozen `A_log`면 `[Hv]` tensor 2개가 빠진다고 적었지만, CPU graph walk(tiny config A)에서 mul이 `-exp(A_log)` `[Hv]` fp32 1개를 계속 저장한다. 이 1개를 넣어야 fixture (a)(3,909,948 / 3,619,548)와 frozen L1(3,482,748)이 맞는다. 실제 차원에서 128 B라 §10.2 값은 그대로다. 이 항은 modeling 코드에서 계산되므로 fla 경로에도 넣었다(AM의 fla 식에는 없음, 256 B).
-- **autocast 판정**: `ResolvedConfig`에 mixed precision 플래그가 없어 `effective_dtypes.compute`가 bf16/fp16이면 accelerate native AMP(autocast)로 본다(TRL 기본 `bf16=True`, AM §2.4).
-- torch fallback + packing/padding-free는 sequence 경계에서 상태가 섞여 지원 불가다(AM G). `ResolvedConfig`에 packing이 없으므로 resolver가 막아야 한다.
+- **정정(측정): frozen `A_log`의 saved tensor.** AM §4.3은 "frozen `A_log/dt_bias`이면 softplus 출력(`f·N·Hv`)과 `[Hv]` tensor 2개가 빠진다"고 적었다. 측정하면 **1개만** 빠지고, 이 차이를 결정하는 것은 **`A_log` 하나**다.
+  `g = -A_log.float().exp() * F.softplus(a.float() + dt_bias)`의 autograd node가 저장하는 tensor는 다음과 같다.
+
+  | node | 저장 | `A_log` frozen | `A_log` 학습 |
+  |---|---|---|---|
+  | `SoftplusBackward0` | 입력 `[N,Hv]` fp32 | 저장 | 저장 |
+  | `MulBackward0` (self) | `-exp(A_log)` `[Hv]` fp32 (softplus 쪽 gradient에 필요) | **저장** | 저장 |
+  | `MulBackward0` (other) | softplus 출력 `[N,Hv]` fp32 | — | 저장 |
+  | `ExpBackward0` | `exp(A_log)` 결과 `[Hv]` fp32 | — | 저장 |
+  | `dt_bias` 덧셈(`AddBackward0`) | 없음 | — | — |
+
+  그래서 `a_path = f·Hv·(2 if A_log 학습 else 1)`, softplus 출력은 `A_log`가 학습될 때만 저장된다. `dt_bias`의 학습 여부는 saved set을 바꾸지 않는다. 확인 방법은 세 가지다.
+  - 식 단위: `A_log`/`dt_bias`를 따로 동결한 4조합, autocast 유무 모두.
+  - 층 단위: 실제 Qwen3.5 linear layer(full FT + CPU autocast)에서 `A_log`만 동결, `dt_bias`만 동결, 둘 다 동결한 경우가 식과 byte 단위로 일치한다(`test_arch_parity.py::test_only_a_log_changes_the_g_path_saved_set`).
+  - fixture: (a)(3,909,948 / 3,619,548)와 frozen L1(3,482,748)은 이 1개를 넣어야 맞는다(`test_arch_formulas.py`).
+
+  adapter의 학습 여부 플래그(`LayerTrain.params_trainable`)도 `A_log`만 보고 정한다. 모듈 단위로 학습 여부를 정하는 현재 설정에서는 `A_log`와 `dt_bias`가 같은 모듈(`linear_attn`)이라 결과는 같다.
+  실제 차원에서 이 항은 128 B(frozen) / 256 B(학습)라 §10.2 값은 그대로다. g는 kernel 선택 전 modeling 코드에서 계산되므로 fla 경로에도 넣었다(AM의 fla 식에는 없음).
+- **autocast 판정**: `ResolvedConfig.mixed_precision`을 읽는다. `"bf16"`/`"fp16"`이면 accelerate native AMP가 forward를 그 dtype의 `torch.autocast`로 감싸고(TRL 기본 `bf16=True`, AM §2.4), `"none"`이면 autocast가 없다.
+  `effective_dtypes.compute`로는 판정하지 않는다. autocast dtype이 load dtype과 다른 16-bit이면 §6 "16-bit 전용"에 따라 `unknown`이다.
+  PEFT 정책의 `generate()`처럼 accelerate wrapper를 거치지 않는 forward는 autocast 없이 계산한다(§8).
+- torch fallback + packing/padding-free는 sequence 경계에서 상태가 섞여 지원 불가다(AM G). 현재 요청 검증(`compatibility/validation.py`)이 packing을 거절하므로 adapter는 `ResolvedConfig.packing`을 읽지 않는다. packing을 허용하게 되면 이 전제를 다시 봐야 한다.
 
 <a id="act-lora"></a>
 ### 6.4 LoRA (PEFT 0.21.2, AM §4.3, LQ §5.9)
@@ -273,7 +305,7 @@ dense SDPA의 o_proj 입력은 SDPA 출력과 같은 storage라 공유 입력 �
 | `act.final_norm` | RMSNorm(N, H) | forward·loss·backward |
 
 <a id="act-boundary"></a>
-`act.final_hidden`(`[B,T,H]`, load dtype)은 final norm 출력 = LM head 입력이다. forward·loss에만 살고 `storage_alias_group = "<prefix>.final_hidden"`이다. LM head ledger가 lm_head 학습 때문에 이 tensor를 저장분으로 셀 때 같은 alias group을 쓰면 중복되지 않는다.
+`act.final_hidden`(`[B,T,H]`, load dtype)은 final norm 출력 = LM head 입력이다. forward·loss에만 살고 `storage_alias_group = final_hidden_alias(prefix)`(= `"<prefix>.final_hidden"`, `architectures.base`)이다. LM head ledger가 lm_head 학습 때문에 이 tensor를 저장분으로 셀 때 같은 helper로 alias group을 만들면 중복되지 않는다.
 batch tensor(input_ids, labels, mask)와 embedding이 저장하는 index는 같은 storage라 trainer 쪽에서 센다.
 
 <a id="act-gc"></a>
@@ -321,6 +353,7 @@ MiMo(T=4096): forward 106,954,752 B, backward 103,809,024 B(bf16 load) / 305,135
 
 TRL은 `use_cache=False`를 넘기고 GC도 cache를 끈다. resolver가 `use_cache_during_training`을 켜고 GC가 없으면 cache가 linear layer의 마지막 state-update branch를 붙잡는다(AM §4.2 cache 변형).
 측정상 이 branch는 backward에 필요 없고 cache가 살아 있는 동안만 남으므로 `act.cache_branch`와 `act.cache_states`(conv + recurrent state)를 forward·loss에만 둔다. full-attention K/V는 SDPA가 저장하는 k/v를 대신할 뿐이라 추가분이 없다.
+학습 forward는 accelerate wrapper 안에서 돌므로 conv state dtype은 mixed precision의 autocast dtype(없으면 load dtype)이다. rollout용 `effective_dtypes.conv_state`는 여기에 쓰지 않는다.
 
 <a id="act-nograd"></a>
 ## 7. No-grad forward (`no_grad_forward_ledger`)
@@ -347,6 +380,8 @@ KV(sliding) = 같은 식, decode L = min(P + new − 1, W) (new ≥ 2), prefill 
 ```
 
 - K/V dtype = load dtype: PEFT generate는 autocast가 없고, full FT는 autocast여도 RoPE type promotion으로 K가, lazy init으로 V가 load dtype이 된다(GR R3 표 A·C·F·G·Q·R). resolver의 `effective_dtypes.kv_cache`가 다르면 note에 표시하고 이 규칙을 쓴다.
+  예외: full FT 정책이 load dtype과 다른 16-bit dtype으로 autocast하면(bf16 load + fp16 AMP 등) autocast dtype의 K와 load dtype의 cos/sin이 곱해져 float32로 승격된다. V도 cache의 lazy init과 `torch.cat`으로 float32가 된다. 같은 R3 기제이지만 측정하지 않았으므로 K/V를 float32로 계산하고 note에 INFERRED를 단다. 이 정책의 prefill 작업 집합은 §6 "16-bit 전용"에 따라 `unknown`이다.
+- rollout의 forward가 autocast인지는 `ResolvedConfig.mixed_precision`과 정책 종류로 정한다: full FT 정책 + `bf16`/`fp16`이면 autocast, PEFT 정책(`PeftModel.generate`가 wrapper를 우회)이나 `"none"`이면 없음.
 - KV는 attention layer에만 붙는다. hybrid에서 32개 전부에 KV 식을 쓰면 4배 과대다(plan §19.3).
 - prefill 작업 집합은 §7의 no-grad ledger(`gen.prefill.nograd.*`)를 `B = C`, `T = P`로 쓴다(PEFT면 autocast 없음). C > 1 또는 GRPO면 왼쪽 padding mask 범위가 붙는다.
 - `(C, V)` logits는 trainer 쪽이다. decode step의 작업 집합은 아래 `gen.decode.step_transient`다.
@@ -376,8 +411,11 @@ step_transient  = max(위 항목)
 ```text
 conv state      = n_lin · C · conv_dim · K · bytes(conv dtype)     # K 위치(K−1 아님), L과 무관
 recurrent state = n_lin · C · Hv · dk · dv · 4                     # 항상 fp32 (mamba_ssm_dtype 무시)
-conv dtype      = compute dtype if (full FT and autocast) else load dtype   # GR R3
+conv dtype      = effective_dtypes.conv_state                       # resolver가 정했으면 그 값
+                  else autocast dtype if (full FT and mixed_precision ≠ none) else load dtype   # GR R3
 ```
+
+- resolver가 `effective_dtypes.conv_state`를 정하면 그 값을 쓴다. 구조 규칙과 다르면 note에 두 값을 함께 적고, dtype 이름을 해석할 수 없으면 구조 규칙을 쓰고 그 사실을 note에 적는다. recurrent state는 resolver 값과 관계없이 fp32다(다르면 note).
 
 MiMo bf16 load, sequence 1개: `51,904,512 + 32,768·L` B(linear 24층 49.5 MiB + full 8층 32 KiB/position).
 C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
@@ -387,6 +425,10 @@ C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
 | 항목 | 상태 | 처리 |
 |---|---|---|
 | fp32 load의 층별 saved set | 식 없음 (AM §5) | unknown |
+| load dtype과 다른 16-bit autocast(bf16 ↔ fp16)의 층별 saved set | Linear마다 cast 사본, 미측정 (AM §4.3은 fp32 weight만 측정) | unknown |
+| 같은 조합에서 full FT rollout K/V dtype | type promotion으로 float32 (INFERRED) | analytic + note |
+| frozen `A_log`의 g 경로 | VERIFIED (CPU graph walk, parity 3점): `-exp(A_log)` `[Hv]` 1개 저장, `dt_bias`는 무관 | analytic (AM §4.3 정정, §6.3) |
+| `has_padding = None`인 batch | padding 가능 여부만 앎 | mask 없음·있음 두 경로의 범위 |
 | FA2, SDPA math, flex, hub kernels, fla 대체 backend | saved set 미확인 | unknown |
 | DoRA activation·임시값 | 미검증 | unknown |
 | fla + causal-conv1d saved set | INFERRED (CUDA 미실행) | analytic + note |
@@ -401,9 +443,9 @@ C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
 
 ## 10. 다른 모듈과의 계약 메모
 
-- `TrainableGroup.kind`가 `lora`/`modules_to_save`면 새 저장소(가중치 allocation 필요), `full`/`bias`면 base 가중치(gradient·optimizer만). `receives_grad=False` 그룹은 gradient·state를 만들지 않는다.
-- `effective_dtypes.adapter`(LoRA dtype)는 resolver가 정한 값을 쓴다. generation cache dtype은 위 구조 규칙을 쓴다.
-- trainer adapter는 `act.final_hidden` alias group, `SequenceShape.batch`(DPO는 2 × pairs), 생성 timepoint를 넘긴다.
+- `TrainableGroup.kind`가 `lora`/`modules_to_save`면 새 저장소(가중치 allocation 필요), `full`/`bias`면 base 가중치(gradient·optimizer만). 이 adapter들은 `receives_grad`(항상 bool), `component`, `is_embedding`을 모두 채운다(§5). `receives_grad=False` 그룹은 gradient·state를 만들지 않고, `is_embedding=True` 그룹은 bnb 8-bit optimizer에서 32-bit state다.
+- `effective_dtypes.adapter`(LoRA dtype)와 `effective_dtypes.conv_state`(rollout conv state)는 resolver가 정한 값을 쓴다. KV cache와 recurrent state dtype은 구조 규칙을 쓰고, resolver 값이 다르면 note에 남긴다. autocast 여부는 `mixed_precision`만 본다(`effective_dtypes.compute`는 bnb compute dtype이 없을 때의 dequant 크기에만 쓴다).
+- trainer adapter는 `final_hidden_alias(prefix)`로 LM head 입력의 alias group을 만들고, `SequenceShape.batch`(DPO는 2 × pairs), 알면 `SequenceShape.has_padding`(정확한 mask 경로), 생성 timepoint를 넘긴다.
 - trainer config의 `LoraConfig.target_modules`는 `architectures.trainable.peft_target_spec(request target)` 값이어야 adapter가 센 모듈과 같다(`all-linear`·정규식 1개를 리스트로 감싸면 PEFT가 아무것도 찾지 못한다, §5).
 - `quantization.skip_module_patterns`는 그대로 `llm_int8_skip_modules`가 된다는 전제로 계산한다(비어 있으면 transformers 기본 skip, §3.1).
-- `DecoderAdapter.loading_budget_bytes()`(= `S_load`)는 단일 GPU·bnb 4-bit·`device_map="auto"`의 로딩 조건 `free × 0.81 ≥ S_load`에 쓰는 값이다(§4). 적합 판정은 memory 모듈 몫이다.
+- `ArchitectureAdapter.loading_budget_bytes()`(= `S_load`)는 단일 GPU·bnb 4-bit·`device_map="auto"`의 로딩 조건 `free × 0.81 ≥ S_load`에 쓰는 값이다(§4). 적합 판정은 memory 모듈 몫이다.
