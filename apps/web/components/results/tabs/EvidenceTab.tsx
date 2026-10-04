@@ -63,9 +63,24 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
     { key: "gradient_checkpointing", label: "gradient checkpointing", requested: t.gradient_checkpointing, resolved: res ? `${show(res.gradient_checkpointing)} (${res.checkpointing_granularity})` : undefined },
     { key: "attention", label: "attention 경로", requested: `${t.attention_backend ?? "auto"} / linear ${t.linear_attention_kernel ?? "auto"}`, resolved: res ? Object.entries(res.attention_path_by_layer_type ?? {}).map(([k, v]) => `${k}: ${v}`).join(", ") : undefined },
     { key: "loss", label: "loss 경로", requested: t.loss_kernel, resolved: res?.loss_path },
+    { key: "mixed_precision", label: "mixed precision", requested: t.precision, resolved: res?.mixed_precision },
+    { key: "packing", label: "packing", requested: t.packing, resolved: res?.packing },
+    {
+      key: "loss_mask",
+      label: "loss 대상 token",
+      requested: undefined,
+      resolved: res
+        ? `assistant_only_loss ${show(res.assistant_only_loss)} · completion_only_loss ${res.completion_only_loss == null ? "기본값(None)" : show(res.completion_only_loss)}`
+        : undefined,
+    },
   ];
   if (t.objective === "dpo") {
-    comparison.push({ key: "dpo", label: "DPO reference / beta", requested: `${req.dpo?.reference_strategy ?? "auto"} / ${req.dpo?.beta ?? "—"}`, resolved: res?.dpo ? `${res.dpo.reference_strategy} / ${res.dpo.beta}` : undefined });
+    comparison.push({
+      key: "dpo",
+      label: "DPO reference / beta",
+      requested: `${req.dpo?.reference_strategy ?? "auto"}${req.dpo?.reference_model ? ` (${req.dpo.reference_model})` : ""} / ${req.dpo?.beta ?? "—"}`,
+      resolved: res?.dpo ? `${res.dpo.reference_strategy}${res.dpo.reference_model ? ` (${res.dpo.reference_model})` : ""} / ${res.dpo.beta}` : undefined,
+    });
   }
   if (t.objective === "grpo") {
     comparison.push({
@@ -73,6 +88,12 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
       label: "GRPO G / gbs / spg / budget",
       requested: `${req.grpo?.num_generations ?? "—"} / ${req.grpo?.generation_batch_size ?? "자동"} / ${req.grpo?.steps_per_generation ?? "자동"} / ${req.grpo?.completion_budget ?? (req.grpo?.completion_budget_candidates ?? []).join(", ")}`,
       resolved: res?.grpo ? `${res.grpo.num_generations} / ${res.grpo.generation_batch_size} / ${res.grpo.steps_per_generation} / ${res.grpo.completion_budgets.join(", ")}` : undefined,
+    });
+    comparison.push({
+      key: "reward",
+      label: "reward / 학습 GPU 상주",
+      requested: `${req.grpo?.reward?.kind ?? "unspecified"} / ${show(req.grpo?.reward?.on_training_gpu ?? true)}`,
+      resolved: res?.grpo ? `${res.grpo.reward_kind} / ${show(res.grpo.reward_on_training_gpu)}` : undefined,
     });
   }
 
@@ -106,6 +127,11 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
             value={result.tokenizer_manifest ? `${result.tokenizer_manifest.tokenizer_class} · template ${shortDigest(result.tokenizer_manifest.chat_template_sha256, 12) ?? "없음"}` : null}
           />
         </dl>
+        {result.tokenizer_manifest?.template_parse_error ? (
+          <IssueList
+            issues={[{ code: "", severity: "warning", user_message: `chat template을 해석하지 못했습니다: ${result.tokenizer_manifest.template_parse_error}` }]}
+          />
+        ) : null}
       </Section>
 
       <Section title="요청 · 적용 · 관측 설정">
@@ -114,7 +140,7 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
           {comparison.map((row) => (
             <tr key={row.key}>
               <Td className="font-medium text-ink">{row.label}</Td>
-              <Td><Mono className="text-[12px]">{show(row.requested)}</Mono></Td>
+              <Td><Mono className="text-[12px]">{row.requested === undefined ? "—" : show(row.requested)}</Mono></Td>
               <Td><Mono className="text-[12px]">{res ? show(row.resolved) : "확정 전"}</Mono></Td>
               <Td className="text-[12px] text-muted">{observedCell(row.key)}</Td>
             </tr>
@@ -123,6 +149,12 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
         {res ? (
           <p className="text-[12px] text-ink-2">
             실효 dtype: compute <Mono>{res.effective_dtypes.compute}</Mono> · adapter <Mono>{res.effective_dtypes.adapter}</Mono> · gradient <Mono>{res.effective_dtypes.gradient}</Mono> · optimizer state <Mono>{res.effective_dtypes.optimizer_state}</Mono> · logits <Mono>{res.effective_dtypes.logits}</Mono> · KV <Mono>{res.effective_dtypes.kv_cache}</Mono> · recurrent <Mono>{res.effective_dtypes.recurrent_state}</Mono>
+            {res.effective_dtypes.conv_state ? (
+              <>
+                {" "}
+                · conv state <Mono>{res.effective_dtypes.conv_state}</Mono>
+              </>
+            ) : null}
           </p>
         ) : null}
       </Section>
@@ -220,7 +252,7 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
       </Section>
 
       <Section title="경고와 오류">
-        <IssueList issues={[...(result.errors ?? []), ...(result.warnings ?? [])]} empty="경고나 오류가 없습니다." />
+        <IssueList issues={[...(result.errors ?? []), ...(result.warnings ?? []), ...(result.memory?.issues ?? [])]} empty="경고나 오류가 없습니다." />
       </Section>
     </div>
   );

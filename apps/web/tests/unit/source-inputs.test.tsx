@@ -121,6 +121,16 @@ describe("model input", () => {
     expect(screen.queryByText(/GRPO · QLoRA.*\(선택\)/)).not.toBeInTheDocument();
   });
 
+  it("says when the chat template could not be parsed", async () => {
+    const user = userEvent.setup();
+    const broken = { ...modelInspection, tokenizer: { ...modelInspection.tokenizer!, template_parse_error: "unexpected end of template" } };
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: broken, dataset: null }));
+    renderSection(<ModelHost />, { inspect }, { modelReference: MODEL_REF });
+    await user.click(screen.getByRole("button", { name: "모델 확인" }));
+    expect(await screen.findByText("template 해석 오류")).toBeInTheDocument();
+    expect(screen.getByText(/chat template을 해석하지 못했습니다: unexpected end of template/)).toBeInTheDocument();
+  });
+
   it("validates the reference locally before any request", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn();

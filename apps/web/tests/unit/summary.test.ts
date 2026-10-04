@@ -7,6 +7,12 @@ import { BUDGETS, grpoExplicitBudgetResult, grpoResult } from "../fixtures/analy
 import { needsInputResult, partialResult, unknownPeakResult } from "../fixtures/analysis-states";
 
 describe("summarize", () => {
+  it("reports issues raised while estimating memory, once", () => {
+    const loadBudget = { code: "LOAD_BUDGET_EXCEEDED" as const, severity: "warning" as const, retryable: false, user_message: "모델 로딩 단계에 필요한 여유가 부족합니다." };
+    const s = summarize({ ...dpoResult, warnings: [...(dpoResult.warnings ?? []), loadBudget], memory: { ...dpoResult.memory!, issues: [loadBudget] } });
+    expect(s.issues.filter((i) => i.code === "LOAD_BUDGET_EXCEEDED")).toHaveLength(1);
+  });
+
   it("lists every completion budget when no explicit budget was given", () => {
     const s = summarize(grpoResult);
     expect(s.kind).toBe("budgets");

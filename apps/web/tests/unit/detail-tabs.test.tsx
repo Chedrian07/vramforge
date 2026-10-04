@@ -155,6 +155,27 @@ describe("detail tabs", () => {
     expect(history).toHaveTextContent("LoRA r 16 → 32");
   });
 
+  it("shows the precision, packing, loss-mask and reward placement the analysis resolved", async () => {
+    const user = userEvent.setup();
+    const memoryIssue = { code: "LOAD_BUDGET_EXCEEDED" as const, severity: "warning" as const, retryable: false, user_message: "모델 로딩 단계 여유가 부족합니다." };
+    renderTabs({
+      ...grpoResult,
+      resolved_config: { ...grpoResult.resolved_config!, effective_dtypes: { ...grpoResult.resolved_config!.effective_dtypes, conv_state: "bfloat16" } },
+      tokenizer_manifest: { ...grpoResult.tokenizer_manifest!, template_parse_error: "unexpected '}' at line 3" },
+      memory: { ...grpoResult.memory!, issues: [memoryIssue] },
+    });
+    await user.click(screen.getByRole("tab", { name: "적용 설정·근거" }));
+    const panel = screen.getByRole("tabpanel");
+    const table = within(panel).getByRole("table", { name: "requested / resolved / observed" });
+    expect(within(table).getByText("mixed precision").closest("tr")).toHaveTextContent("bf16");
+    expect(within(table).getByText("packing").closest("tr")).toHaveTextContent("끔");
+    expect(within(table).getByText("loss 대상 token").closest("tr")).toHaveTextContent("assistant_only_loss 끔 · completion_only_loss 기본값(None)");
+    expect(within(table).getByText("reward / 학습 GPU 상주").closest("tr")).toHaveTextContent("unspecified / 켬");
+    expect(panel).toHaveTextContent("conv state bfloat16");
+    expect(panel).toHaveTextContent("chat template을 해석하지 못했습니다: unexpected '}' at line 3");
+    expect(within(panel).getByRole("region", { name: "경고와 오류" })).toHaveTextContent("모델 로딩 단계 여유가 부족합니다.");
+  });
+
   it("shows requested, resolved and unverified observed settings with reasons", async () => {
     const user = userEvent.setup();
     renderTabs(grpoResult);

@@ -138,12 +138,16 @@ function ModelInspectionView({ data, outdated }: { data: ModelInspection; outdat
                 <Badge tone="warn">chat template 없음</Badge>
               )}
               {tokenizer.chat_template_sha256 ? <Mono className="text-muted">{shortDigest(tokenizer.chat_template_sha256, 10)}</Mono> : null}
+              {tokenizer.template_parse_error ? <Badge tone="warn">template 해석 오류</Badge> : null}
             </span>
           ) : (
             <Badge tone="err">tokenizer 없음: 데이터 길이를 계산할 수 없습니다</Badge>
           )}
         </dd>
       </dl>
+      {tokenizer?.template_parse_error ? (
+        <p className="text-[12px] leading-snug text-warn">chat template을 해석하지 못했습니다: {tokenizer.template_parse_error}</p>
+      ) : null}
       {facts?.has_vision ? (
         <p className="text-[12px] leading-snug text-ink-2">
           <Badge tone="info">vision tower</Badge>{" "}

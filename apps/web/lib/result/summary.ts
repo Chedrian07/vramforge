@@ -126,7 +126,8 @@ export function summarize(result: AnalysisResult): ResultSummary {
     [...(result.unknown_components ?? []), ...(device?.unknown_components ?? [])],
     (u) => `${u.name}|${u.reason}`,
   );
-  const issues = [...(result.errors ?? []), ...(result.warnings ?? [])];
+  // Memory-stage findings (e.g. a load budget the GPU cannot meet) belong to the summary too.
+  const issues = dedupe([...(result.errors ?? []), ...(result.warnings ?? []), ...(memory?.issues ?? [])], (i) => `${i.code}|${i.user_message}`);
   const rewardExcluded =
     excluded.some((e) => e.code === "GRPO_REWARD_UNSPECIFIED") ||
     issues.some((i) => i.code === "GRPO_REWARD_UNSPECIFIED");
