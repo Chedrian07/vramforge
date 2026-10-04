@@ -56,6 +56,14 @@ _LINEAR_PATHS: dict[str, act.LinearKernel] = {
 # (§1.1) and the pinned environment has no fla/causal-conv1d (§2.1, trl-grpo §4.5).
 DEFAULT_ATTENTION = "sdpa"
 DEFAULT_LINEAR = "torch_fallback"
+_GROUP_REFS = {
+    "norms": "act-norm",
+    "mlp": "act-norm",
+    "attention": "act-attention",
+    "linear_attention": "act-linear",
+    "lora": "act-lora",
+    "mask": "act-mask",
+}
 
 
 # ---------------------------------------------------------------- small helpers
@@ -143,7 +151,7 @@ def resolve_paths(structure: ModelStructure, cfg: ResolvedConfig) -> Paths:
     attention: dict[str, str | None] = {}
     for lt in sorted(set(structure.layer_types) - {LINEAR_ATTENTION}):
         raw = configured.get(lt) or configured.get(FULL_ATTENTION)
-        if raw is None:
+        if raw in (None, "auto"):
             raw = DEFAULT_ATTENTION
             notes[lt] = "attention 경로 미지정 → transformers 기본 sdpa로 계산"
         if raw in _SDPA_AUTO:
@@ -157,7 +165,7 @@ def resolve_paths(structure: ModelStructure, cfg: ResolvedConfig) -> Paths:
     linear: act.LinearKernel | None = None
     if LINEAR_ATTENTION in structure.layer_types:
         kernel = configured.get(LINEAR_ATTENTION)
-        if kernel is None:
+        if kernel in (None, "auto"):
             kernel = DEFAULT_LINEAR
             notes[LINEAR_ATTENTION] = "kernel 미지정 → 고정 환경의 torch fallback으로 계산"
         linear = _LINEAR_PATHS.get(kernel)
@@ -244,7 +252,6 @@ class LayerSet:
 
     padded: bool
     terms: list[list[act.SavedTerm] | None]
-    paths: dict[int, act.AttnPath] = field(default_factory=dict)
 
     @property
     def known(self) -> bool:
@@ -284,7 +291,6 @@ def layer_sets(
                     ls.terms.append(None)
                     continue
                 ap = attn_path(path, layer.layer_type, structure, seq, padded)
-                ls.paths[layer.index] = ap
                 if structure.family == "qwen3_5":
                     terms = act.q35_full_attention_layer(batch, seq, dims, lt, mode, ap)
                 else:
@@ -570,7 +576,7 @@ def train_step(
             out.extend(_train_cache_states(structure, cfg, batch, live, p))
     smin, smax = s_max(sets)
     cls = mode_class(tr, mode) if mode else "full"
-    defaulted = "; ".join(f"{lt}: {n}" for lt, n in paths.notes.items())
+    defaulted = "; ".join(f"{lt}: {why}" for lt, why in paths.notes.items())
     W, R = AllocationCategory.WORKSPACE, AllocationCategory.RECOMPUTE_WORKING_SET
     factors = (
         [
@@ -748,7 +754,7 @@ def _saved_layer_allocs(
                     lo,
                     hi,
                     live,
-                    ref=f"act-{'linear' if lt == LINEAR_ATTENTION else 'attention'}",
+                    ref=_GROUP_REFS[g],
                     evidence=Evidence.ANALYTIC,
                     dims={**dims, "layers": len(idx)},
                     count=len(idx),

@@ -143,6 +143,8 @@ def test_padding_adds_mask_terms_as_a_range(mimo: ModelInventory, auto: list[str
     # per full layer at B=2: K/V expansion +96 MiB, flash's contiguous copy b·N·nq·d -64 MiB
     assert attn.bytes_high - attn.bytes_low == 8 * (96 - 64) * MiB
     assert mask.live_at == ALL and bool_mask.live_at == [TPS.forward]  # no GC: not kept
+    assert mask.formula_ref == "methodology-architectures.md#act-mask"
+    assert (led["policy.act.full_attention.lora"].formula_ref or "").endswith("#act-lora")
 
 
 def test_single_unpadded_sequence_has_no_mask(mimo: ModelInventory, auto: list[str]) -> None:
@@ -178,6 +180,9 @@ def test_kernel_paths(mimo: ModelInventory, auto: list[str]) -> None:
     assert em.bytes_low == em.bytes_high == 2 * 4096 * 4096  # eager float mask, always
     gap = eager["policy.act.full_attention.attention"].bytes_low
     assert gap - torch["policy.act.full_attention.attention"].bytes_low > 8 * 6 * 16 * 4096**2 // 2
+    leaked = step(mimo, make_cfg(targets=auto, gc=False, paths={"full_attention": "auto"}))
+    assert leaked[key].bytes_low == torch[key].bytes_low  # "auto" = the default path, noted
+    assert "기본 sdpa" in (leaked["policy.act.full_attention.attention"].note or "")
     fa2 = step(
         mimo, make_cfg(targets=auto, gc=False, paths={"full_attention": "flash_attention_2"})
     )
