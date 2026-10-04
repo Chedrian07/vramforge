@@ -58,6 +58,8 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
       high: p.bytes_high ?? 0,
       isPeak: p.phase === device.peak_phase,
     }));
+  // Included phases of unknown size have no bar; they could still hold the real peak.
+  const unknownPhases = device.phases.filter((p) => p.included && (p.bytes_low == null || p.bytes_high == null));
   const height = Math.max(120, rows.length * 40 + 48);
   const axis = gibTicks(Math.max(0, ...rows.map((r) => r.high)));
 
@@ -79,7 +81,9 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
         label={`단계별 피크: ${rows.map((r) => `${r.label} ${formatSizeRange(r.low, r.high)}`).join(", ")}`}
         chart={
           rows.length === 0 ? (
-            <p className="text-[13px] text-muted">크기를 산정한 단계가 없습니다.</p>
+            <p className="text-[13px] text-muted">
+              크기를 산정한 단계가 없습니다.{unknownPhases.length > 0 ? ` 크기 미상 단계 ${unknownPhases.length}개는 아래 표에 있습니다.` : ""}
+            </p>
           ) : (
             <div className="flex flex-col gap-2">
               <ChartBox height={height}>
@@ -138,6 +142,12 @@ export function PhaseTab({ scenario }: { scenario: ScenarioEstimate | null }) {
                   </BarChart>
                 )}
               </ChartBox>
+              {unknownPhases.length > 0 ? (
+                <p className="text-[12px] text-warn">
+                  크기 미상 단계 {unknownPhases.length}개({unknownPhases.map((p) => PHASE_LABEL[p.phase]).join(", ")})는 막대에 그리지
+                  않았습니다. 이 단계가 실제 피크일 수 있으니 아래 표의 산정 불가 항목을 확인하세요.
+                </p>
+              ) : null}
               <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ink-2" aria-label="단계 차트 범례">
                 <li className="flex items-center gap-1.5">
                   <LegendSwatch color="var(--vf-accent)" /> 피크 단계 하한

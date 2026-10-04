@@ -84,6 +84,23 @@ describe("detail tabs", () => {
     expect(table).toHaveTextContent("평가 미포함");
   });
 
+  it("says which phases of unknown size the phase chart leaves out", async () => {
+    const user = userEvent.setup();
+    const scenario = dpoResult.memory!.scenarios[0]!;
+    const device = scenario.devices[0]!;
+    const phases = device.phases.map((p) =>
+      p.phase === "POLICY_FORWARD_BACKWARD" ? { ...p, bytes_low: null, bytes_high: null, unknown_components: ["fla workspace"] } : p,
+    );
+    const result = {
+      ...dpoResult,
+      memory: { ...dpoResult.memory!, scenarios: [{ ...scenario, devices: [{ ...device, phases }] }] },
+    };
+    renderTabs(result);
+    await user.click(screen.getByRole("tab", { name: "단계별 피크" }));
+    expect(screen.getByText(/크기 미상 단계 1개\(policy forward·backward\)는 막대에 그리지/)).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "단계별 피크 (제외한 단계 포함)" })).toHaveTextContent("산정 불가: fla workspace");
+  });
+
   it("compares budget scenarios and recompute deltas", async () => {
     const user = userEvent.setup();
     renderWithProviders(
