@@ -8,7 +8,7 @@ import type { AnalysisRequest, AnalysisStatus, InspectRequest, ScenarioResponse 
 
 import { dpoResult } from "../fixtures/analysis-dpo-sft";
 import { completedGrpoStatus, completedSftStatus, needsInputStatus, runningStatus } from "../fixtures/analysis-states";
-import { DATASET_REF, MODEL_REF } from "../fixtures/common";
+import { DATASET_REF, MODEL_REF, exampleRequest } from "../fixtures/common";
 import { datasetInspection, modelInspection } from "../fixtures/sources";
 import { FakeEventSource } from "../utils/fake-event-source";
 import { makeEvent } from "../utils/events";
@@ -117,6 +117,31 @@ describe("calculator flow", () => {
     expect(await screen.findByText("1,536 row 처리")).toBeInTheDocument();
     expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events?after=${runningStatus.last_event_id}`);
     expect(screen.getByRole("button", { name: "분석 취소" })).toBeInTheDocument();
+  });
+
+  it("restores the form from the stored request while the analysis still runs", async () => {
+    window.history.replaceState(null, "", `/?analysis=${ID}`);
+    const request = exampleRequest({ objective: "dpo", microbatch: "2", hardwareMode: "custom", hardwareTotalGiB: "23.65" });
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => ({ ...runningStatus, request }));
+    renderApp({ getAnalysis });
+    // No result exists yet: the form comes from AnalysisStatus.request.
+    await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue(MODEL_REF));
+    expect(screen.getByLabelText("Dataset")).toHaveValue(DATASET_REF);
+    expect(within(screen.getByRole("radiogroup", { name: "Method" })).getByRole("radio", { name: "DPO" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByLabelText("GPU 전체 용량 (GiB)")).toHaveValue("23.65");
+    expect(window.location.search).toBe(`?analysis=${ID}`);
+    expect(screen.getByRole("button", { name: "분석 취소" })).toBeInTheDocument();
+  });
+
+  it("keeps edits made before the stored request arrives", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", `/?analysis=${ID}`);
+    let answer: (status: AnalysisStatus) => void = () => {};
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(() => new Promise((resolve) => (answer = resolve)));
+    renderApp({ getAnalysis });
+    await user.type(screen.getByLabelText("Model"), "org/typed-model");
+    await act(async () => answer({ ...runningStatus, request: exampleRequest() }));
+    expect(screen.getByLabelText("Model")).toHaveValue("org/typed-model");
   });
 
   it("restores the form from requested_config and recomputes light changes", async () => {

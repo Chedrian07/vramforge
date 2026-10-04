@@ -72,7 +72,8 @@ export function CalculatorApp() {
   const runState = run.state;
   const terminalResult = runState.phase === "terminal" ? (runState.status?.result ?? null) : null;
   const baseResult = runState.jobStatus === "COMPLETED" ? terminalResult : null;
-  const baseRequest = runState.submittedRequest ?? baseResult?.requested_config ?? null;
+  // What the analysis was started with: this page's submission, else the stored request.
+  const baseRequest = runState.submittedRequest ?? runState.status?.request ?? baseResult?.requested_config ?? null;
   const recompute = useRecompute({
     analysisId: runState.analysisId,
     baseResult,
@@ -81,14 +82,22 @@ export function CalculatorApp() {
     enabled: baseResult != null,
   });
 
-  // After a reload (?analysis=<id>) the form starts empty: restore it once from requested_config.
+  // After a reload (?analysis=<id>) the form starts empty: restore it once from the stored
+  // request, which the status carries from the first answer on (queued or running, before any
+  // result); older answers without it fall back to the result's requested_config. Edits made
+  // before the answer arrived are kept.
   const hydratedFor = useRef<string | null>(null);
-  const resumedResult = runState.submittedRequest ? null : (runState.status?.result ?? null);
+  const resumed = runState.submittedRequest ? null : runState.status;
+  const resumedId = resumed?.analysis_id ?? null;
+  const resumedRequest = resumed?.request ?? resumed?.result?.requested_config ?? null;
   useEffect(() => {
-    if (!resumedResult || hydratedFor.current === resumedResult.analysis_id) return;
-    hydratedFor.current = resumedResult.analysis_id;
-    if (!form.formState.isDirty) form.reset(fromAnalysisRequest(resumedResult.requested_config));
-  }, [resumedResult, form]);
+    if (!resumedId || !resumedRequest || hydratedFor.current === resumedId) return;
+    hydratedFor.current = resumedId;
+    // formState.isDirty is only computed when it is read during render, so compare with the
+    // untouched defaults instead.
+    const untouched = canonicalJson(form.getValues()) === canonicalJson(DEFAULT_FORM_VALUES);
+    if (untouched) form.reset(fromAnalysisRequest(resumedRequest));
+  }, [resumedId, resumedRequest, form]);
 
   const onValid = useCallback(
     (formValues: FormValues) => {
