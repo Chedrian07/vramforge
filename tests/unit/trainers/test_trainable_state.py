@@ -29,7 +29,11 @@ from vramforge_estimator.schemas import (
     Strategy,
 )
 from vramforge_estimator.trainers import get_trainer
-from vramforge_estimator.trainers.common import FINAL_HIDDEN_ALIAS, POLICY_PREFIX
+from vramforge_estimator.trainers.common import (
+    FINAL_HIDDEN_ALIAS,
+    POLICY_PREFIX,
+    eight_bit_state_bytes,
+)
 from vramforge_estimator.trainers.ledger import alive_by_timepoint, contributions
 from vramforge_estimator.trainers.trainable import executed_slices, lora_rank
 
@@ -116,6 +120,35 @@ def test_flagged_groups_give_exact_eight_bit_states() -> None:
     a = by_name(build(full, inv), "optimizer.full")
     b = by_name(build(full, inv, FakeArch(flagged_groups=True)), "optimizer.full")
     assert a.bytes_high == b.bytes_high  # embeddings keep 32-bit state on both paths
+
+
+def test_embedding_state_follows_the_is_embedding_flag_not_the_group_name() -> None:
+    inv = make_inventory()
+    cfg = make_cfg(Objective.SFT, Strategy.FULL, inventory=inv, optimizer="adamw_8bit")
+    n = V * H  # >= 4096: 8-bit state unless the tensor is an nn.Embedding
+    flagged = TrainableGroup(
+        "full:text:1000x64", "full", n, "bfloat16", 1, receives_grad=True, is_embedding=True
+    )
+    named = TrainableGroup(
+        "full:text:embedding:1000x64", "full", n, "bfloat16", 1, receives_grad=True
+    )
+    (emb,) = executed_slices([flagged], inv, cfg)
+    (plain,) = executed_slices([named], inv, cfg)
+    assert emb.tensors == ((n, True),) and plain.tensors == ((n, False),)
+    assert eight_bit_state_bytes(emb, 4096, 256) == (8 * n, 8 * n)
+    packed = 2 * n + 8 * math.ceil(n / 256)
+    assert eight_bit_state_bytes(plain, 4096, 256) == (packed, packed)
+
+
+def test_unflagged_groups_map_embeddings_from_the_inventory() -> None:
+    # receives_grad None: the inventory (tensor roles), not the group name, decides
+    inv = make_inventory()
+    cfg = make_cfg(Objective.SFT, Strategy.FULL, inventory=inv, optimizer="adamw_8bit")
+    total = sum(t.numel for t in inv.tensors)
+    (s,) = executed_slices([TrainableGroup("full", "full", total, "bfloat16", 1)], inv, cfg)
+    assert s.exact and s.tensors is not None
+    embeddings = [numel for numel, emb in s.tensors if emb]
+    assert embeddings == [t.numel for t in inv.tensors if t.role.value == "embedding"]
 
 
 def test_modules_to_save_copy_trains_and_saves_lm_head_input() -> None:

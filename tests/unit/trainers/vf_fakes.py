@@ -412,18 +412,21 @@ def _alloc(name, category, size, live_at, *, saved=False, note=None) -> Allocati
     )
 
 
-@dataclass(frozen=True)
-class FlaggedGroup(TrainableGroup):
-    """Mimics the repository adapters: one group per tensor shape plus `receives_grad`."""
-
-    receives_grad: bool = True
-    component: str = "text"
-
-
-def _flagged(groups: dict[tuple[str, str, bool], list[int]], kind: str, dtype: str):
+def _flagged(groups: dict[tuple[str, str, bool, bool], list[int]], kind: str, dtype: str):
+    """Plain contract groups with explicit flags, one per tensor shape (repository adapters).
+    Names carry no role markers, so only the flags can tell an embedding apart."""
     return [
-        FlaggedGroup(name, kind, sum(sizes), dtype, len(sizes), "", executed, comp)
-        for (name, comp, executed), sizes in groups.items()
+        TrainableGroup(
+            name,
+            kind,  # type: ignore[arg-type]
+            sum(sizes),
+            dtype,
+            len(sizes),
+            receives_grad=executed,
+            component=comp,
+            is_embedding=embedding,
+        )
+        for (name, comp, executed, embedding), sizes in groups.items()
     ]
 
 
@@ -435,7 +438,7 @@ class FakeArch:
     adapter_id: str = "fake"
     unknown_activations: bool = False
     vision_lora_group: bool = False  # split LoRA into text + vision groups
-    flagged_groups: bool = False  # per-shape groups with receives_grad (repository adapters)
+    flagged_groups: bool = False  # per-shape groups with contract flags (repository adapters)
     load_budget: int | None = None  # S_load reported by `loading_budget_bytes` (None: absent)
     final_hidden: bool = False  # emit the final-norm output under the "<prefix>.final_hidden" alias
 
@@ -473,12 +476,17 @@ class FakeArch:
         ]
 
     def _flagged_groups(self, inventory, cfg):
-        shapes: dict[tuple[str, str, bool], list[int]] = {}
+        shapes: dict[tuple[str, str, bool, bool], list[int]] = {}
         if cfg.strategy is Strategy.FULL:
             for t in inventory.tensors:
                 comp = t.component.value
-                role = "embedding:" if t.role is TensorRole.EMBEDDING else ""
-                key = (f"full:{comp}:{role}{'x'.join(map(str, t.shape))}", comp, comp == "text")
+                embedding = t.role is TensorRole.EMBEDDING
+                key = (
+                    f"full:{comp}:{'x'.join(map(str, t.shape))}",
+                    comp,
+                    comp == "text",
+                    embedding,
+                )
                 shapes.setdefault(key, []).append(t.numel)
             return _flagged(shapes, "full", cfg.load_dtype)
         by = {m.name: m for m in inventory.linear_modules}
@@ -487,9 +495,8 @@ class FakeArch:
             comp = m.component.value
             for part, size in (("A", f"16x{m.in_features}"), ("B", f"{m.out_features}x16")):
                 numel = 16 * (m.in_features if part == "A" else m.out_features)
-                shapes.setdefault((f"lora:{part}:{comp}:{size}", comp, comp == "text"), []).append(
-                    numel
-                )
+                key = (f"lora:{part}:{comp}:{size}", comp, comp == "text", False)
+                shapes.setdefault(key, []).append(numel)
         return _flagged(shapes, "lora", cfg.effective_dtypes.adapter)
 
     def trainable_groups(self, inventory, cfg):
@@ -649,7 +656,6 @@ __all__ = [
     "LOAD_TRANSIENT",
     "WEIGHTS",
     "FakeArch",
-    "FlaggedGroup",
     "H",
     "V",
     "all_targets",

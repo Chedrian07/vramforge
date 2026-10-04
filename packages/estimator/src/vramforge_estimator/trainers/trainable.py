@@ -6,9 +6,11 @@ TRL never freezes a vision tower and text-only data never runs it, so such param
 weights resident but get no gradient and no AdamW state (docs/research/loading-quantization-peft.md
 §Q8.4, trl-sft-dpo.md V-19, trl-grpo.md verification #15).
 
-Adapters may report `TrainableGroup.receives_grad` (the architecture adapters of this repository
-do); when it is None the groups are mapped onto inventory modules. When neither works the
-whole bucket is treated as executed (conservative) and the slice says so.
+The contract flags drive the split: `TrainableGroup.receives_grad` says whether a group executes
+and `is_embedding` marks nn.Embedding parameters (bnb 8-bit optimizers keep 32-bit state for
+them); the architecture adapters of this repository set both. Groups whose `receives_grad` is None
+are mapped onto inventory modules (tensor roles decide embeddings). When neither works the whole
+bucket is treated as executed (conservative) and the slice says so.
 """
 
 from __future__ import annotations
@@ -94,20 +96,8 @@ def _skipped_note(kind: str, skipped: int) -> str:
     )
 
 
-def _embedding_group(group: TrainableGroup, inventory: ModelInventory) -> bool:
-    """nn.Embedding parameters keep 32-bit state under bnb 8-bit optimizers. Uses the group naming
-    of this repository's architecture adapters ("full:<component>:embedding:<shape>",
-    "modules_to_save:<module>[:<shape>]")."""
-    if group.kind == "full":
-        return ":embedding:" in group.name
-    if group.kind == "modules_to_save":
-        module = group.name.split(":")[1] if ":" in group.name else ""
-        return any(t.module == module and t.role is TensorRole.EMBEDDING for t in inventory.tensors)
-    return False
-
-
 def _from_flags(
-    name: str, kind: str, dtype: str, groups: Sequence[TrainableGroup], inventory: ModelInventory
+    name: str, kind: str, dtype: str, groups: Sequence[TrainableGroup]
 ) -> TrainableSlice:
     executed = [g for g in groups if g.receives_grad is not False]
     tensors: list[tuple[int, bool]] = []
@@ -115,9 +105,7 @@ def _from_flags(
     for g in executed:
         # The adapters group tensors of one shape, so every tensor of a group has numel/count.
         if g.tensor_count > 0 and g.numel % g.tensor_count == 0:
-            tensors += [
-                (g.numel // g.tensor_count, _embedding_group(g, inventory))
-            ] * g.tensor_count
+            tensors += [(g.numel // g.tensor_count, g.is_embedding)] * g.tensor_count
         else:
             per_tensor_known = False
     numel = sum(g.numel for g in groups)
@@ -217,7 +205,7 @@ def executed_slices(
     for (kind, dtype), members in buckets.items():
         name = kind if dtypes_per_kind[kind] == 1 else f"{kind}:{dtype}"
         if all(isinstance(g.receives_grad, bool) for g in members):
-            out.append(_from_flags(name, kind, dtype, members, inventory))
+            out.append(_from_flags(name, kind, dtype, members))
         else:
             out.append(_from_inventory(name, kind, dtype, members, inventory, cfg))
     return out
