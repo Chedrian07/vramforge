@@ -117,6 +117,8 @@ class ResolvedConfig(VFModel):
     objective: Objective
     strategy: Strategy
     loading_scope: Literal["full_checkpoint", "text_only"]
+    load_dtype: str  # dtype the trainer loads the checkpoint in (before quantization)
+    processing_class: Literal["tokenizer", "processor"] = "tokenizer"
     effective_dtypes: EffectiveDtypes
     quantization: QuantizationResolved
     upcast_to_fp32_patterns: list[str] = Field(default_factory=list)
@@ -128,6 +130,7 @@ class ResolvedConfig(VFModel):
     pad_to_multiple_of: int | None = None
     gradient_checkpointing: bool
     checkpointing_granularity: Literal["none", "per_decoder_layer"]
+    # e.g. {"full_attention": "sdpa", "linear_attention": "torch_fallback"}
     attention_path_by_layer_type: dict[str, str] = Field(default_factory=dict)
     loss_path: str
     use_cache_during_training: bool = False

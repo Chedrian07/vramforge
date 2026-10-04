@@ -81,6 +81,8 @@ from .request import (
     EmptySystemPolicy,
     GrpoConfig,
     HardwareConfig,
+    LinearAttentionKernel,
+    LoadDtype,
     LoadingScope,
     LoraBias,
     LoraConfig,

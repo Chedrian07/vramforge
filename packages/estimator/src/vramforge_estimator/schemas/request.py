@@ -143,6 +143,33 @@ class AttentionBackend(StrEnum):
     FLASH_ATTENTION_2 = "flash_attention_2"
 
 
+class LinearAttentionKernel(StrEnum):
+    """Kernel path of linear-attention (e.g. Gated DeltaNet) layers in the training environment.
+
+    The path is chosen at import time by what is installed (docs/research/architecture-memory.md):
+    `torch_fallback` (no flash-linear-attention / causal-conv1d) upcasts to fp32 and saves every
+    chunk state; `fla` uses the fused kernels. AUTO = the environment profile's installed set.
+    """
+
+    AUTO = "auto"
+    TORCH_FALLBACK = "torch_fallback"
+    FLA = "fla"
+
+
+class LoadDtype(StrEnum):
+    """dtype passed when the trainer loads the model (TRL `model_init_kwargs["dtype"]`).
+
+    TRL 1.14.1 loads string model ids in float32 unless a dtype is given
+    (docs/research/loading-quantization-peft.md). AUTO = the profile preset, which the exported
+    trainer config pins explicitly.
+    """
+
+    AUTO = "auto"
+    BFLOAT16 = "bfloat16"
+    FLOAT16 = "float16"
+    FLOAT32 = "float32"
+
+
 class LossKernel(StrEnum):
     AUTO = "auto"
     STANDARD = "standard"
@@ -173,7 +200,9 @@ class TrainingConfig(VFModel):
     gradient_checkpointing: bool = True
     precision: Precision = Precision.AUTO
     optimizer: OptimizerName = OptimizerName.ADAMW_TORCH
+    load_dtype: LoadDtype = LoadDtype.AUTO
     attention_backend: AttentionBackend = AttentionBackend.AUTO
+    linear_attention_kernel: LinearAttentionKernel = LinearAttentionKernel.AUTO
     loss_kernel: LossKernel = LossKernel.AUTO
     packing: bool = False
     pad_to_multiple_of: int | None = Field(default=None, ge=1, le=4096)
