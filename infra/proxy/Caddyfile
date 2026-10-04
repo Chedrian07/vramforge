@@ -16,10 +16,10 @@
 	}
 
 	handle /api/* {
-		# Upper bound for request bodies (dataset uploads). The API enforces its own, smaller
-		# limit and answers with a structured error; this only stops oversized streams early.
+		# Body cap matching the API upload limit (2 GiB default) plus 1 MiB of multipart framing,
+		# so the API, not the proxy, answers uploads near the limit with a structured error.
 		request_body {
-			max_size {$VRAMFORGE_PROXY_MAX_BODY_SIZE:10GB}
+			max_size {$VRAMFORGE_PROXY_MAX_BODY_SIZE:2049MiB}
 		}
 		# No flush_interval is needed: Caddy flushes text/event-stream responses immediately
 		# (reverseproxy/streaming.go Handler.flushInterval, stack-compat.md §8 V22). Upstream
