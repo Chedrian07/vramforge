@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import ErrorCode, Issue, Severity, Stage
@@ -288,12 +289,12 @@ def _failed_row(index: int, shard_id: str, error: RowError) -> FailedSourceRow:
     )
 
 
-def _positions(detail: dict[str, object]) -> dict[str, object]:
+def _positions(detail: dict[str, object]) -> dict[str, Any]:
     return {key: value for key, value in detail.items() if key in ("line", "element", "row_group")}
 
 
 def _issue(
-    code: ErrorCode, message: str, *, severity: Severity = Severity.ERROR, **details: object
+    code: ErrorCode, message: str, *, severity: Severity = Severity.ERROR, **details: Any
 ) -> Issue:
     return make_issue(
         code, message, severity=severity, stage=Stage.TOKENIZING, component="dataset", **details

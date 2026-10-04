@@ -24,7 +24,7 @@ import lzma
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
 from vramforge_estimator.units import GiB, MiB
 
@@ -321,11 +321,11 @@ def open_decoded(source: FileSource, compression: str | None, limits: ReaderLimi
     """Open a text-format file as a buffered byte stream, decompressing under a byte quota."""
     raw = source.open_raw()
     if compression is None:
-        return raw if isinstance(raw, io.BufferedIOBase) else io.BufferedReader(raw)  # type: ignore[arg-type]
+        return raw if isinstance(raw, io.BufferedIOBase) else io.BufferedReader(cast(Any, raw))
     if compression not in STREAM_COMPRESSIONS:
         raw.close()
         raise UnsupportedFormat("compression_not_supported", compression=compression)
-    decoded: IO[bytes]
+    decoded: Any
     if compression == "gzip":
         decoded = gzip.GzipFile(fileobj=raw, mode="rb")
     elif compression == "bz2":

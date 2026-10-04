@@ -398,7 +398,7 @@ class _JsonReader:
     def _records(self, records: list[tuple[int, bytes]], *, kind: str) -> Iterator[ReadItem]:
         """Record-by-record fallback for a batch that failed as a whole."""
         good: list[tuple[int, bytes]] = []
-        outcome: dict[int, ReadItem | list[dict[str, Any]]] = {}
+        outcome: dict[int, RowError | list[dict[str, Any]]] = {}
         for position, line in records:
             reason = _record_problem(line)
             if reason is not None:
