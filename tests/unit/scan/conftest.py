@@ -127,7 +127,8 @@ class FakeCtx:
 
 class FakeSftAdapter:
     """Row {"len": n, "prompt": p} -> SFT record; {"fail": True} fails; {"lossy": True} loses
-    template content; {"system": ""} counts as one omitted system message, {"omitted": k} as k."""
+    template content; {"system": ""} counts as one omitted system message, {"omitted": k} as k;
+    {"boundary": True}, {"dup": True} and {"literal": [...]} raise the matching adapter findings."""
 
     name = "fake-sft"
     version = "1"
@@ -158,6 +159,12 @@ class FakeSftAdapter:
             extras["system_omitted"] = int(row["omitted"])
         if "digest" in row:
             extras["token_digest"] = row["digest"]
+        if row.get("boundary"):
+            extras["prefix_mismatch"] = True
+        if row.get("dup"):
+            extras["duplicate_eos"] = True
+        if row.get("literal"):
+            extras["special_token_literal"] = list(row["literal"])
         return TokenizedRecord(
             row_id=row_id,
             objective=self.objective,

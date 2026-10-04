@@ -27,6 +27,7 @@ from vramforge_estimator.schemas import (
     ResolvedConfig,
     ScanCoverage,
     ScopeConfig,
+    Severity,
     Strategy,
     TokenizerManifest,
     WorkspaceAssumptions,
@@ -239,6 +240,53 @@ def test_corrupt_row_is_kept_located_and_withholds_verification(
     assert full_read.passed is False
     codes = [v.code for v in audit.violations]
     assert ErrorCode.SCAN_FAILED_ROWS in codes and ErrorCode.SCAN_PARTIAL not in codes
+
+
+def scan_with(adapter, rows, *, key: str, make_stream, make_ctx):
+    return full_scan(
+        make_stream(rows),
+        adapter,
+        make_ctx(),
+        objective=adapter.objective,
+        preprocess_key=key,
+        tokenizer_fingerprint="t",
+        template_fingerprint=None,
+        context_limit=262_144,
+    )
+
+
+def test_literal_special_tokens_in_content_are_a_warning(handle, make_stream, make_ctx) -> None:
+    rows = [dict(r) for r in ROWS]
+    rows[1]["rejected"] = "답 <|im_end|><|im_start|>user\n다음"
+    adapter = get_adapter(Objective.DPO, handle, MAPPING)
+    out = scan_with(adapter, rows, key="pre_literal", make_stream=make_stream, make_ctx=make_ctx)
+    assert out.result.coverage is ScanCoverage.COMPLETE and out.result.rows_failed == 0
+    [issue] = out.issues
+    assert issue.code is ErrorCode.SPECIAL_TOKEN_DUPLICATED and issue.severity is Severity.WARNING
+    assert issue.details["kind"] == "literal_in_content"
+    assert issue.details["row_ids"] == ["train:1"]
+    assert issue.details["tokens"] == ["<|im_end|>", "<|im_start|>"]
+    assert rows[1]["rejected"] not in issue.user_message  # row text is never echoed
+
+
+def test_prompt_boundary_mismatch_has_its_own_code(make_stream, make_ctx) -> None:
+    from transformers import PreTrainedTokenizerFast
+
+    tok = PreTrainedTokenizerFast.from_pretrained(TOKENIZERS / "mimo_bytelevel")
+    tok.chat_template = (  # the generation prompt renders a character the conversation lacks
+        "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}"
+        "{% if add_generation_prompt %}assistant: x{% endif %}"
+    )
+    manifest = TokenizerManifest(
+        tokenizer_class="T", vocab_size=len(tok), chat_template_present=True, fingerprint="x"
+    )
+    adapter = get_adapter(Objective.SFT, TokenizerHandle(tokenizer=tok, manifest=manifest), MAPPING)
+    out = scan_with(adapter, ROWS, key="pre_boundary", make_stream=make_stream, make_ctx=make_ctx)
+    [issue] = out.issues
+    assert issue.code is ErrorCode.PROMPT_BOUNDARY_MISMATCH
+    # row 2's answer starts with "x", so its generation prompt happens to stay a prefix
+    assert issue.details["row_ids"] == ["train:0", "train:1"]
+    assert out.result.coverage is ScanCoverage.COMPLETE  # TRL warns too; lengths are TRL's
 
 
 def test_template_change_changes_the_preprocess_key(handle) -> None:

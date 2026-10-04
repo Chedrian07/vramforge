@@ -15,6 +15,7 @@ from vramforge_estimator.schemas import (
     LengthRecord,
     Objective,
     ScanCoverage,
+    Severity,
 )
 
 LENGTHS = [120, 300, 40, 300, 75, 9, 210]
@@ -153,7 +154,7 @@ def test_empty_split_is_failed_with_empty_dataset(make_stream, adapter, ctx) -> 
 
 
 def test_reader_empty_dataset_issue_is_not_repeated(make_stream, adapter, ctx) -> None:
-    from vramforge_estimator.schemas import Issue, Severity
+    from vramforge_estimator.schemas import Issue
 
     class EmptyStream(make_stream):
         def __iter__(self):
@@ -327,6 +328,9 @@ def test_resume_after_worker_death_matches_a_clean_run(
     make_stream, make_ctx, make_adapter, tmp_path
 ) -> None:
     data = rows(list(range(10, 260, 10)))  # 25 rows
+    data[3]["literal"] = ["<|im_end|>"]  # findings before the crash must survive the resume
+    data[5]["system"] = ""
+    data[20]["literal"] = ["<think>"]
     limits = ScanLimits(checkpoint_every_rows=4)
 
     clean_ctx = make_ctx(limits=limits)
@@ -348,6 +352,9 @@ def test_resume_after_worker_death_matches_a_clean_run(
     assert second_adapter.calls == [f"train:{i}" for i in range(12, 25)]
     assert resumed.result.rows_seen == 25 and resumed.result.coverage is ScanCoverage.COMPLETE
     assert resumed.result.branches == clean.result.branches
+    assert resumed.issues == clean.issues and len(clean.issues) == 1
+    assert clean.issues[0].details["tokens"] == ["<think>", "<|im_end|>"]
+    assert resumed.result.omitted_system_messages == clean.result.omitted_system_messages == 1
     assert load_lengths(resumed.artifact_path).sequence_tokens == [r["len"] for r in data]
     assert not (resumed.artifact_path / "part-00009.parquet").exists()
 
@@ -419,6 +426,40 @@ def test_omitted_system_messages_applicability(
     out = scan(make_stream(data), adapter, ctx)
     assert out.result.omitted_system_messages == expected
     assert out.result.mapping_applied == adapter.mapping
+
+
+def test_adapter_findings_use_their_dedicated_codes(make_stream, adapter, ctx) -> None:
+    data = [
+        {"len": 10, "boundary": True},
+        {"len": 11, "dup": True},
+        {"len": 12, "literal": ["<|im_end|>"]},
+        {"len": 13, "literal": ["<think>", "<|im_end|>"]},
+        {"len": 14},
+    ]
+    out = scan(make_stream(data), adapter, ctx)
+    assert out.result.coverage is ScanCoverage.COMPLETE  # findings never fail rows
+    by_kind = {(i.code, i.details.get("kind")): i for i in out.issues}
+    assert set(by_kind) == {
+        (ErrorCode.PROMPT_BOUNDARY_MISMATCH, None),
+        (ErrorCode.SPECIAL_TOKEN_DUPLICATED, "duplicate_bos_eos"),
+        (ErrorCode.SPECIAL_TOKEN_DUPLICATED, "literal_in_content"),
+    }
+    assert all(i.severity is Severity.WARNING for i in out.issues)
+    assert by_kind[ErrorCode.PROMPT_BOUNDARY_MISMATCH, None].details["row_ids"] == ["train:0"]
+    duplicated = by_kind[ErrorCode.SPECIAL_TOKEN_DUPLICATED, "duplicate_bos_eos"]
+    assert duplicated.details["row_ids"] == ["train:1"]
+    literal = by_kind[ErrorCode.SPECIAL_TOKEN_DUPLICATED, "literal_in_content"]
+    assert literal.details["rows"] == 2 and literal.details["row_ids"] == ["train:2", "train:3"]
+    assert literal.details["tokens"] == ["<think>", "<|im_end|>"]
+    assert "<think>, <|im_end|>" in literal.user_message and "row가 2개" in literal.user_message
+    assert out.template_content_loss_rows == 0
+
+
+def test_literal_token_list_is_capped(make_stream, adapter, ctx) -> None:
+    data = [{"len": 5, "literal": [f"<tok_{i:02d}>" for i in range(30)]}]
+    issue = scan(make_stream(data), adapter, ctx).issues[0]
+    assert issue.details["tokens"] == [f"<tok_{i:02d}>" for i in range(20)]
+    assert "<tok_04> 등)" in issue.user_message  # five shown, the rest summarized
 
 
 def test_reader_decode_failures_keep_their_reason(make_stream, adapter, ctx) -> None:

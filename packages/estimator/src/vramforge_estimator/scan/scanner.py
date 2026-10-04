@@ -69,7 +69,9 @@ CANCEL_CHECK_ROWS = 16
 # Monotonic clock; tests may replace it.
 clock: Callable[[], float] = time.monotonic
 
-_DIAGNOSTICS = ("template_loss", "prefix_mismatch", "special_token")
+_DIAGNOSTICS = ("template_loss", "prefix_mismatch", "special_token", "special_literal")
+LITERAL_TOKEN_LIMIT = 20  # distinct added-token strings kept for the literal-token issue
+_TOKEN_DISPLAY_CHARS = 40
 _FINAL_MESSAGES = {
     ScanCoverage.COMPLETE: "데이터셋 전체 토큰화를 마쳤습니다.",
     ScanCoverage.PARTIAL: "데이터셋을 끝까지 확인하지 못했습니다. 통계는 처리한 row까지의 값이며 "
@@ -121,6 +123,7 @@ class _State:
     parts: list[str] = field(default_factory=list)
     accumulators: dict[Branch, LengthAccumulator] = field(default_factory=dict)
     failed_sample: list[dict[str, Any]] = field(default_factory=list)
+    literal_tokens: list[str] = field(default_factory=list)  # sorted, distinct, capped
     diag_counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(_DIAGNOSTICS, 0))
     diag_samples: dict[str, list[str]] = field(
         default_factory=lambda: {k: [] for k in _DIAGNOSTICS}
@@ -130,6 +133,10 @@ class _State:
         self.diag_counts[kind] += 1
         if len(self.diag_samples[kind]) < ROW_ID_SAMPLE_LIMIT:
             self.diag_samples[kind].append(row_id)
+
+    def add_literal_tokens(self, tokens: list[Any]) -> None:
+        merged = set(self.literal_tokens) | {t for t in tokens if isinstance(t, str)}
+        self.literal_tokens = sorted(merged)[:LITERAL_TOKEN_LIMIT]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,6 +150,7 @@ class _State:
             "parts": list(self.parts),
             "accumulators": {b.value: a.to_state() for b, a in self.accumulators.items()},
             "failed_sample": list(self.failed_sample),
+            "literal_tokens": list(self.literal_tokens),
             "diag_counts": dict(self.diag_counts),
             "diag_samples": {k: list(v) for k, v in self.diag_samples.items()},
         }
@@ -162,6 +170,7 @@ class _State:
                 Branch(b): LengthAccumulator.from_state(s) for b, s in data["accumulators"].items()
             },
             failed_sample=list(data["failed_sample"]),
+            literal_tokens=[str(t) for t in data.get("literal_tokens", [])],
             diag_counts={k: int(data["diag_counts"].get(k, 0)) for k in _DIAGNOSTICS},
             diag_samples={k: list(data["diag_samples"].get(k, [])) for k in _DIAGNOSTICS},
         )
@@ -572,6 +581,10 @@ def _account(
             state.note("prefix_mismatch", row_id)
         if rec.extras.get("duplicate_bos") or rec.extras.get("duplicate_eos"):
             state.note("special_token", row_id)
+        literal = rec.extras.get("special_token_literal")
+        if isinstance(literal, list) and literal:
+            state.note("special_literal", row_id)
+            state.add_literal_tokens(literal)
         omitted = rec.extras.get("system_omitted")
         if isinstance(omitted, int) and omitted > 0:
             state.omitted_system_messages += omitted  # messages, not rows
@@ -768,12 +781,11 @@ def _issues(state: _State, stream: RowStream, ending: _Ending, limits: ScanLimit
     if mismatch:
         issues.append(
             _issue(
-                ErrorCode.TEMPLATE_CONTENT_LOSS,
+                ErrorCode.PROMPT_BOUNDARY_MISMATCH,
                 Severity.WARNING,
                 f"prompt만 토큰화한 결과가 prompt+응답 토큰화 결과의 앞부분과 다른 row가 "
                 f"{mismatch:,}개 있습니다. TRL도 경고만 하고 같은 방식으로 자르므로 길이는 "
                 "TRL과 동일하게 계산했지만 loss 경계가 어긋날 수 있습니다.",
-                kind="prompt_boundary_mismatch",
                 rows=mismatch,
                 row_ids=state.diag_samples["prefix_mismatch"],
             )
@@ -782,16 +794,41 @@ def _issues(state: _State, stream: RowStream, ending: _Ending, limits: ScanLimit
     if special:
         issues.append(
             _issue(
-                ErrorCode.TEMPLATE_CONTENT_LOSS,
+                ErrorCode.SPECIAL_TOKEN_DUPLICATED,
                 Severity.WARNING,
                 f"BOS 또는 EOS 토큰이 연속으로 두 번 들어간 row가 {special:,}개 있습니다 "
                 "(원문에 special token 문자열이 포함된 경우). TRL과 같은 길이로 계산했습니다.",
-                kind="duplicate_special_token",
+                kind="duplicate_bos_eos",
                 rows=special,
                 row_ids=state.diag_samples["special_token"],
             )
         )
+    literal = state.diag_counts["special_literal"]
+    if literal:
+        issues.append(_literal_tokens_issue(state, literal))
     return issues
+
+
+def _literal_tokens_issue(state: _State, rows: int) -> Issue:
+    """Content that spells out an added token (docs/research/example-model-dataset.md R7b): the
+    tokenizer turns it into that control token in training as well, so it is a warning only."""
+    shown = [
+        t if len(t) <= _TOKEN_DISPLAY_CHARS else t[: _TOKEN_DISPLAY_CHARS - 3] + "..."
+        for t in state.literal_tokens[:5]
+    ]
+    more = " 등" if len(state.literal_tokens) > len(shown) else ""
+    return _issue(
+        ErrorCode.SPECIAL_TOKEN_DUPLICATED,
+        Severity.WARNING,
+        f"매핑된 content 안에 tokenizer의 special/added token 문자열({', '.join(shown)}{more})이 "
+        f"그대로 들어 있는 row가 {rows:,}개 있습니다. 이 문자열은 일반 글자가 아니라 해당 token "
+        "하나로 토큰화되어 모델이 제어 token으로 받습니다(TRL 학습에서도 같음). 길이는 TRL과 "
+        "같게 계산했으며, 의도한 것이 아니라면 데이터의 해당 문자열을 확인하세요.",
+        kind="literal_in_content",
+        rows=rows,
+        row_ids=state.diag_samples["special_literal"],
+        tokens=list(state.literal_tokens),
+    )
 
 
 def load_lengths(artifact_path: Path) -> LengthTable:
