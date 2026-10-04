@@ -26,7 +26,16 @@ docker compose up -d --build
 ```bash
 docker compose up -d --build --wait
 docker compose ps                      # 모든 서비스 healthy, migrate는 Exited (0)
-sh infra/scripts/smoke-test.sh         # 프록시 → /api/v1/health, 웹 루트, 보안 헤더 확인
+sh infra/scripts/smoke-test.sh         # 프록시 → /api/v1/health(db·redis·worker 모두 ok), 웹 루트, 보안 헤더
+```
+
+분석 한 건을 끝까지 돌려 보려면 저장소의 작은 테스트용 모델·데이터셋(`tests/fixtures`)으로 오프라인 분석을 실행합니다. GPU와 Hugging Face 접속이 필요 없고, CI도 같은 검사를 합니다. 확인용 폴더를 잠시 `/sources/local`에 연결하므로, 끝나면 마지막 명령으로 원래 mount로 되돌립니다. 분석 기록은 스크립트가 지웁니다.
+
+```bash
+python3 infra/scripts/analysis_smoke.py prepare /tmp/vramforge-smoke     # 비어 있는 새 폴더
+VRAMFORGE_LOCAL_SOURCES_DIR=/tmp/vramforge-smoke docker compose up -d --wait
+python3 infra/scripts/analysis_smoke.py run   # DPO+LoRA 전체 스캔 → COMPLETED, coverage complete
+docker compose up -d --wait                   # 원래 local-sources mount로 복귀
 ```
 
 | 동작 | 명령 | 데이터 |

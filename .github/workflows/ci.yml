@@ -1,7 +1,8 @@
 # VRAMForge CI (docs/goals.md M0-5, Q5).
 #   python  ruff lint + format check, .env.example/compose consistency, pytest (no network)
 #   web     pnpm install --frozen-lockfile, lint, typecheck, test, build (apps/web)
-#   docker  zero-.env compose config, build, up --wait, smoke test, down -v
+#   docker  zero-.env compose config, build, up --wait, smoke test, one offline full analysis
+#           through the proxy (tiny fixtures, no GPU, no Hugging Face), down -v
 #           on linux/amd64 and linux/arm64 runners
 # Third-party actions are pinned to full commit SHAs (tag in the trailing comment).
 
@@ -146,11 +147,19 @@ jobs:
       - name: Build every service
         run: docker compose build
 
+      - name: Prepare offline local sources (tiny model and dataset from tests/fixtures)
+        run: python3 infra/scripts/analysis_smoke.py prepare "$RUNNER_TEMP/local-sources"
+
       - name: Start the stack and wait until every service is healthy
+        env:
+          VRAMFORGE_LOCAL_SOURCES_DIR: ${{ runner.temp }}/local-sources
         run: docker compose up -d --wait --wait-timeout 300
 
       - name: Smoke test through the proxy
         run: sh infra/scripts/smoke-test.sh http://127.0.0.1:8080
+
+      - name: Full analysis through the proxy without a GPU (plan.md §19.4)
+        run: python3 infra/scripts/analysis_smoke.py run http://127.0.0.1:8080
 
       - name: Diagnostics
         if: failure()
