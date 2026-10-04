@@ -14,6 +14,7 @@ from vramforge_estimator.architectures import (
     GenerationTimepoints,
     StepTimepoints,
     TrainableGroup,
+    final_hidden_alias,
 )
 from vramforge_estimator.schemas import (
     AllocationCategory,
@@ -561,7 +562,7 @@ class FakeArch:
                 [tps.forward, tps.loss],
             )
             extra.append(
-                hidden.model_copy(update={"storage_alias_group": f"{prefix}.final_hidden"})
+                hidden.model_copy(update={"storage_alias_group": final_hidden_alias(prefix)})
             )
         return [
             *extra,

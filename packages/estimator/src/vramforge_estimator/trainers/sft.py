@@ -26,6 +26,7 @@ from vramforge_estimator.units import dtype_bytes, tensor_bytes
 
 from .base import TrainingSchedule
 from .common import (
+    POLICY_PREFIX,
     ScheduleBuilder,
     add_model_weights,
     add_scope_phases,
@@ -236,7 +237,7 @@ class SftTrainer:
         add_model_weights(b, arch, inventory, cfg, load)
         seq = SequenceShape(batch=shape.sequences_per_forward, seq_len=shape.padded_length)
         acts = arch.train_step_ledger(
-            inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), "policy"
+            inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), POLICY_PREFIX
         )
         b.add(extend_live_at(acts, loss, [loss_bwd]))
         hidden, vocab = arch.lm_head_dims(inventory)

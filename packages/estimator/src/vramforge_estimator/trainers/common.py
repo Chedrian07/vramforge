@@ -14,7 +14,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from vramforge_estimator.architectures import ArchitectureAdapter
+from vramforge_estimator.architectures import ArchitectureAdapter, final_hidden_alias
 from vramforge_estimator.schemas import (
     AllocationCategory,
     AllocationSpec,
@@ -47,10 +47,12 @@ DEVICE_MAP_BUDGET = {"quantized": Fraction(81, 100), "dense": Fraction(9, 10)}
 MIN_BLOCK_BYTES = 512
 # bitsandbytes 8-bit optimizers share two 256-entry fp32 quantization maps per optimizer.
 BNB_QMAP_BYTES = 2 * 256 * 4
-# Storage alias of the final-norm output (= LM-head input) in the architecture adapters' train-step
-# ledger (`architectures/ledger.py`: "<prefix>.final_hidden"; trainers pass the prefix "policy").
-# A trainable lm_head saves that same tensor, so it shares the alias and is counted once.
-FINAL_HIDDEN_ALIAS = "policy.final_hidden"
+# Prefix every trainer passes to the policy's `train_step_ledger`. The architecture contract names
+# the storage alias of that ledger's final-norm output (= LM-head input)
+# `final_hidden_alias(prefix)`; a trainable lm_head saves that same tensor, so it shares the alias
+# and is counted once.
+POLICY_PREFIX = "policy"
+FINAL_HIDDEN_ALIAS = final_hidden_alias(POLICY_PREFIX)
 
 
 def ref(anchor: str) -> str:
@@ -269,13 +271,12 @@ def load_budget_bytes(
 ) -> tuple[int | None, int | None, bool]:
     """(low, high, exact) of `S_load`, the module sizes transformers' `device_map="auto"` places:
     4-bit weights at 0.5 B/param, other tensors in the load dtype (docs/research/
-    loading-quantization-peft.md §3.5, verified V9). Adapters that expose `loading_budget_bytes`
-    give it exactly; otherwise the resident weights (with 4-bit metadata) bound it from above."""
-    exact = getattr(arch, "loading_budget_bytes", None)
-    if callable(exact):
-        value = exact(inventory, cfg)
-        if isinstance(value, int) and value > 0:
-            return value, value, True
+    loading-quantization-peft.md §3.5, verified V9). The architecture adapter's
+    `loading_budget_bytes` gives it exactly; an adapter that cannot size it (no positive int)
+    falls back to the resident weights (with 4-bit metadata), which bound it from above."""
+    value = arch.loading_budget_bytes(inventory, cfg)
+    if isinstance(value, int) and value > 0:
+        return value, value, True
     lows = [w.bytes_low for w in weights]
     highs = [w.bytes_high for w in weights]
     if not weights or any(v is None for v in [*lows, *highs]):
@@ -643,6 +644,7 @@ def common_assumptions(b: ScheduleBuilder, cfg: ResolvedConfig) -> None:
 __all__ = [
     "DEVICE_MAP_BUDGET",
     "FINAL_HIDDEN_ALIAS",
+    "POLICY_PREFIX",
     "LoadedModel",
     "ScheduleBuilder",
     "add_model_weights",

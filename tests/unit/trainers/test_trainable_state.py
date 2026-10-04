@@ -19,7 +19,7 @@ from vf_fakes import (
     text_targets,
 )
 
-from vramforge_estimator.architectures import TrainableGroup
+from vramforge_estimator.architectures import TrainableGroup, final_hidden_alias
 from vramforge_estimator.memory import evaluate
 from vramforge_estimator.schemas import (
     AllocationCategory,
@@ -29,6 +29,7 @@ from vramforge_estimator.schemas import (
     Strategy,
 )
 from vramforge_estimator.trainers import get_trainer
+from vramforge_estimator.trainers.common import FINAL_HIDDEN_ALIAS, POLICY_PREFIX
 from vramforge_estimator.trainers.ledger import alive_by_timepoint, contributions
 from vramforge_estimator.trainers.trainable import executed_slices, lora_rank
 
@@ -132,19 +133,19 @@ def test_modules_to_save_copy_trains_and_saves_lm_head_input() -> None:
 
 
 def test_trainable_lm_head_input_is_the_final_hidden_storage() -> None:
-    # The architecture ledger already reports the final-norm output (= lm_head input) under the
-    # "policy.final_hidden" alias; the trainable lm_head saves that same tensor.
+    # The architecture ledger reports the final-norm output (= lm_head input) under the contract
+    # alias `final_hidden_alias(prefix)`; the trainable lm_head saves that same tensor.
+    alias = final_hidden_alias(POLICY_PREFIX)
+    assert alias == FINAL_HIDDEN_ALIAS == "policy.final_hidden"
     inv = make_inventory()
     cfg = make_cfg(Objective.SFT, Strategy.FULL, inventory=inv, loss_path="hf_ce")
     sched = build(cfg, inv, FakeArch(final_hidden=True))
     head = by_name(sched, "lm_head.input")
-    hidden = by_name(sched, "policy.final_hidden")
-    assert head.storage_alias_group == hidden.storage_alias_group == "policy.final_hidden"
+    hidden = by_name(sched, f"{POLICY_PREFIX}.final_hidden")
+    assert head.storage_alias_group == hidden.storage_alias_group == alias
     loss = "POLICY_FORWARD_BACKWARD:loss"
     alive = alive_by_timepoint(sched.timepoints, sched.allocations)[loss]
-    shared = [
-        c for c in contributions(alive) if c.spec.storage_alias_group == "policy.final_hidden"
-    ]
+    shared = [c for c in contributions(alive) if c.spec.storage_alias_group == alias]
     assert len(shared) == 1 and shared[0].bytes_high == head.bytes_high == hidden.bytes_high
 
 

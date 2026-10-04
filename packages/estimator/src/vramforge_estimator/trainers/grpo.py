@@ -39,6 +39,7 @@ from vramforge_estimator.units import tensor_bytes
 
 from .base import TrainingSchedule
 from .common import (
+    POLICY_PREFIX,
     ScheduleBuilder,
     add_model_weights,
     add_scope_phases,
@@ -326,7 +327,7 @@ class GrpoTrainer:
             batch=rows, seq_len=prompt + completion, logits_positions_per_sequence=completion + 1
         )
         acts = arch.train_step_ledger(
-            inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), "policy"
+            inventory, cfg, seq, StepTimepoints(forward=fwd, loss=loss, backward=bwd), POLICY_PREFIX
         )
         b.add(extend_live_at(acts, loss, [loss_bwd]))
         if cfg.loss_path != "trl_fused_logprob":

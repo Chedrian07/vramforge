@@ -30,6 +30,7 @@ from vramforge_estimator.units import tensor_bytes
 
 from .base import TrainingSchedule
 from .common import (
+    POLICY_PREFIX,
     ScheduleBuilder,
     add_model_weights,
     add_scope_phases,
@@ -233,7 +234,7 @@ class DpoTrainer:
             cfg,
             SequenceShape(batch=rows, seq_len=seq),
             StepTimepoints(forward=fwd, loss=loss, backward=bwd),
-            "policy",
+            POLICY_PREFIX,
         )
         b.add(extend_live_at(acts, loss, [t for t in (ref_fwd, loss_bwd) if t]))
         if ref_fwd is not None:
