@@ -61,7 +61,7 @@ def read_preview(
 ) -> Preview:
     """Up to `limits.preview_rows` rows from the first files of `split`, `budget` bytes in total."""
     preview = Preview()
-    schema = SchemaState()
+    schema = SchemaState.declared(config.features)
     remaining = budget
     quota_hit = False
     for data_file in split.files[:_PREVIEW_FILES]:

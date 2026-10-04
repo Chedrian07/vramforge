@@ -359,3 +359,21 @@ def test_hub_preview_downloads_only_small_files(
     monkeypatch.setattr(files_module, "PREVIEW_DOWNLOAD_MAX", 1024)
     inspect_dataset(source, ref(), SourceAccess(), None)
     assert fake_hub["__log__"] == ["open:train.jsonl"]  # above the threshold: ranged reads
+
+
+def test_columns_follow_readme_features(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    write_jsonl(root / "train.jsonl", [{"id": 1, "prompt": "p", "completion": "c"}])
+    (root / "README.md").write_text(
+        "---\ndataset_info:\n  features:\n  - name: id\n    dtype: string\n"
+        "  - name: prompt\n    dtype: string\n  - name: completion\n    dtype: string\n"
+        "  - name: system\n    dtype: string\n---\n",
+        encoding="utf-8",
+    )
+    result = inspect(local_source(root), Objective.SFT)
+    assert [(c.name, c.dtype, c.kind) for c in result.columns] == [
+        ("id", "string", "string"),
+        ("prompt", "string", "string"),
+        ("completion", "string", "string"),
+        ("system", "string", "string"),  # declared, absent from the file: None like datasets
+    ]
