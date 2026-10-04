@@ -352,6 +352,7 @@ RAM 결과의 `bytes_low`는 단계별 최대값으로 본 **확인된 하한**�
 - **GRPO batch**(TRL `GRPOConfig.__post_init__`): spg = K (둘 다 미지정), spg = gbs / (B_update × W) (gbs 지정, 나누어떨어져야 함), gbs = B_update × W × spg; gbs mod G = 0, G ≥ 2, gbs와 spg 동시 지정 불가; U = gbs / G, C = B_update × spg. 예: G=4, gbs=4, B=1, K=4 → spg=4, C=4, U=1.
 - **차단(오류)**: 4-bit와 strategy 모순, 다중 GPU, 엄격 모드의 packing, 실행 경로나 메모리 모델이 없는 옵션(offload, compile, liger, flash-attn, vLLM rollout, DoRA, bf16 외 precision), DPO reference 충돌, 정보가 빠진 local reward.
 - **요청 무효(경고)**: 설치되지 않은 linear-attention kernel 요청(실제 실행 경로인 torch fallback으로 계산), `max_live_sequences`, template이 쓰지 않는 template 옵션.
+- **reference 경고**: adapter를 끈 같은 모델을 reference로 쓰는 경로(DPO `frozen_base_switch`, PEFT GRPO β ≠ 0)에서 LoRA `bias`가 `all`·`lora_only`이면 학습된 base bias가 reference에도 남아 원래 base 모델과 달라집니다(plan §5.3, peft 0.21.2 `disable_adapter_layers` 경고). precompute는 학습 전에 계산하므로 해당하지 않습니다.
 - readiness: 차단 항목이 있으면 `unsupported`, reward가 GPU 밖이거나 미지정이면 `conditional`, 평가 split을 지정했는데 평가 단계를 계산 범위에서 뺐으면 `conditional`, 그 외 `ready`.
 
 ## 15. 참고

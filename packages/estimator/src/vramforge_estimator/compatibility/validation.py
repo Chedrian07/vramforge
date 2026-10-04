@@ -18,6 +18,7 @@ from vramforge_estimator.schemas import (
     Issue,
     LinearAttentionKernel,
     LoadDtype,
+    LoraBias,
     LossKernel,
     Objective,
     Precision,
@@ -253,6 +254,34 @@ def _dpo_issues(request: AnalysisRequest) -> list[Issue]:
     return issues
 
 
+def _adapter_off_reference_issues(request: AnalysisRequest) -> list[Issue]:
+    """plan §5.3: an adapter-off reference (DPO frozen_base_switch, GRPO beta != 0 with PEFT) is
+    the base model only if no base parameter trains. PEFT's disable_adapter() keeps trained base
+    biases (peft 0.21.2 tuners/tuners_utils.py:556-565 warns the output differs from the base)."""
+    t = request.training
+    if t.strategy is Strategy.FULL or t.lora.bias is LoraBias.NONE:
+        return []
+    if t.objective is Objective.DPO:
+        rs = request.dpo.reference_strategy
+        adapter_off = rs is ReferenceStrategy.FROZEN_BASE_SWITCH or (
+            rs is ReferenceStrategy.AUTO and not request.dpo.reference_model
+        )
+    else:
+        adapter_off = t.objective is Objective.GRPO and request.grpo.beta != 0
+    if not adapter_off:
+        return []
+    return [
+        _warn(
+            ErrorCode.CONFLICTING_OPTIONS,
+            f"bias='{t.lora.bias.value}'로 base 모델의 bias를 학습하면 adapter를 끈 reference가 "
+            "원래 base 모델과 달라집니다 (PEFT disable_adapter는 학습된 bias를 되돌리지 않음). "
+            "원래 모델을 reference로 쓰려면 bias='none' 또는 별도 reference 모델을 선택하세요.",
+            "training.lora.bias",
+            bias=t.lora.bias.value,
+        )
+    ]
+
+
 def _grpo_issues(request: AnalysisRequest) -> list[Issue]:
     g = request.grpo
     t = request.training
@@ -356,6 +385,7 @@ def validate_request(request: AnalysisRequest) -> list[Issue]:
         issues += _dpo_issues(request)
     if t.objective is Objective.GRPO:
         issues += _grpo_issues(request)
+    issues += _adapter_off_reference_issues(request)
     issues += _hardware_issues(request)
     if request.dataset.scan_mode is ScanMode.SAMPLE:
         issues.append(

@@ -147,6 +147,40 @@ def test_dpo_sync_with_full_finetuning_is_allowed() -> None:
     assert codes(issues) == set()
 
 
+@pytest.mark.parametrize(
+    ("changes", "warned"),
+    [
+        ({"training__objective": "dpo", "training__lora": {"bias": "all"}}, True),
+        (
+            {
+                "training__objective": "dpo",
+                "training__lora": {"bias": "lora_only"},
+                "dpo": {"reference_strategy": "frozen_base_switch"},
+            },
+            True,
+        ),
+        ({"training__objective": "dpo", "training__lora": {"bias": "none"}}, False),
+        (
+            {
+                "training__objective": "dpo",
+                "training__lora": {"bias": "all"},
+                "dpo": {"reference_strategy": "precomputed_log_probs"},
+            },
+            False,  # precomputed in __init__, before any bias is trained
+        ),
+        ({"grpo__beta": 0.04, "training__lora": {"bias": "all"}}, True),
+        ({"grpo__beta": 0.0, "training__lora": {"bias": "all"}}, False),
+    ],
+)
+def test_adapter_off_reference_with_trained_biases_is_flagged(changes, warned) -> None:
+    # plan §5.3: disable_adapter() keeps trained base biases, so the reference is not the base.
+    issues = validate_request(request(**changes))
+    flagged = [i for i in issues if i.affected_component == "training.lora.bias"]
+    assert bool(flagged) is warned
+    assert all(i.severity is Severity.WARNING for i in flagged)
+    assert codes(issues) == set()
+
+
 def test_local_reward_model_needs_a_reference() -> None:
     issues = validate_request(request(grpo__reward={"kind": "local_model"}))
     assert ErrorCode.INVALID_REQUEST in codes(issues)
