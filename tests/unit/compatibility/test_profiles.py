@@ -128,3 +128,61 @@ def test_invalid_profile_is_reported_with_relative_name(
         load_registry()
     assert "environments/cuda-trl-1.14.1.yaml" in str(info.value)
     assert str(tmp_path) not in str(info.value)
+
+
+# ---------------------------------------------------------------- analytic profiles
+
+
+def test_analytic_profiles_cover_both_adapters() -> None:
+    reg = load_registry()
+    assert {p.architecture_adapter for p in reg.analytic.values()} == {
+        "dense_decoder",
+        "qwen3_5_hybrid",
+    }
+    for prof in reg.analytic.values():
+        assert reg.environment_for(prof).id == ENV_ID
+        assert prof.loading.default_load_dtype == "bfloat16"
+        assert set(prof.loading.load_dtypes) == {"bfloat16", "float32"}
+        q = prof.quantization
+        assert (q.default_format, q.double_quant, q.compute_dtype) == ("nf4", True, "bfloat16")
+        assert q.skip_modules == ["lm_head"] and q.blocksize == 64 and q.nested_blocksize == 256
+        assert prof.checkpointing.granularity == "per_decoder_layer"
+        assert prof.presets["sft"].accumulation == prof.presets["dpo"].accumulation == 8
+        assert prof.presets["grpo"].accumulation == 4
+        assert all(p.microbatch == 1 for p in prof.presets.values())
+        assert prof.calibration_coverage == []
+
+
+def test_profile_constants_match_the_trainer_code() -> None:
+    from fractions import Fraction
+
+    from vramforge_estimator.trainers.common import DEVICE_MAP_BUDGET
+    from vramforge_estimator.trainers.registry import trainer_id_for
+
+    for prof in load_registry().analytic.values():
+        factors = prof.loading.device_map_budget_factor
+        assert {k: Fraction(str(v)) for k, v in factors.items()} == DEVICE_MAP_BUDGET
+        assert {o.value: t for o, t in prof.trainers.items()} == {
+            o: trainer_id_for(o) for o in ("sft", "dpo", "grpo")
+        }
+
+
+def test_hybrid_profile_runs_linear_attention_on_the_torch_fallback() -> None:
+    prof = load_registry().profile_for_adapter("qwen3_5_hybrid")
+    assert prof is not None
+    assert prof.attention.by_layer_type == {
+        "full_attention": "sdpa",
+        "linear_attention": "torch_fallback",
+    }
+    assert prof.loading.text_only.verified is False
+    rule = next(r for r in prof.loading.scope_rules if r.architecture.endswith("Generation"))
+    assert rule.scope == "full_checkpoint"
+
+
+def test_workspace_assumptions_are_sourced_ranges() -> None:
+    for prof in load_registry().analytic.values():
+        ws = prof.workspace
+        assert ws.cuda_context_bytes.low == int(0.3 * GiB)
+        assert ws.cuda_context_bytes.high == 1 * GiB
+        for rng in (ws.cuda_context_bytes, ws.library_workspace_bytes, ws.allocator_slack_fraction):
+            assert rng.low <= rng.high and rng.source

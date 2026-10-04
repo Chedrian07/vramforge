@@ -1,0 +1,200 @@
+# Analytic profile (plan.md §11.2, §11.4) for dense decoder-only transformers (Llama/Qwen-style
+# self-attention + MLP blocks) trained with TRL 1.14.1 on the cuda-trl-1.14.1 environment.
+# Matching is structural (vramforge_estimator.architectures.match_adapter); model_types and
+# architectures below are informational. Facts cite docs/research/*.md.
+id: dense-decoder
+version: "1.0.0"
+description: "Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) profile"
+architecture_adapter: dense_decoder
+environment: cuda-trl-1.14.1
+model_types: [llama, mistral, qwen2, qwen3]
+architectures: [LlamaForCausalLM, MistralForCausalLM, Qwen2ForCausalLM, Qwen3ForCausalLM]
+trainers: { sft: trl-1.14.1-sft, dpo: trl-1.14.1-dpo, grpo: trl-1.14.1-grpo }
+
+support:
+  - objective: sft
+    strategy: full
+    grade: analytic
+    readiness: ready
+    note: "lm_head를 학습하면 chunked_nll backward에서 [V,H] weight grad 3벌이 공존합니다."
+  - objective: sft
+    strategy: lora
+    grade: analytic
+    readiness: ready
+    note: "비양자화 LoRA adapter는 fp32 (PEFT autocast_adapter_dtype)."
+  - objective: sft
+    strategy: qlora
+    grade: analytic
+    readiness: ready
+    note: "NF4 + double quant, compute bf16, lm_head 비양자화, adapter bf16 (TRL QLoRA 준비)."
+  - objective: dpo
+    strategy: full
+    grade: analytic
+    readiness: ready
+    note: "reference 기본값은 두 번째 전체 모델(standalone_model)입니다."
+  - objective: dpo
+    strategy: lora
+    grade: analytic
+    readiness: ready
+    note: "reference 기본값은 adapter를 끈 같은 모델(frozen_base_switch)입니다."
+  - objective: dpo
+    strategy: qlora
+    grade: analytic
+    readiness: ready
+    note: "reference 기본값은 adapter를 끈 같은 4-bit 모델(frozen_base_switch)입니다."
+  - objective: grpo
+    strategy: full
+    grade: analytic
+    readiness: ready
+    note: "beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없으면 조건부 결과입니다."
+  - objective: grpo
+    strategy: lora
+    grade: analytic
+    readiness: ready
+    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다."
+  - objective: grpo
+    strategy: qlora
+    grade: analytic
+    readiness: ready
+    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다."
+
+loading:
+  entrypoint: trl_model_id
+  architecture_source: "config.architectures[0]"
+  scope_rules: []
+  default_scope: full_checkpoint
+  default_scope_reason: "TRL은 config.architectures[0] 클래스로 checkpoint 전체를 로드합니다."
+  text_only:
+    verified: false
+    reason: "비전 모듈이 있는 checkpoint의 text-only 로딩은 이 profile에서 검증하지 않았습니다. 비전 모듈이 없으면 full_checkpoint와 같습니다."
+  default_load_dtype: bfloat16
+  load_dtypes:
+    bfloat16: "제품 기본값. 내보내는 설정에 model_init_kwargs.dtype=bfloat16을 고정합니다."
+    float32: "TRL 1.14.1 기본값(model_init_kwargs.dtype 미지정). 비양자화 모듈·residual·rollout KV cache가 fp32가 됩니다."
+  device_map: auto
+  device_map_budget_factor: { quantized: 0.81, dense: 0.9 }
+  device_map_note: "단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5)."
+
+quantization:
+  library: bitsandbytes
+  formats: [nf4, fp4]
+  default_format: nf4
+  double_quant: true
+  compute_dtype: bfloat16
+  supported_compute_dtypes: [bfloat16]
+  quant_storage: uint8
+  blocksize: 64
+  nested_blocksize: 256
+  skip_modules: [lm_head]
+  note: "정확히 nn.Linear인 모듈만 4-bit로 바뀌고 embedding·norm·lm_head는 load dtype을 유지합니다 (docs/research/loading-quantization-peft.md §Q2)."
+
+attention:
+  by_layer_type: { full_attention: sdpa }
+  supported:
+    full_attention: [sdpa, eager]
+
+loss:
+  sft:
+    default: trl_chunked_nll
+    supported: [trl_chunked_nll, hf_ce]
+    note: "chunked_nll: lm_head를 256개 valid 위치씩 계산해 (B,T,V) logits가 없습니다. hf_ce(loss_type=nll)는 fp32 전체 logits를 만듭니다."
+  dpo:
+    default: trl_fused_logprob
+    supported: [trl_fused_logprob]
+    note: "전 위치 fp32 logits + TRL Triton fused log-prob kernel (chunked 경로는 liger-kernel 필요)."
+  grpo:
+    default: trl_fused_logprob
+    supported: [trl_fused_logprob]
+    note: "completion 위치(L+1) fp32 logits + TRL Triton fused log-prob kernel."
+
+checkpointing:
+  default_enabled: true
+  granularity: per_decoder_layer
+  use_reentrant: false
+  note: "TRL 기본 gradient_checkpointing=True, transformers 5.18 기본 use_reentrant=False, every_n_layers=1."
+
+optimizers:
+  - name: adamw_torch
+    states_per_param: 2
+    state_dtype: param
+    note: "foreach 경로: step에서 2차 moment 크기의 임시 목록(_foreach_sqrt)을 만듭니다."
+  - name: adamw_torch_fused
+    states_per_param: 2
+    state_dtype: param
+    fused: true
+    note: "transformers 5.18 기본 optim. tensor마다 device step scalar."
+  - name: adamw_8bit
+    states_per_param: 2
+    state_dtype: uint8
+    eight_bit: true
+    block_size: 256
+    min_8bit_size: 4096
+    note: "numel >= 4096이면 2.03125 B/param, 작은 tensor와 nn.Embedding은 fp32 8 B/param."
+  - name: paged_adamw_8bit
+    states_per_param: 2
+    state_dtype: uint8
+    eight_bit: true
+    block_size: 256
+    min_8bit_size: 4096
+    paged: true
+    note: "paged managed memory도 VRAM에 포함합니다 (paging 절감은 확정치로 쓰지 않음)."
+
+dpo_reference_auto: { peft: frozen_base_switch, full: standalone_model }
+rollout_backends: [transformers_shared_policy]
+presets:
+  sft: { microbatch: 1, accumulation: 8 }
+  dpo: { microbatch: 1, accumulation: 8 }
+  grpo: { microbatch: 1, accumulation: 4 }
+
+unsupported_options:
+  - option: training.packing
+    reason: "packing은 max_length 정수가 필수이고 bfd(절단)·bfd_split(분할)·wrapped(중간 절단) 모두 엄격 무절단 계약을 위반합니다."
+  - option: training.offload
+    reason: "단일 GPU TRL 경로에는 parameter/optimizer offload가 없고 activation offloading 메모리 모델은 구현되지 않았습니다."
+  - option: training.compile
+    reason: "torch.compile 메모리 profile이 없습니다."
+  - option: training.loss_kernel=liger
+    reason: "liger-kernel이 학습 환경에 없습니다 (TRL ImportError)."
+  - option: training.loss_kernel=chunked (dpo, grpo)
+    reason: "DPO/GRPO의 chunked log-prob 경로는 use_liger_kernel=True와 liger-kernel이 필요합니다."
+  - option: training.attention_backend=flash_attention_2
+    reason: "flash-attn이 학습 환경에 없습니다."
+  - option: training.lora.use_dora
+    reason: "DoRA의 forward별 dequant·eye(in) 임시값 메모리 모델이 없습니다."
+  - option: training.precision=fp16|fp32
+    reason: "bf16 native AMP 이외 경로의 dtype 규칙은 모델링하지 않았습니다."
+  - option: training.load_dtype=float16
+    reason: "float16 로드는 bf16 autocast와 섞이는 경로를 검증하지 않았습니다."
+  - option: training.quantization.compute_dtype=float32|float16
+    reason: "bnb compute fp32는 Linear4bit 임시 메모리가 약 3배인 별도 profile입니다 (미구현)."
+  - option: grpo.rollout_backend=vllm_colocate|vllm_server
+    reason: "별도 vLLM 엔진의 가중치·KV pool·CUDA graph 메모리를 모델링하지 않았습니다 (M6)."
+  - option: dpo.loss_type=sft
+    reason: "chosen 위치 cross-entropy의 추가 logits·log_softmax 버퍼를 모델링하지 않았습니다."
+  - option: training.num_devices>1
+    reason: "분산 topology adapter가 없습니다 (총 용량을 GPU 수로 나누지 않습니다)."
+  - option: model.loading_scope=text_only
+    reason: "비전 타워가 있는 checkpoint의 text-only 로딩은 검증하지 않았습니다."
+
+workspace:
+  cuda_context_bytes:
+    low: 322122547 # 0.3 GiB
+    high: 1073741824 # 1.0 GiB
+    source: "docs/research/loading-quantization-peft.md §Q10.2"
+    note: "CUDA context + 모듈 로드(드라이버, cuBLAS handle). GPU 세대·드라이버·lazy loading에 따라 다르며 측정하지 않았습니다."
+  library_workspace_bytes:
+    low: 4194304 # 4 MiB
+    high: 134217728 # 128 MiB
+    source: "docs/research/loading-quantization-peft.md §Q10.2"
+    note: "cuBLAS(+Lt) workspace는 (handle, stream)마다 수 MiB-수십 MiB, 기본 크기는 미확인."
+  allocator_slack_fraction:
+    low: 0.05
+    high: 0.15
+    source: "가정 (docs/research/loading-quantization-peft.md §Q10.2: 단편화 미정)"
+    note: "caching allocator의 reserved-allocated 차이. 측정 근거가 없는 계획용 가정이며 GPU 보정(M5)에서 max_memory_reserved-max_memory_allocated로 대체합니다."
+calibration_coverage: []
+sources:
+  - docs/research/architecture-memory.md
+  - docs/research/loading-quantization-peft.md
+  - docs/research/trl-sft-dpo.md
+  - docs/research/trl-grpo.md
