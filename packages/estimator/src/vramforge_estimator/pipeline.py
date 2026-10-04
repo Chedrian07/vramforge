@@ -52,6 +52,8 @@ import json
 import logging
 import os
 import shutil
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -72,7 +74,7 @@ from vramforge_estimator.errors import CancelledError, EstimatorError, make_issu
 from vramforge_estimator.inspection import TokenizerHandle
 from vramforge_estimator.keys import preprocess_key as make_preprocess_key
 from vramforge_estimator.keys import request_fingerprint, source_key
-from vramforge_estimator.scan import ScanContext, ScanLimits
+from vramforge_estimator.scan import LengthTable, ScanContext, ScanLimits
 from vramforge_estimator.schemas import (
     AnalysisRequest,
     AnalysisResult,
@@ -563,6 +565,70 @@ class _LimitedScanContext:
         self._inner.save_checkpoint(data)
 
 
+def _artifact_identity(path: Path) -> tuple[Any, ...] | None:
+    """The row-length artifact's path plus the size and mtime of its files (None if unreadable).
+
+    A finished analysis never rewrites its artifact; a rewritten or replaced one gets a new key."""
+    try:
+        resolved = path.resolve()
+        if resolved.is_dir():
+            files = sorted(
+                (f.name, f.stat().st_size, f.stat().st_mtime_ns)
+                for f in resolved.iterdir()
+                if f.is_file()
+            )
+            return (str(resolved), tuple(files))
+        stat = resolved.stat()
+        return (str(resolved), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return None
+
+
+class _LengthsCache:
+    """A small in-process LRU of loaded row-length tables (`POST /scenarios` recomputes the same
+    analysis repeatedly; reading every Parquet part again each time is the slow part).
+
+    Bounded by the number of tables and by their total rows (a table larger than the row budget is
+    never kept). Thread-safe; the tables are shared read-only (batch planning never mutates them).
+    """
+
+    def __init__(self, max_entries: int = 8, max_rows: int = 1_000_000) -> None:
+        self.max_entries = max_entries
+        self.max_rows = max_rows
+        self._tables: OrderedDict[tuple[Any, ...], LengthTable] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, path: Path, load: Callable[[Path], LengthTable]) -> LengthTable:
+        key = _artifact_identity(path)
+        if key is not None:
+            with self._lock:
+                table = self._tables.get(key)
+                if table is not None:
+                    self._tables.move_to_end(key)
+                    return table
+        table = load(path)  # outside the lock: a slow load does not block other analyses
+        if key is not None and len(table) <= self.max_rows:
+            with self._lock:
+                self._tables[key] = table
+                self._tables.move_to_end(key)
+                total = sum(len(t) for t in self._tables.values())
+                while len(self._tables) > self.max_entries or total > self.max_rows:
+                    _, evicted = self._tables.popitem(last=False)
+                    total -= len(evicted)
+        return table
+
+    def clear(self) -> None:
+        with self._lock:
+            self._tables.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._tables)
+
+
+_LENGTHS_CACHE = _LengthsCache()
+
+
 class _RecomputeContext:
     """Minimal context for `recompute` (no job, no progress, never cancelled)."""
 
@@ -617,6 +683,8 @@ class _Run:
 
     scan_issues: list[Issue] = field(default_factory=list)
     context_exceeded_budgets: list[int] = field(default_factory=list)
+    # recompute only: loaded row-length tables are reused across scenario requests
+    lengths_cache: _LengthsCache | None = None
 
     # -- issue bookkeeping ---------------------------------------------------------
     @staticmethod
@@ -1278,7 +1346,12 @@ class _Run:
                 )
             )
         assert self.lengths_path is not None
-        lengths = self.call("scan.load_lengths", scan.load_lengths, self.lengths_path)
+        if self.lengths_cache is not None:
+            lengths = self.call(
+                "scan.load_lengths", self.lengths_cache.get, self.lengths_path, scan.load_lengths
+            )
+        else:
+            lengths = self.call("scan.load_lengths", scan.load_lengths, self.lengths_path)
         plan = self.call(
             "batching.plan_batches",
             batching.plan_batches,
@@ -1767,6 +1840,7 @@ def _recompute(
     run.inventory = inventory
     run.tokenizer_manifest = base.tokenizer_manifest
     run.lengths_path = lengths_path
+    run.lengths_cache = _LENGTHS_CACHE
     run.template_loss_rows = int(manifest.get("template_content_loss_rows") or 0)
     for issue in _stored_issues(manifest.get(DATA_ISSUES_KEY)):
         run.note(issue, live=False)  # the data did not change: its findings still apply

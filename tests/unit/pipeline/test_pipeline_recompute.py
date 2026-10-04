@@ -273,3 +273,66 @@ def test_recompute_needs_reanalysis_when_the_base_had_no_profile(
     response = recompute(base, example_request(**{"training.lora.r": 8}), artifact_dir)
     assert response.requires_reanalysis is True
     assert "backend profile" in response.reanalysis_reasons[0]
+
+
+def test_recompute_reuses_the_loaded_length_table(
+    base: tuple[AnalysisResult, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /scenarios recomputes the same analysis repeatedly: the row-length table is read once
+    and kept in a small in-process LRU, keyed by the artifact files."""
+    from vramforge_estimator import pipeline
+
+    result, artifact_dir = base
+    pipeline._LENGTHS_CACHE.clear()
+    fakes = FakeModules().install(monkeypatch)
+    for r in (8, 32, 64):
+        response = recompute(result, example_request(**{"training.lora.r": r}), artifact_dir)
+        assert response.requires_reanalysis is False and response.result.memory is not None
+    assert fakes.calls.count("load_lengths") == 1
+    assert fakes.calls.count("plan_batches") == 3
+
+    # a rewritten artifact is read again
+    part = artifact_dir / "lengths" / "part-00000.parquet"
+    part.write_bytes(b"PAR1changed-contentPAR1")
+    recompute(result, example_request(**{"training.lora.r": 16}), artifact_dir)
+    assert fakes.calls.count("load_lengths") == 2
+
+
+def test_lengths_cache_is_bounded(tmp_path: Path) -> None:
+    from vramforge_estimator.pipeline import _LengthsCache
+    from vramforge_estimator.scan import LengthTable
+
+    loads: list[str] = []
+
+    def load(path: Path) -> LengthTable:
+        loads.append(path.name)
+        rows = int(path.name.split("-")[1])
+        return LengthTable(row_ids=[f"train:{i}" for i in range(rows)], prompt_tokens=[1] * rows)
+
+    def artifact(name: str) -> Path:
+        path = tmp_path / name
+        path.mkdir()
+        (path / "part-00000.parquet").write_bytes(b"PAR1")
+        return path
+
+    cache = _LengthsCache(max_entries=2, max_rows=10)
+    a, b, c = artifact("a-3"), artifact("b-3"), artifact("c-3")
+    for path in (a, b, a, c):  # c evicts b (least recently used), not a
+        cache.get(path, load)
+    assert loads == ["a-3", "b-3", "c-3"] and len(cache) == 2
+    cache.get(a, load)
+    cache.get(b, load)
+    assert loads[-1] == "b-3"
+
+    big = artifact("big-11")
+    assert len(cache.get(big, load)) == 11  # larger than the row budget: never kept
+    cache.get(big, load)
+    assert loads.count("big-11") == 2
+
+    rows = _LengthsCache(max_entries=8, max_rows=7)
+    for path in (a, b, c):  # 3 + 3 + 3 rows: the oldest goes over the row budget
+        rows.get(path, load)
+    assert len(rows) == 2
+
+    missing = tmp_path / "missing"
+    assert len(_LengthsCache().get(missing, lambda p: LengthTable())) == 0  # not cached, no error
