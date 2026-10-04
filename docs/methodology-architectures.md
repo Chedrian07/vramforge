@@ -169,7 +169,7 @@ alpha, rsLoRA, dropout은 파라미터 수를 바꾸지 않는다
 층 하나의 saved 합계 `S_layer = Σ terms`. GC가 없을 때 층 type × group allocation(`act.<type>.<group>`)의 `shape_expression`은 그 group의 항목 이름과 shape("layer당 query [B,nq,T,d] + ...")이고, CUDA 소스 정독만으로 정한 항목(fla, mask가 있는 mem-efficient, CUDA dropout mask)은 note에 `INFERRED`를 단다(GC면 재계산·transient 계수 allocation의 note에 붙는다).
 
 **검증**: AM §F 골든 표(3행 × 5열), fixture (a), §10.2 실제 차원 값(MiB 소수 둘째 자리)을 그대로 재현한다(`tests/unit/architectures/test_arch_formulas.py`).
-추가로 CPU에서 실제 PEFT 모델의 autograd graph를 순회해 147개 점(Qwen3.5 linear/full, Llama, Qwen3 × frozen/full FT/full FT+autocast/LoRA bf16·fp32 ± autocast × 3 shape)이 byte 단위로 일치함을 확인했다(`test_arch_parity.py`, parity marker).
+추가로 CPU에서 실제 transformers/PEFT 모델 layer의 autograd graph를 순회해 48개 점이 byte 단위로 일치함을 확인한다(`test_arch_parity.py`, parity marker): Qwen3.5 linear·full layer × 6 mode(full FT ± autocast, frozen + autocast, LoRA bf16 adapter + autocast, LoRA fp32 adapter ± autocast) × 3 shape(B,T = 1,40 / 2,100 / 3,150) = 36점, Llama·Qwen3 layer × 같은 6 mode(B = 2, T = 100) = 12점. CUDA 전용 경로(fla, mem-efficient mask, CUDA dropout mask)는 이 측정에 들어가지 않는다.
 
 **16-bit 전용**: 모든 식은 bf16/fp16 load(`b = 2`)에서 검증되었다. fp32 load에서는 RMSNorm의 `x.float()`가 복사하지 않는 등 saved set이 달라진다(AM §5, INFERRED). 따라서 fp32 load의 층별 saved set, final norm, 이를 기반으로 한 transient는 `unknown`이다. 경계 hidden state, cos/sin, mask는 load dtype으로 계산된다.
 
