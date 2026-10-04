@@ -184,6 +184,17 @@ describe("form validation", () => {
     expect(isValidModelReference("local:models/qwen")).toBe(true);
     expect(isValidModelReference("http://169.254.169.254/latest")).toBe(false);
     expect(isValidDatasetReference("https://huggingface.co/datasets/org/d/viewer/default/train?row=0")).toBe(true);
+    // Other forms the server's SourceResolver accepts (sources/references.py).
+    expect(isValidModelReference("https://hf.co/org/m")).toBe(true);
+    expect(isValidModelReference("http://huggingface.co/org/m")).toBe(true);
+    expect(isValidModelReference("gpt2")).toBe(true);
+    expect(isValidModelReference("hf:org/m")).toBe(true);
+    expect(isValidModelReference("hf-dataset:org/d")).toBe(false);
+    expect(isValidModelReference("https://hf.co/datasets/org/d")).toBe(false);
+    expect(isValidDatasetReference("hf-dataset:org/d")).toBe(true);
+    expect(isValidDatasetReference("hf:org/m")).toBe(false);
+    expect(isValidDatasetReference("upload:vf-fixture-upload-01")).toBe(true);
+    expect(isValidDatasetReference("https://example.com/data.jsonl")).toBe(false);
     expect(fieldErrors({ ...base, modelReference: "not a model" }).modelReference).toContain("Hugging Face ID");
     expect(fieldErrors({ ...base, modelReference: "" }).modelReference).toBe("모델을 입력하세요");
   });
