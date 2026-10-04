@@ -72,3 +72,12 @@ def test_plan_example_grpo_then_dpo(
     old_high = dpo["result"]["memory"]["scenarios"][0]["devices"][0]["scenario_high_bytes"]
     new_high = scenario["result"]["memory"]["scenarios"][0]["devices"][0]["scenario_high_bytes"]
     assert new_high > old_high  # a larger adapter never needs less memory
+
+    # the recomputed scenario can be exported as shown (trainer-config: ready DPO)
+    exported = client.post(
+        f"/api/v1/analyses/{dpo['analysis_id']}/scenarios/export",
+        json={"request": changed, "format": "trainer-config"},
+    )
+    assert exported.status_code == 200, exported.text
+    assert yaml.safe_load(exported.content)["peft"]["r"] == 64
+    assert dpo["expires_at"] is not None and dpo["request"]["training"]["objective"] == "dpo"
