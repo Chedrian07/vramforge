@@ -69,11 +69,36 @@ describe("SummaryCard", () => {
     });
     const box = within(screen.getByText(/현재까지 확인한 데이터 기준/).parentElement!);
     expect(box.getByText("스캔 범위")).toBeInTheDocument();
-    expect(box.getByText("부분")).toBeInTheDocument();
+    // A failed row so far: how many rows were read and failed, not just the coverage word.
+    expect(box.getByText("부분 · 읽음 1,536 · 실패 1")).toBeInTheDocument();
     expect(box.getByText("현재까지 최대 길이 · prompt")).toBeInTheDocument();
     expect(box.getByText("현재까지 최대 길이 · prompt + chosen")).toBeInTheDocument();
     expect(box.getByText("1,843")).toBeInTheDocument();
     expect(box.queryByText("max_prompt")).not.toBeInTheDocument();
+  });
+
+  it("never reports a scan with failed rows as complete", () => {
+    renderCard({
+      run: {
+        ...IDLE_RUN,
+        phase: "running",
+        analysisId: "vf-fixture-x",
+        jobStatus: "TOKENIZING",
+        progress: { stage: "TOKENIZING", processed_rows: 4_656, total_rows: 4_656 },
+        // The scanner's final report: every row read, two of them failed.
+        partial: { status: "complete", rows_ok: 4_654, rows_failed: 2, context_exceeded_rows: null },
+      },
+    });
+    const box = within(screen.getByText(/현재까지 확인한 데이터 기준/).parentElement!);
+    expect(box.getByText("읽음 4,656 · 실패 2")).toBeInTheDocument();
+    expect(box.queryByText("전체 완료")).not.toBeInTheDocument();
+    expect(box.getByText("산정 불가 (context 상한 미상)")).toBeInTheDocument();
+
+    const failedRows: AnalysisResult = { ...sftResult, dataset_scan: { ...sftResult.dataset_scan!, rows_ok: sftResult.dataset_scan!.rows_seen - 3, rows_failed: 3 } };
+    renderCard({ run: terminalRun({ ...completedSftStatus, result: failedRows }), view: view(failedRows) });
+    const list = screen.getAllByRole("list", { name: "결과 상태" }).at(-1)!;
+    expect(list).toHaveTextContent(`읽음 ${failedRows.dataset_scan!.rows_seen.toLocaleString("ko-KR")} · 실패 3`);
+    expect(list).not.toHaveTextContent("전체 완료");
   });
 
   it("shows five separate status badges with text after completion", () => {

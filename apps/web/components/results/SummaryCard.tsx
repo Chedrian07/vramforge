@@ -4,12 +4,13 @@ import { memo, type ReactNode } from "react";
 
 import { Badge, Button, InfoTip } from "@/components/ui/primitives";
 import { Bytes, BytesRange, IssueList, NotComputed, type DisplayIssue } from "@/components/ui/values";
-import type { AnalysisResult, Branch, ScanCoverage } from "@/lib/api/types";
+import type { AnalysisResult, Branch } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { exactBytesRange, formatCount, formatGiB, gibNumber } from "@/lib/format/bytes";
-import { BRANCH_LABEL, JOB_STATUS_LABEL, SCAN_COVERAGE_LABEL } from "@/lib/format/labels";
+import { BRANCH_LABEL, JOB_STATUS_LABEL } from "@/lib/format/labels";
 import { isRunActive, type RunState } from "@/lib/hooks/useAnalysisRun";
 import type { RecomputeView } from "@/lib/hooks/useRecompute";
+import { CONTEXT_LIMIT_UNKNOWN, isScanCoverage, scanCoverageDisplay } from "@/lib/result/scan";
 import { hardwareSelected, summarize, type ResultSummary } from "@/lib/result/summary";
 
 import { BudgetList } from "./BudgetList";
@@ -230,7 +231,10 @@ function SummaryCardImpl({ run, view, hardwareRequested, gpuWorkerConnected, exp
         </div>
       ) : null}
 
-      <StatusBadges axes={hasEstimate ? result?.status : run.status?.result?.status} />
+      <StatusBadges
+        axes={hasEstimate ? result?.status : run.status?.result?.status}
+        scan={hasEstimate ? result?.dataset_scan : run.status?.result?.dataset_scan}
+      />
 
       <GaugeArea result={hasEstimate ? result : null} summary={summary} hardwareRequested={hardwareRequested} stale={Boolean(stale)} />
 
@@ -256,9 +260,14 @@ function partialLabel(key: string): ReactNode {
   return <span className="font-mono text-[12px]">{key}</span>;
 }
 
-function partialValue(key: string, value: number | string | null): ReactNode {
+function partialValue(key: string, value: number | string | null, run: RunState): ReactNode {
+  if (key === "status" && isScanCoverage(value)) {
+    // Failed rows so far: never "전체 완료", even in the scanner's final report.
+    const failed = run.partial?.rows_failed;
+    return scanCoverageDisplay(value, { rowsSeen: run.progress?.processed_rows, rowsFailed: typeof failed === "number" ? failed : null }).text;
+  }
+  if (key === "context_exceeded_rows" && value == null) return CONTEXT_LIMIT_UNKNOWN;
   if (typeof value === "number") return formatCount(value);
-  if (key === "status" && value != null && value in SCAN_COVERAGE_LABEL) return SCAN_COVERAGE_LABEL[value as ScanCoverage];
   return value ?? "—";
 }
 
@@ -293,7 +302,7 @@ function ScanSoFar({ run }: { run: RunState }) {
         {entries.map(([key, value]) => (
           <div key={key} className="flex justify-between gap-2">
             <dt className="text-muted">{partialLabel(key)}</dt>
-            <dd className="num text-ink">{partialValue(key, value)}</dd>
+            <dd className="num text-ink">{partialValue(key, value, run)}</dd>
           </div>
         ))}
       </dl>

@@ -30,6 +30,32 @@ describe("detail tabs", () => {
     expect(screen.getByRole("tabpanel")).toHaveTextContent("요청 · 적용 · 관측 설정");
   });
 
+  it("shows unknown and lower-bound context counts and failed rows honestly", async () => {
+    const user = userEvent.setup();
+    const scan = sftResult.dataset_scan!;
+    const result = {
+      ...sftResult,
+      dataset_scan: { ...scan, rows_ok: scan.rows_seen - 2, rows_failed: 2, context_exceeded_rows: null, omitted_system_messages: 17 },
+      context_validation: { ...sftResult.context_validation!, exceeded_rows: 3, exceeded_rows_exact: false },
+    };
+    renderTabs(result);
+    await user.click(screen.getByRole("tab", { name: "데이터 길이" }));
+    const coverage = screen.getByRole("region", { name: "스캔 범위" });
+    expect(coverage).toHaveTextContent(`읽음 ${scan.rows_seen.toLocaleString("ko-KR")} · 실패 2`);
+    expect(coverage).not.toHaveTextContent("전체 완료");
+    expect(coverage).toHaveTextContent("context 초과 row산정 불가 (context 상한 미상)");
+    expect(coverage).toHaveTextContent("생략한 빈 system 메시지17");
+    expect(screen.getByText(/토큰화하지 못한 row 2개는 길이 통계에 없습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "context 검증" })).toHaveTextContent("초과 row3개 이상");
+  });
+
+  it("says the exceeded-row count is unknown when no context limit is known", async () => {
+    const user = userEvent.setup();
+    renderTabs({ ...sftResult, context_validation: { ...sftResult.context_validation!, status: "unknown", effective_limit: null, exceeded_rows: null } });
+    await user.click(screen.getByRole("tab", { name: "데이터 길이" }));
+    expect(screen.getByRole("region", { name: "context 검증" })).toHaveTextContent("초과 row산정 불가 (context 상한 미상)");
+  });
+
   it("shows placeholders before an analysis", () => {
     renderWithProviders(<DetailTabs result={null} base={null} history={[]} partial={false} stale={false} />);
     expect(screen.getByRole("tabpanel")).toHaveTextContent("전체 데이터 분석을 마치면");

@@ -5,13 +5,9 @@ import { Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge, Mono } from "@/components/ui/primitives";
 import type { AnalysisResult, BranchStats } from "@/lib/api/types";
 import { formatCount, formatNumber, shortDigest } from "@/lib/format/bytes";
-import {
-  BRANCH_LABEL,
-  DATA_PRESERVATION_LABEL,
-  PRESERVATION_CHECK_LABEL,
-  SCAN_COVERAGE_LABEL,
-} from "@/lib/format/labels";
-import { PRESERVATION_TONE, SCAN_TONE } from "@/lib/result/status";
+import { BRANCH_LABEL, DATA_PRESERVATION_LABEL, PRESERVATION_CHECK_LABEL } from "@/lib/format/labels";
+import { exceededRowsText, scanCoverageDisplay } from "@/lib/result/scan";
+import { PRESERVATION_TONE } from "@/lib/result/status";
 
 import {
   AXIS_PROPS,
@@ -172,6 +168,7 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
   const mapping = scan.mapping_applied;
   const audit = result?.preservation_audit ?? null;
   const context = result?.context_validation ?? null;
+  const coverage = scanCoverageDisplay(scan.coverage, { rowsSeen: scan.rows_seen, rowsFailed: scan.rows_failed });
   return (
     <div className="flex flex-col gap-5">
       {partial || scan.coverage !== "complete" ? (
@@ -179,10 +176,15 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
           현재까지 확인한 데이터 기준입니다. 전체 최대 길이로 간주하지 마세요.
         </p>
       ) : null}
+      {scan.rows_failed > 0 ? (
+        <p className="rounded-lg bg-warn-soft px-3 py-2 text-[13px] text-warn">
+          읽거나 토큰화하지 못한 row {formatCount(scan.rows_failed)}개는 길이 통계에 없습니다. 아래 실패 row 표본에서 사유를 확인하세요.
+        </p>
+      ) : null}
       <section aria-label="스캔 범위" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-[15px] font-semibold text-ink">스캔 범위</h3>
-          <Badge tone={SCAN_TONE[scan.coverage]}>{SCAN_COVERAGE_LABEL[scan.coverage]}</Badge>
+          <Badge tone={coverage.tone}>{coverage.text}</Badge>
         </div>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
           <Stat label="예상 row" value={formatCount(scan.rows_expected) ?? "미확인"} />
@@ -198,7 +200,10 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
             value={`${formatCount(scan.shards_completed)} / ${scan.shards_total == null ? "?" : formatCount(scan.shards_total)}`}
           />
           <Stat label="중복 row" value={scan.duplicate_rows == null ? "미확인" : formatCount(scan.duplicate_rows)} />
-          <Stat label="context 초과 row" value={formatCount(scan.context_exceeded_rows)} />
+          <Stat label="context 초과 row" value={exceededRowsText(scan.context_exceeded_rows)} />
+          {scan.omitted_system_messages != null ? (
+            <Stat label="생략한 빈 system 메시지" value={formatCount(scan.omitted_system_messages)} />
+          ) : null}
         </dl>
         <p className="text-[13px] text-ink-2">{scan.transformation_note}</p>
         <p className="text-[12px] text-muted">
@@ -286,7 +291,7 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
             <Stat label="backend 검증 상한" value={formatCount(context.backend_verified_max) ?? "미검증"} />
             <Stat label="적용 상한" value={formatCount(context.effective_limit) ?? "미확인"} />
             <Stat label="관측 최대" value={formatCount(context.max_observed_length)} />
-            <Stat label="초과 row" value={formatCount(context.exceeded_rows)} />
+            <Stat label="초과 row" value={exceededRowsText(context.exceeded_rows, context.exceeded_rows_exact !== false)} />
           </dl>
           {context.limit_source ? (
             <p className="text-[12px] text-muted">
