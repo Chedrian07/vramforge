@@ -22,7 +22,10 @@ from vramforge_estimator.schemas import (
     AnalysisRequest,
     BatchPlan,
     BatchShape,
+    ErrorCode,
+    EvidenceLevel,
     HardwareConfig,
+    HardwareMode,
     MarginPolicy,
     Objective,
     SamplerPlan,
@@ -68,7 +71,7 @@ def shape(objective: Objective, rows: int, length: int, **extra) -> BatchShape:
     )
 
 
-def estimate(inv, req, shapes):
+def estimate(inv, req, shapes, hardware: HardwareConfig | None = None):
     cfg, report = resolve(req, inv, None)
     assert cfg is not None, report.blockers
     plan = BatchPlan(
@@ -87,7 +90,7 @@ def estimate(inv, req, shapes):
         cfg,
         plan,
         scope=ScopeConfig(),
-        hardware=HardwareConfig(),
+        hardware=hardware or HardwareConfig(),
         margin_policy=MarginPolicy(),
         readiness=report.readiness,
     )
@@ -165,3 +168,21 @@ def test_dpo_lora_dropout_is_disabled_like_trl(mimo) -> None:
     _, dropped = estimate(mimo, request(objective="dpo", lora={**lora, "dropout": 0.05}), shapes)
     highs = [e.scenarios[0].devices[0].scenario_high_bytes for e in (plain, dropped)]
     assert highs[0] is not None and highs[0] == highs[1]
+
+
+def test_qlora_load_budget_on_a_small_gpu(mimo) -> None:
+    # S_load = 7,765,103,072 B (bf16 CondGen QLoRA): device_map="auto" + bnb 4-bit needs
+    # free x 0.81 >= S_load, i.e. at least 9,586,547,003 B (8.93 GiB, research §3.5 V9)
+    shapes = [shape(Objective.SFT, 1, 2272)]
+    small = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=8 * GiB)
+    _, est = estimate(mimo, request(objective="sft"), shapes, small)
+    assert est.evidence_level is EvidenceLevel.ANALYTIC
+    fit = est.scenarios[0].hardware_fit
+    assert (fit.status.value, fit.reason) == ("exceeds", "load_budget_insufficient")
+    (issue,) = [i for i in est.issues if i.code is ErrorCode.LOAD_BUDGET_EXCEEDED]
+    assert issue.details["s_load_bytes"] == 7_765_103_072
+    assert issue.details["required_free_bytes"] == 9_586_547_003
+    roomy = HardwareConfig(mode=HardwareMode.GPU_PRESET, gpu_preset="rtx-4090-24gb")
+    _, ok = estimate(mimo, request(objective="sft"), shapes, roomy)
+    assert ok.scenarios[0].hardware_fit.reason != "load_budget_insufficient"
+    assert not any(i.code is ErrorCode.LOAD_BUDGET_EXCEEDED for i in ok.issues)
