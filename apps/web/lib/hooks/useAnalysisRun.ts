@@ -99,16 +99,42 @@ function reducer(state: RunState, action: Action): RunState {
 }
 
 const GONE = new Set([401, 403, 404]);
+/** `partial_result` asks clients to refetch the analysis; refetch at most this often. */
+const PARTIAL_REFRESH_MS = 2_000;
 
 export function useAnalysisRun() {
   const { api, eventSourceFactory } = useApiEnvironment();
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const streamRef = useRef<{ close: () => void } | null>(null);
+  const partialRefresh = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({ last: 0, timer: null });
 
   const closeStream = useCallback(() => {
     streamRef.current?.close();
     streamRef.current = null;
+    if (partialRefresh.current.timer) clearTimeout(partialRefresh.current.timer);
+    partialRefresh.current.timer = null;
   }, []);
+
+  /** Throttled, non-fatal refetch of the running analysis for its partial result. */
+  const refreshPartial = useCallback(
+    (id: string) => {
+      const slot = partialRefresh.current;
+      if (slot.timer) return;
+      const run = () => {
+        slot.timer = null;
+        slot.last = Date.now();
+        api.getAnalysis(id).then(
+          (status) => {
+            if (!isTerminalStatus(status.status)) dispatch({ type: "status", status });
+          },
+          () => undefined,
+        );
+      };
+      const wait = Math.max(0, slot.last + PARTIAL_REFRESH_MS - Date.now());
+      slot.timer = setTimeout(run, wait);
+    },
+    [api],
+  );
 
   const fetchStatusOrError = useCallback(
     async (id: string): Promise<AnalysisStatus | ApiError | null> => {
@@ -138,7 +164,7 @@ export function useAnalysisRun() {
       closeStream();
       streamRef.current = openAnalysisStream(
         {
-          url: api.eventsUrl(id),
+          url: (after) => api.eventsUrl(id, after),
           factory: eventSourceFactory,
           lastEventId,
           resolveClosed: async () => {
@@ -156,7 +182,10 @@ export function useAnalysisRun() {
           },
         },
         {
-          onEvent: (event) => dispatch({ type: "event", event }),
+          onEvent: (event) => {
+            dispatch({ type: "event", event });
+            if (event.type === "partial_result") refreshPartial(id);
+          },
           onTerminal: () => {
             void fetchStatus(id);
           },
@@ -164,7 +193,7 @@ export function useAnalysisRun() {
         },
       );
     },
-    [api, eventSourceFactory, closeStream, fetchStatus],
+    [api, eventSourceFactory, closeStream, fetchStatus, refreshPartial],
   );
 
   const start = useCallback(

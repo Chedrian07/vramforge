@@ -97,7 +97,7 @@ describe("calculator flow", () => {
     const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => runningStatus);
     renderApp({ getAnalysis });
     expect(await screen.findByText("1,536 row 처리")).toBeInTheDocument();
-    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`);
+    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events?after=${runningStatus.last_event_id}`);
     expect(screen.getByRole("button", { name: "분석 취소" })).toBeInTheDocument();
   });
 

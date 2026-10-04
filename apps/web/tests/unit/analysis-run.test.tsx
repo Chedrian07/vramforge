@@ -76,7 +76,33 @@ describe("useAnalysisRun", () => {
     const { result } = setup({ getAnalysis });
     await waitFor(() => expect(result.current.state.jobStatus).toBe("TOKENIZING"));
     expect(result.current.state.progress?.processed_rows).toBe(1_536);
-    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`);
+    // A fresh EventSource cannot send Last-Event-ID, so the resume point goes in ?after=.
+    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events?after=${runningStatus.last_event_id}`);
+  });
+
+  it("refetches the analysis on partial_result events (throttled)", async () => {
+    vi.useFakeTimers();
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const getAnalysis = vi.fn(async () => runningStatus);
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const es = FakeEventSource.latest();
+    expect(es.url).toBe(`/api/v1/analyses/${ID}/events`);
+    act(() => {
+      es.emit("partial_result", makeEvent({ event_id: 1, analysis_id: ID, type: "partial_result", status: "TOKENIZING" }));
+      es.emit("partial_result", makeEvent({ event_id: 2, analysis_id: ID, type: "partial_result", status: "TOKENIZING" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(getAnalysis).toHaveBeenCalledTimes(1);
+    act(() => es.emit("partial_result", makeEvent({ event_id: 3, analysis_id: ID, type: "partial_result", status: "TOKENIZING" })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(getAnalysis).toHaveBeenCalledTimes(2);
+    expect(result.current.state.phase).toBe("running");
+    vi.useRealTimers();
   });
 
   it("drops the URL parameter when the analysis no longer exists", async () => {
