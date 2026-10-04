@@ -104,7 +104,7 @@ def _check_gated_access(
         raise blocking_error(
             ErrorCode.SOURCE_ACCESS_DENIED,
             "접근 승인이 필요한 저장소(gated)입니다. "
-            "승인받은 계정의 Hugging Face 토큰을 입력하세요.",
+            "승인받은 계정의 Hugging Face 토큰으로만 읽을 수 있습니다.",
             stage=Stage.RESOLVING,
             component=norm.kind,
             details={"reason": "gated_without_token"},

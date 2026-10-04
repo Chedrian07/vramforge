@@ -242,7 +242,7 @@ def hub_error(exc: BaseException, *, kind: Kind, stage: Stage = Stage.RESOLVING)
         return issue(
             ErrorCode.SOURCE_ACCESS_DENIED,
             "접근 승인이 필요한 저장소(gated)입니다. "
-            "승인받은 계정의 Hugging Face 토큰을 입력하세요.",
+            "승인받은 계정의 Hugging Face 토큰으로만 읽을 수 있습니다.",
             "gated",
         )
     if isinstance(exc, hf_errors.DisabledRepoError):
@@ -250,8 +250,8 @@ def hub_error(exc: BaseException, *, kind: Kind, stage: Stage = Stage.RESOLVING)
     if isinstance(exc, hf_errors.RepositoryNotFoundError):
         return issue(
             ErrorCode.SOURCE_NOT_FOUND,
-            f"Hugging Face에서 {_label(kind)} 저장소를 찾을 수 없습니다. 이름을 확인하고, "
-            "비공개 저장소라면 접근 권한이 있는 토큰을 입력하세요.",
+            f"Hugging Face에서 {_label(kind)} 저장소를 찾을 수 없습니다. 이름을 확인하세요. "
+            "비공개 저장소는 접근 권한이 있는 토큰으로만 보입니다.",
             "repository_not_found",
         )
     if isinstance(exc, hf_errors.RevisionNotFoundError):
