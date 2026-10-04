@@ -1,0 +1,6 @@
+# Standalone project (own lockfile in apps/web): no `packages` key.
+# Same as the create-next-app 16.3.8 output; build/run verified with this setting
+# (docs/research/stack-compat.md §10.2).
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver
