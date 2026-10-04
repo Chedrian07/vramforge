@@ -89,8 +89,8 @@ class _Holder:
 
 
 def inspect_model_part(ref: ModelSourceRef, access: SourceAccess, holder: _Holder) -> None:
-    issues: list[Issue] = []
-    out = ModelInspection(issues=issues)
+    out = ModelInspection()
+    issues = out.issues  # pydantic copies list arguments: append to the model's own list
     step = _Step(issues, Stage.RESOLVING)
     holder.set_model(out)
     source = step("sources.resolve_model", lambda: sources.resolve_model(ref, access))
@@ -137,8 +137,8 @@ def inspect_dataset_part(
     objective: Objective | None,
     holder: _Holder,
 ) -> None:
-    issues: list[Issue] = []
-    out = DatasetInspection(issues=issues)
+    out = DatasetInspection()
+    issues = out.issues
     step = _Step(issues, Stage.RESOLVING)
     holder.set_dataset(out)
     source = step("sources.resolve_dataset", lambda: sources.resolve_dataset(ref, access))
