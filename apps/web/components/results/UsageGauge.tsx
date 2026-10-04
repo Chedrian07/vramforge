@@ -6,6 +6,15 @@ import { formatGiB, formatPercent } from "@/lib/format/bytes";
 import { FIT_REASON_LABEL, HARDWARE_FIT_LABEL } from "@/lib/format/labels";
 import { FIT_TONE } from "@/lib/result/status";
 
+// The unfilled track is a lighter step of the fill's own tone so the state reads across the bar.
+const TRACK: Record<string, string> = {
+  ok: "bg-accent-soft",
+  warn: "bg-warn-soft",
+  err: "bg-err-soft",
+  info: "bg-accent-soft",
+  neutral: "bg-neutral-soft",
+};
+
 const FILL: Record<string, string> = {
   ok: "bg-accent",
   warn: "bg-warn",
@@ -31,7 +40,7 @@ export function UsageGauge({ fit, stale = false }: { fit: HardwareFitResult; sta
         <span className="num font-semibold text-ink">{percent ? `예상 ${percent}` : HARDWARE_FIT_LABEL[fit.status]}</span>
       </div>
       {ratio != null ? (
-        <div role="img" aria-label={label} className="relative h-2.5 w-full overflow-hidden rounded-full bg-neutral-soft">
+        <div role="img" aria-label={label} className={cn("relative h-2.5 w-full overflow-hidden rounded-full", TRACK[tone])}>
           <div className={cn("h-full rounded-full", FILL[tone])} style={{ width: `${width}%` }} />
         </div>
       ) : null}
