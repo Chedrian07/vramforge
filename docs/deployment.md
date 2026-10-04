@@ -78,7 +78,7 @@ proxy 설정 파일(`infra/proxy/Caddyfile`)은 원격 Docker host와 SELinux �
 `VRAMFORGE_BIND=0.0.0.0`은 같은 네트워크의 누구나 분석을 실행하게 만듭니다(CPU·디스크·Hugging Face 트래픽 사용). 외부에 열 때는 아래를 **모두** 지킵니다.
 
 1. **HTTPS를 앞에 둡니다.** proxy는 평문 HTTP만 제공합니다. 권장 방식은 `VRAMFORGE_BIND=127.0.0.1`을 그대로 두고, 같은 호스트의 TLS reverse proxy(호스트의 Caddy·nginx·Traefik, Cloudflare Tunnel, Tailscale Serve 등)가 `127.0.0.1:8080`으로 전달하게 하는 것입니다. 이 경우 `0.0.0.0` 바인드가 필요 없습니다.
-2. **접근 토큰을 설정합니다.** `.env`에 `VRAMFORGE_ACCESS_TOKEN=<충분히 긴 임의 문자열>`을 넣으면 모든 API 요청에 토큰이 필요합니다. 예: `openssl rand -hex 32`.
+2. **접근 토큰을 설정합니다.** `.env`에 `VRAMFORGE_ACCESS_TOKEN=<충분히 긴 임의 문자열>`을 넣으면 모든 API 요청에 토큰이 필요합니다. 예: `openssl rand -hex 32`. 브라우저는 첫 요청이 401이면 토큰 입력 창을 띄우고, 입력한 토큰을 httpOnly cookie(`vf_access`)로 바꿉니다(토큰 자체는 브라우저에 저장하지 않음). 스크립트에서 API를 직접 부를 때는 `Authorization: Bearer <토큰>`을 씁니다. `/api/v1/health`는 토큰 없이도 응답합니다.
 3. **Secure cookie를 켭니다.** HTTPS 뒤에서는 `VRAMFORGE_COOKIE_SECURE=true`로 바꿉니다.
 4. **방화벽을 확인합니다.** Linux에서 Docker가 publish한 포트는 iptables 규칙을 직접 추가하므로 `ufw` 같은 호스트 방화벽 규칙을 거치지 않을 수 있습니다. 바인드 주소로 노출 범위를 제한하세요.
 
@@ -257,6 +257,7 @@ docker compose up -d --build --wait
 |---|---|
 | `Bind for 127.0.0.1:8080 failed: port is already allocated` | 다른 프로그램이 8080을 사용 중입니다. `.env`에 `VRAMFORGE_PORT=9000` |
 | `up --wait`가 실패하거나 서비스가 unhealthy | `docker compose ps -a`로 상태를 보고 `docker compose logs <서비스>`로 원인을 확인합니다 |
+| `smoke-test.sh`가 `not ok after 60s`로 실패 | 출력된 `components`에서 `ok`가 아닌 항목을 봅니다. `worker`가 `none`·`stale`이면 `docker compose logs worker`, `db`·`redis`가 `error`·`timeout`이면 해당 서비스 로그를 확인합니다 |
 | `migrate`가 0이 아닌 코드로 종료 | DB 접속 실패가 대부분입니다. 볼륨을 만든 뒤 `POSTGRES_PASSWORD`를 바꾸면 기존 DB 비밀번호와 달라집니다. 원래 값으로 되돌리거나, 데이터를 버려도 되면 `docker compose down -v` |
 | `toomanyrequests` (이미지 pull) | [§9](#9-이미지-mirror-docker-hub-pull-한도) |
 | 빌드 중 PyPI·npm·레지스트리 접속 실패 | 프록시 환경이면 Docker client 설정(`~/.docker/config.json`의 `proxies`)에 HTTP(S) 프록시를 넣으면 빌드와 컨테이너에 함께 적용됩니다. TLS 검사용 사내 CA는 시험하지 않았습니다 |
@@ -303,5 +304,20 @@ docker compose up -d --build --wait
 | 백업·복원 | [§7](#7-데이터-볼륨-백업-초기화)의 `pg_dump`·`pg_restore`, `tar` 명령이 그대로 동작 |
 | linux/amd64 이미지 (arm64 호스트, 에뮬레이션) | `docker buildx build --platform linux/amd64` Python 이미지 25초, web 이미지 37초. 컨테이너가 x86_64로 실행되고 웹은 HTTP 200 |
 | 종료 | `docker compose down -v`로 이 프로젝트의 컨테이너·네트워크·볼륨만 삭제 |
+
+2026-10-05, `review-infra`가 같은 호스트에서 다시 확인했습니다(프로젝트 `vramforge-review-infra`·`vramforge-review-infra-head`, 포트 18381·18382).
+
+| 검증 | 결과 |
+|---|---|
+| `git archive HEAD` 사본, `env -i`(빈 환경, `.env` 없음)로 `docker compose up -d --build --wait` | 33초(빌드 캐시 있음), 상시 6개 healthy, `migrate` Exited (0) |
+| 예시 입력(plan.md §21: GRPO, 4-bit, Hugging Face 모델·데이터셋) 전체 분석 | proxy 경유 SSE 15건 뒤 `COMPLETED`, scan coverage complete, 약 11초(tokenizer·데이터셋 다운로드 포함) |
+| `infra/scripts/analysis_smoke.py` (오프라인, `tests/fixtures`) | DPO+LoRA 4/4 row tokenized, coverage complete, 약 2.5초. `Accept-Encoding: gzip, zstd`에도 SSE 응답에 `Content-Encoding` 없음 |
+| `smoke-test.sh`, worker를 멈춘 상태 | `worker: none`으로 실패(수정 전 버전은 통과했음) |
+| proxy 권한 | `cap_drop: ALL` + `NET_BIND_SERVICE`로 healthy(`CapEff 0x400`) |
+| 비밀값 범위 (`docker inspect`) | `migrate`에는 DB URL·로그 수준만, worker에는 `VRAMFORGE_ACCESS_TOKEN` 없음. 값 없는 항목은 프로세스 환경에 나타나지 않음 |
+| 접근 토큰 모드 | 토큰 없이 401, `/api/v1/health` 200, `POST /api/v1/session` 후 cookie로 200, Bearer로 분석 완료 |
+| 요청 본문 상한 override (`VRAMFORGE_PROXY_MAX_BODY_SIZE=1KB`) | 4 KB 본문은 Content-Length·chunked 모두 413, 작은 요청은 API까지 도달 |
+| 브라우저(Chromium) | 프록시 경유 페이지 로드에서 console 오류·경고 0건, 정적 asset·API 요청 모두 200 |
+| `actionlint` 1.7.12 | `.github/workflows/ci.yml` 오류 없음 |
 
 시험하지 않은 것: Docker Desktop(macOS·Windows) 자체, Windows(WSL2) 호스트, 네이티브 Linux 호스트에서의 기동, 이보다 오래된 Docker·Compose 버전. 네이티브 Linux amd64·arm64 기동은 CI의 `docker` job(`.github/workflows/ci.yml`)이 GitHub runner에서 확인합니다.
