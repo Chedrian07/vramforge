@@ -270,6 +270,35 @@ def test_full_finetune_counts_include_the_frozen_in_data_vision_tower(ib: Module
     assert sum(g.numel for g in groups if not g.receives_grad) == vision
 
 
+def test_embedding_flags_match_the_nn_embedding_parameters(ib: ModuleType) -> None:
+    # bnb 8-bit optimizers keep 32-bit state for nn.Embedding parameters (Trainer override)
+    model = condgen(["linear_attention", "full_attention"])
+    inv = inventory(ib, model, "Qwen3_5ForConditionalGeneration")
+    adapter = get_adapter("qwen3_5_hybrid")
+
+    def embedding_numel(top: Any) -> int:
+        return sum(
+            p.numel()
+            for m in top.modules()
+            if isinstance(m, torch.nn.Embedding)
+            for p in m.parameters()
+            if p.requires_grad
+        )
+
+    full = adapter.trainable_groups(inv, make_cfg(strategy=Strategy.FULL))
+    # embed_tokens + the vision pos_embed (resident, never run on text)
+    assert sum(g.numel for g in full if g.is_embedding) == embedding_numel(model)
+    names = [m.name for m in adapter.lora_target_modules(inv, "auto_verified", [])]
+    saved = ["embed_tokens", "lm_head"]
+    cfg = make_cfg(strategy=Strategy.LORA, targets=names, r=8, modules_to_save=saved)
+    groups = adapter.trainable_groups(inv, cfg)
+    pm = peft.get_peft_model(
+        model, peft.LoraConfig(r=8, target_modules=names, modules_to_save=saved)
+    )
+    # the embed_tokens copy is an nn.Embedding, the lm_head copy an nn.Linear
+    assert sum(g.numel for g in groups if g.is_embedding) == embedding_numel(pm) == 1000 * 96
+
+
 # ---------------------------------------------------------------- 2. saved activations
 
 

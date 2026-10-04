@@ -5,6 +5,11 @@ B `(out, r)` per targeted Linear from the real module dims, `all-linear` = every
 output embedding (vision tower included), modules_to_save = frozen original + trainable deep copy,
 DoRA adds an `(out,)` magnitude vector per targeted Linear. TRL 1.14.1 casts every trainable
 parameter of a quantized model to bf16 (§Q6.1).
+
+Every group is a plain `TrainableGroup` with the contract flags set explicitly: `receives_grad`
+(False for parameters that never run on text-only data, e.g. the vision tower: resident, but no
+gradient and no optimizer state, §Q8.4), `component` and `is_embedding` (nn.Embedding parameters,
+which bnb 8-bit optimizers keep in 32-bit state, §8.3).
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import (
@@ -39,17 +45,7 @@ NO_GRAD_NOTE = (
     "(가중치만 상주)."
 )
 
-
-@dataclass(frozen=True)
-class ArchTrainableGroup(TrainableGroup):
-    """`TrainableGroup` plus whether the parameters ever receive a gradient.
-
-    Parameters of modules that never run on text-only data (vision tower) are allocated but get
-    no gradient and no optimizer state (research §Q8.4, verified E5d/V6).
-    """
-
-    receives_grad: bool = True
-    component: str = "text"
+GroupKind = Literal["lora", "modules_to_save", "full", "bias"]
 
 
 def config_error(message: str, **details: object) -> EstimatorError:
@@ -220,52 +216,56 @@ def _shape(dims: Iterable[int]) -> str:
 
 @dataclass
 class _Group:
-    kind: str
+    kind: GroupKind
     dtype: str
     executed: bool
     component: str
+    is_embedding: bool
     note: str
     numel: int = 0
     count: int = 0
 
 
 class _GroupBuilder:
-    """Aggregates tensors into groups keyed by (name, dtype, executed)."""
+    """Aggregates tensors into groups keyed by (name, dtype, executed, is_embedding)."""
 
     def __init__(self) -> None:
-        self._groups: dict[tuple[str, str, bool], _Group] = {}
+        self._groups: dict[tuple[str, str, bool, bool], _Group] = {}
 
     def add(
         self,
         *,
         name: str,
-        kind: str,
+        kind: GroupKind,
         dtype: str,
         numel: int,
         executed: bool,
         component: str,
+        is_embedding: bool = False,
         note: str = "",
     ) -> None:
         group = self._groups.setdefault(
-            (name, dtype, executed), _Group(kind, dtype, executed, component, note)
+            (name, dtype, executed, is_embedding),
+            _Group(kind, dtype, executed, component, is_embedding, note),
         )
         group.numel += numel
         group.count += 1
 
     def groups(self) -> list[TrainableGroup]:
         out: list[TrainableGroup] = []
-        for (name, _, _), g in self._groups.items():
+        for (name, _, _, _), g in self._groups.items():
             note = g.note if g.executed else (g.note + " " + NO_GRAD_NOTE).strip()
             out.append(
-                ArchTrainableGroup(
+                TrainableGroup(
                     name=name,
-                    kind=g.kind,  # type: ignore[arg-type]
+                    kind=g.kind,
                     numel=g.numel,
                     dtype=g.dtype,
                     tensor_count=g.count,
                     note=note,
                     receives_grad=g.executed,
                     component=g.component,
+                    is_embedding=g.is_embedding,
                 )
             )
         return out
@@ -291,14 +291,15 @@ def trainable_group_list(structure: ModelStructure, cfg: ResolvedConfig) -> list
             if not full.module_trainable(t.module):
                 continue
             label = _label(t.component)
-            role = "embedding:" if t.role is TensorRole.EMBEDDING else ""
+            embedding = t.role is TensorRole.EMBEDDING  # a tied lm_head shares this parameter
             builder.add(
-                name=f"full:{label}:{role}{_shape(t.shape)}",
+                name=f"full:{label}:{'embedding:' if embedding else ''}{_shape(t.shape)}",
                 kind="full",
                 dtype=resident_dtype(t, cfg),
                 numel=t.numel,
                 executed=t.component in EXECUTED_COMPONENTS,
                 component=label,
+                is_embedding=embedding,
             )
         return builder.groups()
 
@@ -361,7 +362,8 @@ def trainable_group_list(structure: ModelStructure, cfg: ResolvedConfig) -> list
     qmods = quantized_modules(structure, cfg)
     for module in sorted(trainability.saved_modules):
         tensors = structure.tensors_under(module, cfg.loading_scope)
-        if not tensors and module == structure.output_embedding:
+        tied_head = not tensors and module == structure.output_embedding
+        if tied_head:
             # A tied lm_head has no tensor of its own; its copy has the embedding's shape.
             tensors = [
                 t
@@ -377,14 +379,19 @@ def trainable_group_list(structure: ModelStructure, cfg: ResolvedConfig) -> list
         shapes = {tuple(t.shape) for t in tensors}
         for t in tensors:
             label = _label(t.component)
+            # The deep copy keeps module types: an nn.Embedding copy stays an embedding, the copy
+            # of a tied lm_head is an nn.Linear of the embedding's shape.
+            embedding = t.role is TensorRole.EMBEDDING and not tied_head
+            marker = ":embedding" if embedding and t.module != module else ""
             suffix = f":{_shape(t.shape)}" if len(shapes) > 1 else ""
             builder.add(
-                name=f"modules_to_save:{module}{suffix}",
+                name=f"modules_to_save:{module}{marker}{suffix}",
                 kind="modules_to_save",
                 dtype=_trainable_extra_dtype(t, cfg),
                 numel=t.numel,
                 executed=t.component in EXECUTED_COMPONENTS,
                 component=label,
+                is_embedding=embedding,
                 note="원본은 frozen으로 남고 학습 가능한 복사본이 추가됩니다.",
             )
     return builder.groups()

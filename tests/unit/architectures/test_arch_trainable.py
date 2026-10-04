@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 from arch_helpers import make_cfg
 
+from vramforge_estimator.architectures import TrainableGroup
 from vramforge_estimator.architectures.structure import (
     ATTENTION_PROJ,
     GDN_PROJ,
@@ -18,7 +19,6 @@ from vramforge_estimator.architectures.structure import (
     ModelStructure,
 )
 from vramforge_estimator.architectures.trainable import (
-    ArchTrainableGroup,
     build_trainability,
     peft_target_spec,
     resolve_lora_targets,
@@ -81,8 +81,51 @@ def test_mimo_all_linear_includes_vision_without_gradients(st: ModelStructure) -
     assert _numel(groups, grad=True) == 43_278_336
     vision = [g for g in groups if not g.receives_grad]
     assert _numel(vision) == 7_986_688 and all(g.component == "vision" for g in vision)
-    assert all(isinstance(g, ArchTrainableGroup) for g in groups)
     assert all("gradient" in g.note for g in vision)
+
+
+def _flags(groups: list[TrainableGroup]) -> set[tuple[str, bool | None, str, bool]]:
+    return {(g.kind, g.receives_grad, g.component, g.is_embedding) for g in groups}
+
+
+def test_groups_are_plain_contract_groups_with_explicit_flags(st: ModelStructure) -> None:
+    names = _targets(st, "all-linear")
+    cases = [
+        make_cfg(targets=names, bias="all"),
+        make_cfg(strategy=Strategy.LORA, targets=names, modules_to_save=["lm_head"], dora=True),
+        make_cfg(strategy=Strategy.FULL),
+    ]
+    for cfg in cases:
+        groups = trainable_group_list(st, cfg)
+        assert all(type(g) is TrainableGroup for g in groups)  # no adapter-private subclass
+        assert all(isinstance(g.receives_grad, bool) for g in groups)  # never "not reported"
+        assert all(g.receives_grad is (g.component == "text") for g in groups)
+    assert _flags(trainable_group_list(st, cases[0])) == {
+        ("lora", True, "text", False),
+        ("lora", False, "vision", False),
+        ("bias", False, "vision", False),  # MiMo has biases only in the vision tower
+    }
+
+
+def test_embedding_flag_marks_nn_embedding_parameters(st: ModelStructure) -> None:
+    full = trainable_group_list(st, make_cfg(strategy=Strategy.FULL))
+    emb = [(g.name, g.numel, g.receives_grad) for g in full if g.is_embedding]
+    assert emb == [
+        ("full:text:embedding:248320x4096", 1_017_118_720, True),
+        ("full:vision:embedding:2304x1152", 2_654_208, False),  # pos_embed, never run on text
+    ]
+    assert not any(g.is_embedding for g in full if ":embedding:" not in g.name)
+    names = _targets(st, "auto_verified")
+    cfg = make_cfg(
+        strategy=Strategy.LORA, targets=names, modules_to_save=["embed_tokens", "lm_head"]
+    )
+    copies = {g.name: g.is_embedding for g in trainable_group_list(st, cfg) if g.kind != "lora"}
+    # the nn.Embedding copy keeps 32-bit bnb 8-bit state; the (untied) lm_head copy is an nn.Linear
+    assert copies == {
+        "modules_to_save:model.language_model.embed_tokens": True,
+        "modules_to_save:lm_head": False,
+    }
+    assert not any(g.is_embedding for g in trainable_group_list(st, cfg) if g.kind == "lora")
 
 
 def test_text_only_scope_has_no_vision_adapters(st: ModelStructure) -> None:
@@ -251,9 +294,14 @@ def test_tied_lm_head_copy_uses_the_embedding_shape(ib: ModuleType) -> None:
     st = ModelStructure(inv, "dense")
     assert st.output_embedding == "lm_head"  # tied head module exists without its own tensor
     base = ["model.layers.0.mlp.down_proj"]
-    for entry in ("lm_head", "embed_tokens"):
+    for entry, embedding in (("lm_head", False), ("embed_tokens", True)):
         cfg = make_cfg(strategy=Strategy.LORA, targets=base, modules_to_save=[entry])
-        assert _numel(trainable_group_list(st, cfg), kind="modules_to_save") == 1000 * 96
+        copy = [g for g in trainable_group_list(st, cfg) if g.kind == "modules_to_save"]
+        assert _numel(copy) == 1000 * 96
+        # the tied head's copy is an nn.Linear of the embedding's shape, not an nn.Embedding
+        assert [g.is_embedding for g in copy] == [embedding]
+    full = trainable_group_list(st, make_cfg(strategy=Strategy.FULL))
+    assert [g.numel for g in full if g.is_embedding] == [1000 * 96]  # shared parameter, once
 
 
 def test_unknown_resolved_target_is_an_error(st: ModelStructure) -> None:
