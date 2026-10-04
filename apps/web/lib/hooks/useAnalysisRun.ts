@@ -47,7 +47,7 @@ type Action =
   | { type: "status"; status: AnalysisStatus }
   | { type: "connection"; state: ConnectionState }
   | { type: "cancelling" }
-  | { type: "error"; error: ApiError }
+  | { type: "error"; error: ApiError; fatal: boolean }
   | { type: "reset" };
 
 function reducer(state: RunState, action: Action): RunState {
@@ -88,7 +88,11 @@ function reducer(state: RunState, action: Action): RunState {
     case "cancelling":
       return { ...state, cancelling: true };
     case "error":
-      return { ...state, phase: state.analysisId && state.phase !== "creating" ? state.phase : "error", error: action.error, cancelling: false };
+      // Fatal: the run cannot continue from here (create/resume/status failed). A failed cancel
+      // request is not fatal: the job keeps running and the stream stays open.
+      return action.fatal
+        ? { ...state, phase: "error", error: action.error, cancelling: false, connection: "closed" }
+        : { ...state, error: action.error, cancelling: false };
     case "reset":
       return INITIAL;
   }
@@ -113,7 +117,7 @@ export function useAnalysisRun() {
         dispatch({ type: "status", status });
         return status;
       } catch (error) {
-        if (error instanceof ApiError) dispatch({ type: "error", error });
+        if (error instanceof ApiError) dispatch({ type: "error", error, fatal: true });
         return null;
       }
     },
@@ -135,7 +139,7 @@ export function useAnalysisRun() {
               return isTerminalStatus(status.status) ? "terminal" : "retry";
             } catch (error) {
               if (error instanceof ApiError && GONE.has(error.status)) {
-                dispatch({ type: "error", error });
+                dispatch({ type: "error", error, fatal: true });
                 return "stop";
               }
               return "retry";
@@ -166,7 +170,7 @@ export function useAnalysisRun() {
         if (isTerminalStatus(created.status)) void fetchStatus(created.analysis_id);
         else follow(created.analysis_id, null);
       } catch (error) {
-        if (error instanceof ApiError) dispatch({ type: "error", error });
+        if (error instanceof ApiError) dispatch({ type: "error", error, fatal: true });
         else throw error;
       }
     },
@@ -191,7 +195,7 @@ export function useAnalysisRun() {
       const status = await api.cancelAnalysis(state.analysisId);
       dispatch({ type: "status", status });
     } catch (error) {
-      if (error instanceof ApiError) dispatch({ type: "error", error });
+      if (error instanceof ApiError) dispatch({ type: "error", error, fatal: false });
     }
   }, [api, state.analysisId]);
 

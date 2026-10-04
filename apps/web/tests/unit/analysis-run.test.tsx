@@ -87,6 +87,21 @@ describe("useAnalysisRun", () => {
     const { result } = setup({ getAnalysis });
     await waitFor(() => expect(result.current.state.error?.status).toBe(404));
     expect(window.location.search).toBe("");
+    // The run is over: the page must not stay in a "running" state with disabled buttons.
+    expect(result.current.state.phase).toBe("error");
+  });
+
+  it("keeps running when only the cancel request fails", async () => {
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const cancelAnalysis = vi.fn(async () => {
+      throw new ApiError(409, { code: "CONFLICTING_OPTIONS", severity: "error", retryable: false, user_message: "이미 끝난 분석입니다." });
+    });
+    const { result } = setup({ createAnalysis, cancelAnalysis, getAnalysis: vi.fn(async () => runningStatus) });
+    await act(() => result.current.start(grpoRequest));
+    await act(() => result.current.cancel());
+    expect(result.current.state.phase).toBe("running");
+    expect(result.current.state.error?.status).toBe(409);
+    expect(result.current.state.cancelling).toBe(false);
   });
 
   it("requests cancellation", async () => {

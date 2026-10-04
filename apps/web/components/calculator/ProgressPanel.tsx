@@ -53,10 +53,13 @@ export function ProgressPanel({
   run,
   onCancel,
   onRerun,
+  onRetry,
 }: {
   run: RunState;
   onCancel: () => void;
   onRerun: () => void;
+  /** Reload the job status after a failed status/stream request. */
+  onRetry?: () => void;
 }) {
   const states = stepStates(run);
   const progress = run.progress;
@@ -112,6 +115,13 @@ export function ProgressPanel({
           </p>
         ) : null}
         {run.error ? <IssueList issues={[run.error.issue]} /> : null}
+        {run.phase === "error" && run.analysisId && onRetry && run.error?.status !== 404 ? (
+          <div>
+            <Button size="sm" onClick={onRetry}>
+              상태 다시 불러오기
+            </Button>
+          </div>
+        ) : null}
         {status === "COMPLETED" ? <p className="text-[13px] text-ok">분석을 마쳤습니다. 결과는 요약 카드와 아래 탭에 있습니다.</p> : null}
         {status === "PARTIAL" ? (
           <>
