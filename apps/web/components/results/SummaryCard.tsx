@@ -233,10 +233,11 @@ function SummaryCardImpl({ run, view, hardwareRequested, gpuWorkerConnected, exp
 
       <GaugeArea result={hasEstimate ? result : null} summary={summary} hardwareRequested={hardwareRequested} stale={Boolean(stale)} />
 
-      {summary ? (
+      {summary && result ? (
         <div className="flex flex-col gap-2">
           <h3 className="text-[13px] font-semibold text-ink">확인할 점</h3>
           <IssueList issues={attentionItems(summary)} limit={4} empty="제외·미확정 항목과 경고가 없습니다." />
+          <AssumptionNote result={result} />
         </div>
       ) : null}
       {running && run.liveIssues.length > 0 ? <IssueList issues={run.liveIssues} limit={3} /> : null}
@@ -258,6 +259,17 @@ function partialValue(key: string, value: number | string | null): ReactNode {
   if (typeof value === "number") return formatCount(value);
   if (key === "status" && value != null && value in SCAN_COVERAGE_LABEL) return SCAN_COVERAGE_LABEL[value as ScanCoverage];
   return value ?? "—";
+}
+
+/** plan.md §3.1: assumptions the numbers depend on are pointed to from the summary as well. */
+function AssumptionNote({ result }: { result: AnalysisResult }) {
+  const ids = new Set([...(result.assumptions ?? []), ...(result.memory?.assumptions ?? [])].map((a) => a.id));
+  if (ids.size === 0) return null;
+  return (
+    <p className="text-[12px] leading-snug text-muted">
+      이 수치는 명시한 가정 {formatCount(ids.size)}건에 기대고 있습니다. 가정과 근거는 &lsquo;적용 설정·근거&rsquo; 탭에 있습니다.
+    </p>
+  );
 }
 
 function ScanSoFar({ run }: { run: RunState }) {

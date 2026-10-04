@@ -107,6 +107,13 @@ describe("SummaryCard", () => {
     expect(list).toHaveTextContent("판정 안 함");
   });
 
+  it("points to the assumptions behind the numbers", () => {
+    renderCard({ run: terminalRun(completedSftStatus), view: view(sftResult) });
+    const count = new Set([...(sftResult.assumptions ?? []), ...(sftResult.memory?.assumptions ?? [])].map((a) => a.id)).size;
+    expect(count).toBeGreaterThan(0);
+    expect(screen.getByText(new RegExp(`명시한 가정 ${count}건에 기대고 있습니다`))).toBeInTheDocument();
+  });
+
   it("hides the GPU gauge when no hardware was selected", () => {
     renderCard({ run: terminalRun(completedSftStatus), view: view(sftResult) });
     expect(screen.queryByRole("img", { name: /GPU 사용량/ })).not.toBeInTheDocument();
