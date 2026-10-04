@@ -173,6 +173,9 @@ class ReadInfo:
     file_format: FileFormat | None = None
     rows: int = 0
     errors: int = 0
+    # Columns datasets JSON-encodes from some record on (a later JSON batch mixed value types in
+    # a column already locked as a non-Json type): (dotted path, records of the file before it).
+    json_text_columns: list[tuple[str, int]] = field(default_factory=list)
 
 
 class FileSource:

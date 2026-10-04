@@ -359,3 +359,27 @@ def test_readme_features_cast_rows_like_load_dataset(
     assert got == datasets_rows(root)["train"]
     assert got[0] == {"id": "1", "prompt": "첫째", "extra": None}
     assert stream.complete
+
+
+def test_column_datasets_turns_into_json_text_is_reported(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    # The 2nd chunk mixes a number into a string column: datasets JSON-encodes the column from
+    # that chunk on ('"x"'), and the trainer sees those values. Same rows here, plus a warning.
+    root = tmp_path / "ds"
+    rows = [{"c": "first"}] * 6 + [{"c": "x"}, {"c": 5}, {"c": "y"}] + [{"c": "z"}] * 3
+    write_jsonl(root / "train.jsonl", rows)
+    (root / "README.md").write_text(
+        "---\nconfigs:\n- config_name: default\n  data_files: train.jsonl\n  chunksize: 64\n---\n",
+        encoding="utf-8",
+    )
+    stream = stream_for(local_source(root))
+    got = [r.row for r in stream]
+    assert got == datasets_rows(root)["train"]
+    assert got[0] == {"c": "first"} and got[-1] == {"c": '"z"'}
+    assert stream.complete
+    warning = next(i for i in stream.issues if i.details.get("reason") == "json_encoded_column")
+    assert warning.code == ErrorCode.DATA_PRESERVATION_VIOLATION
+    assert warning.severity.value == "warning"
+    assert (warning.details["column"], warning.details["row_index"]) == ("c", 5)
+    assert got[5] == {"c": '"first"'}  # the first JSON-encoded row is the reported one

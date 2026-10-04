@@ -150,6 +150,8 @@ class DatasetRowStream:
         self, data_file: DataFile, schema: SchemaState, failed_sample: list[dict[str, object]]
     ) -> Iterator[SourceRow]:
         shard_id = data_file.shard_id
+        info = ReadInfo()
+        start = self.rows_seen
         try:
             source = self._files.scan_source(data_file)
             assert source.path is not None
@@ -162,7 +164,6 @@ class DatasetRowStream:
                 options=self._config.options,
                 compression=compression_of(source),
             )
-            info = ReadInfo()
             logger.info("reading shard %s (%s)", shard_id, spec.module)
             for item in iter_file(source, spec, self._limits, schema, info):
                 index = self.rows_seen
@@ -255,6 +256,35 @@ class DatasetRowStream:
                     error_type=type(exc).__name__,
                     shard_id=shard_id,
                     rows_read=self.rows_seen,
+                )
+            )
+        finally:
+            self._note_json_text(info, start, shard_id)
+
+    def _note_json_text(self, info: ReadInfo, start: int, shard_id: str) -> None:
+        """One warning per column datasets turns into JSON text (rows are read the same way)."""
+        reported = {
+            issue.details.get("column")
+            for issue in self.issues
+            if issue.details.get("reason") == "json_encoded_column"
+        }
+        for column, offset in info.json_text_columns:
+            if column in reported:
+                continue
+            reported.add(column)
+            row_index = start + offset
+            self.issues.append(
+                _issue(
+                    ErrorCode.DATA_PRESERVATION_VIOLATION,
+                    f"'{column}' 컬럼 값의 형식이 섞여 있어 datasets가 {row_index}번 row(0부터 셈)"
+                    "부터 이 컬럼을 JSON 문자열로 바꿔 넘깁니다(문자열에 따옴표가 붙는 등). "
+                    "분석은 학습 때와 같은 값으로 했습니다. 원본 데이터의 값 형식을 통일하는 것을 "
+                    "권장합니다.",
+                    severity=Severity.WARNING,
+                    reason="json_encoded_column",
+                    column=column,
+                    row_index=row_index,
+                    shard_id=shard_id,
                 )
             )
 

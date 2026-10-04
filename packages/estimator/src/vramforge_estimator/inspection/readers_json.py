@@ -299,6 +299,7 @@ class _JsonReader:
         )
 
         schema = self.schema
+        locked = schema.features is not None
         # Work on a copy: a batch that fails must not leave field paths behind for later batches.
         paths = [list(path) for path in schema.json_field_paths]
         use_json = self.opts.on_mixed_types == "use_json"
@@ -352,6 +353,13 @@ class _JsonReader:
             table = self._cast(table, paths)
         except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError, ValueError) as exc:
             raise _BatchFailed from exc
+        if locked:
+            # Like datasets, this column stays JSON-encoded text from here on ('"x"' for "x").
+            self.info.json_text_columns.extend(
+                (".".join(str(part) for part in path), self.info.rows + self.info.errors)
+                for path in paths
+                if path not in schema.json_field_paths
+            )
         schema.json_field_paths[:] = paths
         return table
 
