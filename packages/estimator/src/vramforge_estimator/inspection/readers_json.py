@@ -9,6 +9,11 @@ larger ones are split into elements incrementally (bounded memory).
 Differences, all limited to inputs datasets cannot load at all: a chunk that fails to parse is
 re-read record by record and each unparseable record becomes a `RowError` (datasets falls back to
 pandas and then raises), and quotas from `ReaderLimits` stop reading with `QuotaExceeded`.
+
+Known approximations (documented, not silent): the schema is locked by the first batch of the
+selected split (datasets infers it from the first batch of the config's first split, which may be
+another split), and an incrementally read JSON array infers it from its first batch of elements
+instead of the whole array. Both only matter when value types change across those boundaries.
 """
 
 from __future__ import annotations
