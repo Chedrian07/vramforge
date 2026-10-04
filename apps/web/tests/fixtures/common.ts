@@ -107,16 +107,19 @@ export const architectureFacts: Schemas["ArchitectureFacts"] = {
   config_sha256: "407c46388b8fa2ae9bf69fe27d40af236d373e86a6b48f5284c86df5cd183633",
 };
 
+// Tensor and parameter counts are the safetensors-header facts of the example checkpoint
+// (docs/research/loading-quantization-peft.md V1, architecture-memory.md V19: 760 BF16 tensors,
+// 9,409,813,744 params = text 8,953,803,264 + vision 456,010,480, no mtp tensors).
+// linear_module_count is illustrative only (not shown by the UI).
 export const modelSummary: Schemas["ModelInventorySummary"] = {
   facts: architectureFacts,
-  tensor_count: 1_043,
+  tensor_count: 760,
   linear_module_count: 409,
-  params_total: 9_651_574_768,
-  bytes_serialized_total: 19_303_149_536,
+  params_total: 9_409_813_744,
+  bytes_serialized_total: 18_819_627_488,
   by_component: [
-    { component: "text", params: 9_194_496_000, bytes_serialized: 18_388_992_000 },
+    { component: "text", params: 8_953_803_264, bytes_serialized: 17_907_606_528 },
     { component: "vision", params: 456_010_480, bytes_serialized: 912_020_960 },
-    { component: "mtp", params: 1_068_288, bytes_serialized: 2_136_576 },
   ],
   tied_groups: [],
   quantized_checkpoint_format: null,
