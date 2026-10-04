@@ -173,6 +173,7 @@ local-sources/datasets/my-dataset  →  local:local/datasets/my-dataset
 
 - `docker compose down`은 컨테이너와 네트워크만 지웁니다. 다시 `up` 하면 이전 분석이 그대로 있습니다.
 - `docker compose down -v`는 **이 프로젝트의 볼륨 3개를 함께 지웁니다.** 모든 분석 결과, 업로드, HF cache가 사라지며 되돌릴 수 없습니다.
+- compose 프로젝트 이름은 `compose.yaml`에 `vramforge`로 고정되어 있습니다. 그래서 같은 호스트의 **다른 checkout**에서 실행한 `docker compose` 명령도 같은 컨테이너와 볼륨을 다룹니다(`up`은 컨테이너를 그 checkout 기준으로 다시 만들고, `down -v`는 같은 볼륨을 지움). 한 호스트에 스택을 하나 더 띄울 때는 `docker compose -p vramforge-2 up -d --build`처럼 다른 프로젝트 이름과 다른 `VRAMFORGE_PORT`를 쓰고, 그 스택의 명령에도 항상 같은 `-p`를 붙입니다.
 - 업로드와 분석 결과의 보존 기간은 API 설정 `VRAMFORGE_RETENTION_DAYS`(기본 7일)입니다. 만료된 업로드는 분석에 쓸 수 없고, worker의 정리 작업이 기간이 지난 항목을 지웁니다(HF cache는 지우지 않음). 볼륨 자체는 `down -v`를 실행하기 전까지 남습니다.
 
 백업 (서비스가 실행 중일 때):
