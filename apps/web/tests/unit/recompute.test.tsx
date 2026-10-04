@@ -86,6 +86,50 @@ describe("useRecompute", () => {
     expect(result.current.display).toBe(dpoResult);
     expect(result.current.stale).toBe(false);
     expect(result.current.history[0]?.changes).toEqual(["LoRA r 16 → 32"]);
+    // Exports of what is shown need the request the displayed scenario was computed for.
+    expect(result.current.scenario).toEqual({ request: r32, changes: ["LoRA r 16 → 32"] });
+
+    // Back to the base settings: the stored analysis is shown again, not a scenario.
+    rerender({ analysisId: base.analysis_id, baseResult: base, baseRequest, currentRequest: baseRequest, enabled: true });
+    expect(result.current.display).toBe(base);
+    expect(result.current.scenario).toBeNull();
+  });
+
+  it("keeps the shown scenario's request while a newer setting is still pending", async () => {
+    vi.useFakeTimers();
+    const scenarios = vi.fn(async (_id: string, body: { request: AnalysisRequest }) => answer(body.request));
+    const { result, rerender } = setup(scenarios as unknown as ApiClient["scenarios"]);
+    const r32 = requestWith({ loraR: "32" });
+    rerender({ analysisId: base.analysis_id, baseResult: base, baseRequest, currentRequest: r32, enabled: true });
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(result.current.scenario?.request).toEqual(r32);
+    rerender({ analysisId: base.analysis_id, baseResult: base, baseRequest, currentRequest: requestWith({ objective: "dpo" }), enabled: true });
+    // Re-analysis needed: the "이전 설정" numbers on screen are still the r=32 scenario.
+    expect(result.current.mode).toBe("reanalysis");
+    expect(result.current.stale).toBe(true);
+    expect(result.current.display).toBe(dpoResult);
+    expect(result.current.scenario?.request).toEqual(r32);
+  });
+
+  it("keeps the same view object while nothing changed (memoized result components)", () => {
+    const { result, rerender } = setup(vi.fn());
+    const first = result.current;
+    rerender({ analysisId: base.analysis_id, baseResult: base, baseRequest, currentRequest: baseRequest, enabled: true });
+    expect(result.current).toBe(first);
+    expect(result.current.history).toBe(first.history);
+    expect(result.current.retry).toBe(first.retry);
+  });
+
+  it("names an unreadable scenario answer instead of calling it empty", async () => {
+    const scenarios = vi.fn(async () => {
+      throw new SyntaxError("Unexpected token <");
+    });
+    const { result, rerender } = setup(scenarios as unknown as ApiClient["scenarios"]);
+    rerender({ analysisId: base.analysis_id, baseResult: base, baseRequest, currentRequest: requestWith({ loraR: "8" }), enabled: true });
+    await waitFor(() => expect(result.current.mode).toBe("error"));
+    expect(result.current.error?.issue.user_message).toMatch(/처리하지 못했습니다/);
   });
 
   it("sends only the latest of rapid edits", async () => {

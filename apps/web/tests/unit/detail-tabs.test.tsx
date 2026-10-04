@@ -117,7 +117,7 @@ describe("detail tabs", () => {
       <DetailTabs
         result={grpoResult}
         base={grpoResult}
-        history={[{ base: "b", key: "k", changes: ["LoRA r 16 → 32"], result: dpoResult }]}
+        history={[{ base: "b", key: "k", changes: ["LoRA r 16 → 32"], request: dpoResult.requested_config, result: dpoResult }]}
         partial={false}
         stale={false}
       />,
