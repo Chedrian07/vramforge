@@ -155,3 +155,13 @@ def test_trainable_lm_head_input_shares_the_final_hidden_storage(mimo) -> None:
     hidden = alloc(scenario, "policy.act.final_hidden")
     assert head.storage_alias_group == hidden.storage_alias_group is not None
     assert head.bytes_high == hidden.bytes_high == 2 * 2272 * 4096 * 2  # 2B x T x H, bf16
+
+
+def test_dpo_lora_dropout_is_disabled_like_trl(mimo) -> None:
+    # TRL DPOConfig.disable_dropout=True zeroes LoRA dropout, so p=0.05 must not add activations.
+    lora = {"r": 16, "alpha": 32, "target_modules": "auto_verified"}
+    shapes = [shape(Objective.DPO, 2, 2272)]
+    _, plain = estimate(mimo, request(objective="dpo", lora={**lora, "dropout": 0.0}), shapes)
+    _, dropped = estimate(mimo, request(objective="dpo", lora={**lora, "dropout": 0.05}), shapes)
+    highs = [e.scenarios[0].devices[0].scenario_high_bytes for e in (plain, dropped)]
+    assert highs[0] is not None and highs[0] == highs[1]

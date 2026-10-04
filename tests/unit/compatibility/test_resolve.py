@@ -325,3 +325,63 @@ def test_excluding_a_configured_evaluation_makes_the_result_conditional(adapter)
         request(**sft, dataset__eval_split="test", scope={"include_evaluation": True}), inv, None
     )[1]
     assert included.readiness is TrainingReadiness.READY
+
+
+def test_dpo_records_the_effective_dropout_and_reference_settings(adapter) -> None:
+    # plan §5.3: record beta, loss type, reference sync and the effective dropout. TRL DPO's
+    # disable_dropout=True sets every nn.Dropout (LoRA dropout included) to p = 0.
+    dpo = {"training__objective": "dpo", "training__lora": {"dropout": 0.05}}
+    cfg, report = resolve(request(**dpo), hybrid_inventory(), None)
+    assert cfg is not None and cfg.lora is not None and cfg.lora.dropout == 0.0
+    dropout = next(r for r in report.not_effective if r.field == "training.lora.dropout")
+    assert (dropout.requested, dropout.resolved) == (0.05, 0.0)
+    assert field(cfg, "dpo.disable_dropout").resolved is True
+    assert field(cfg, "dpo.loss_type").resolved == ["sigmoid"]
+    assert field(cfg, "dpo.beta").resolved == 0.1
+    assert field(cfg, "dpo.sync_ref_model").resolved is False
+    assert "2B" in field(cfg, "dpo.batch_layout").resolved
+    assert "dpo.precompute_batch_size" not in {r.field for r in cfg.resolutions}
+    unused, report2 = resolve(
+        request(**dpo, dpo={"precompute_batch_size": 4}), hybrid_inventory(), None
+    )
+    assert unused is not None
+    assert "dpo.precompute_batch_size" in {r.field for r in report2.not_effective}
+    sft, _ = resolve(
+        request(training__objective="sft", training__lora={"dropout": 0.05}),
+        hybrid_inventory(),
+        None,
+    )
+    assert sft is not None and sft.lora is not None and sft.lora.dropout == 0.05
+
+
+@pytest.mark.parametrize(
+    ("changes", "mode"),
+    [
+        ({}, "none"),
+        ({"grpo__beta": 0.04}, "frozen_base_switch"),
+        (
+            {
+                "grpo__beta": 0.04,
+                "training__strategy": "full",
+                "training__quantization": {"enabled": False},
+            },
+            "standalone_model",
+        ),
+    ],
+)
+def test_grpo_records_reference_mode_and_rollout_precision(adapter, changes, mode) -> None:
+    # plan §5.4: rollout dtype/quantization recorded apart from the policy; reference mode from
+    # beta and the trainer behavior.
+    cfg, _ = resolve(request(**changes), hybrid_inventory(), None)
+    assert cfg is not None
+    assert field(cfg, "grpo.reference_mode").resolved == mode
+    rollout = field(cfg, "grpo.rollout_precision").resolved
+    full = "training__strategy" in changes
+    assert rollout["kv_cache"] == "bfloat16" and rollout["recurrent_state"] == "float32"
+    assert rollout["conv_state"] == "bfloat16"  # full: autocast; PEFT: bf16 load dtype
+    assert rollout["step_logits"] == ("float32" if full else "bfloat16")
+    fp32, _ = resolve(request(**changes, training__load_dtype="float32"), hybrid_inventory(), None)
+    assert fp32 is not None
+    low = field(fp32, "grpo.rollout_precision").resolved
+    assert low["kv_cache"] == "float32"
+    assert low["conv_state"] == ("bfloat16" if full else "float32")

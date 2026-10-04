@@ -248,10 +248,22 @@ def _lora(
                 "training.lora.target_modules",
             )
         )
+    dropout = lora.dropout
+    if t.objective is Objective.DPO and dropout > 0:
+        # plan §5.3 asks for the effective dropout; the activation ledger must not add dropout
+        # masks/copies that never exist at runtime.
+        res.ineffective(
+            "training.lora.dropout",
+            dropout,
+            0.0,
+            "TRL DPOConfig.disable_dropout=True(기본, 내보내는 설정에도 고정)가 LoRA dropout을 "
+            "포함한 모든 nn.Dropout의 p를 0으로 만듭니다 (trl dpo_trainer.py:932-935).",
+        )
+        dropout = 0.0
     return LoraResolved(
         r=lora.r,
         alpha=lora.alpha,
-        dropout=lora.dropout,
+        dropout=dropout,
         target_module_patterns=patterns,
         target_modules=names,
         exclude_modules=list(lora.exclude_modules),
@@ -390,6 +402,33 @@ def _dpo(
             d.precompute_batch_size or microbatch,
             "TRL 기본: precompute_ref_batch_size가 없으면 per_device_train_batch_size",
         )
+    elif d.precompute_batch_size is not None:
+        res.ineffective(
+            "dpo.precompute_batch_size",
+            d.precompute_batch_size,
+            None,
+            "reference log-prob을 사전 계산하지 않는 전략이라 사용되지 않습니다.",
+        )
+    res.set("dpo.beta", d.beta, d.beta, "요청값 (메모리와 무관, 바꾸지 않음)")
+    res.set(
+        "dpo.loss_type",
+        d.loss_type,
+        [p.strip() for p in d.loss_type.split(",") if p.strip()],
+        "TRL DPOConfig.loss_type (문자열은 list로 감쌈)",
+    )
+    res.set("dpo.sync_ref_model", d.sync_ref_model, d.sync_ref_model, "요청값")
+    res.set(
+        "dpo.disable_dropout",
+        None,
+        True,
+        "TRL DPOConfig 기본값을 내보내는 설정에 고정: 정책·reference의 모든 dropout p = 0",
+    )
+    res.set(
+        "dpo.batch_layout",
+        None,
+        "chosen B행 + rejected B행 = 2B행, 가장 긴 branch 길이로 right padding, forward 1회",
+        "TRL 1.14.1 DataCollatorForPreference (docs/research/trl-sft-dpo.md §8.1)",
+    )
     return DpoResolved(
         reference_strategy=strategy,
         beta=d.beta,
@@ -399,8 +438,32 @@ def _dpo(
     )
 
 
+def _rollout_precision(
+    request: AnalysisRequest, load_dtype: str, has_linear_attention: bool
+) -> dict[str, str]:
+    """dtypes of the shared-policy rollout, recorded apart from the training policy (plan §5.4):
+    K/V follow the load dtype; a full-FT policy generates under autocast (bf16 conv state, fp32
+    step logits), a PEFT policy without it (load dtype)."""
+    full = request.training.strategy is Strategy.FULL
+    out = {
+        "weights": "학습 정책 공유",
+        "kv_cache": load_dtype,
+        "step_logits": "float32" if full else load_dtype,
+    }
+    if has_linear_attention:
+        out["conv_state"] = "bfloat16" if full else load_dtype
+        out["recurrent_state"] = "float32"
+    return out
+
+
 def _grpo(
-    request: AnalysisRequest, microbatch: int, accumulation: int, res: _Resolution
+    request: AnalysisRequest,
+    microbatch: int,
+    accumulation: int,
+    res: _Resolution,
+    *,
+    load_dtype: str,
+    has_linear_attention: bool,
 ) -> GrpoResolved | None:
     g = request.grpo
     batch, issues = resolve_grpo_batch(
@@ -418,7 +481,7 @@ def _grpo(
         "grpo.generation_batch_size",
         g.generation_batch_size,
         batch.generation_batch_size,
-        "TRL GRPOConfig.__post_init__ 공식",
+        "TRL GRPOConfig.__post_init__ 공식 (단위: 전체 process 합의 completion 수)",
     )
     res.set(
         "grpo.steps_per_generation",
@@ -446,6 +509,21 @@ def _grpo(
     )
     on_gpu = g.reward.kind is RewardKind.LOCAL_MODEL and g.reward.on_training_gpu
     res.set("grpo.reward.on_training_gpu", g.reward.on_training_gpu, on_gpu, "reward 배치")
+    peft = request.training.strategy is not Strategy.FULL
+    if g.beta == 0:
+        mode, why = "none", "beta = 0: reference 모델과 reference log-prob pass가 없습니다."
+    elif peft:
+        mode, why = "frozen_base_switch", "PEFT: adapter를 끈 같은 정책으로 reference log-prob"
+    else:
+        mode, why = "standalone_model", "Full fine-tuning: 정책과 같은 설정의 두 번째 전체 모델"
+    res.set("grpo.reference_mode", None, mode, why + " (docs/research/trl-grpo.md §8).")
+    res.set(
+        "grpo.rollout_precision",
+        None,
+        _rollout_precision(request, load_dtype, has_linear_attention),
+        "Transformers 공유 정책 rollout: 학습 가중치(4-bit 포함)를 그대로 쓰고, PEFT generate는 "
+        "accelerate autocast를 거치지 않습니다 (docs/research/trl-grpo.md §4.4, R3).",
+    )
     if batch.unique_prompts > 1:
         res.warnings.append(
             _warning(
@@ -722,7 +800,18 @@ def _build(
         else:
             template_kwargs["enable_thinking"] = thinking
     dpo = _dpo(request, profile, microbatch, res) if t.objective is Objective.DPO else None
-    grpo = _grpo(request, microbatch, accumulation, res) if t.objective is Objective.GRPO else None
+    grpo = (
+        _grpo(
+            request,
+            microbatch,
+            accumulation,
+            res,
+            load_dtype=load_dtype,
+            has_linear_attention=LINEAR_ATTENTION in facts.layer_types,
+        )
+        if t.objective is Objective.GRPO
+        else None
+    )
     mapping = request.dataset.mapping
     return ResolvedConfig(
         profile_id=profile.id,

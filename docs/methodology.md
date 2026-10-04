@@ -349,6 +349,8 @@ RAM 결과의 `bytes_low`는 단계별 최대값으로 본 **확인된 하한**�
 - **effective dtype**: compute bf16, adapter·gradient·optimizer state는 위 §5, logits·loss fp32(accelerate), KV cache = load dtype, recurrent state fp32.
 - **4-bit preset**: NF4 + double quant(blocksize 64/256), compute bf16, `lm_head` 제외.
 - **preset**: microbatch/accumulation SFT·DPO 1/8, GRPO 1/4.
+- **DPO 기록**(plan §5.3): reference 전략·모델, β, loss type, reference sync, precompute batch, 2B행 batch 배치와 **실효 dropout**. TRL `DPOConfig.disable_dropout=True`(기본, 내보내는 설정에 고정)가 LoRA dropout까지 p = 0으로 만들므로 요청한 LoRA dropout은 0으로 해석하고(요청 무효로 기록) dropout activation을 넣지 않습니다.
+- **GRPO 기록**(plan §5.4): generation batch(전체 process 합 단위), spg, reference mode(β = 0 → 없음, PEFT → adapter off, full FT → 두 번째 모델), 정책과 별도의 rollout dtype(K/V = load dtype, full FT는 autocast로 conv state bf16·step logits fp32, PEFT는 load dtype).
 - **GRPO batch**(TRL `GRPOConfig.__post_init__`): spg = K (둘 다 미지정), spg = gbs / (B_update × W) (gbs 지정, 나누어떨어져야 함), gbs = B_update × W × spg; gbs mod G = 0, G ≥ 2, gbs와 spg 동시 지정 불가; U = gbs / G, C = B_update × spg. 예: G=4, gbs=4, B=1, K=4 → spg=4, C=4, U=1.
 - **차단(오류)**: 4-bit와 strategy 모순, 다중 GPU, 엄격 모드의 packing, 실행 경로나 메모리 모델이 없는 옵션(offload, compile, liger, flash-attn, vLLM rollout, DoRA, bf16 외 precision), DPO reference 충돌, 정보가 빠진 local reward.
 - **요청 무효(경고)**: 설치되지 않은 linear-attention kernel 요청(실제 실행 경로인 torch fallback으로 계산), `max_live_sequences`, template이 쓰지 않는 template 옵션.
