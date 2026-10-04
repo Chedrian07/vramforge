@@ -197,10 +197,17 @@ def extend_live_at(
 def renamed(
     specs: Iterable[AllocationSpec], prefix: str, category: AllocationCategory | None = None
 ) -> list[AllocationSpec]:
-    updates: dict[str, object] = {}
-    if category is not None:
-        updates["category"] = category
-    return [s.model_copy(update={**updates, "name": f"{prefix}.{s.name}"}) for s in specs]
+    """Copies for another model instance: names and alias groups get the prefix so the copy is
+    never merged with the original storage."""
+    out = []
+    for s in specs:
+        updates: dict[str, object] = {"name": f"{prefix}.{s.name}"}
+        if s.storage_alias_group:
+            updates["storage_alias_group"] = f"{prefix}.{s.storage_alias_group}"
+        if category is not None:
+            updates["category"] = category
+        out.append(s.model_copy(update=updates))
+    return out
 
 
 def resolution_value(cfg: ResolvedConfig, field_name: str, default: object = None) -> object:
@@ -336,7 +343,7 @@ def optimizer_state_bytes(s: TrainableSlice, cfg: ResolvedConfig) -> tuple[int, 
         if opt.paged:
             note += " paged state도 VRAM에 포함했습니다 (paging 절감은 확정치로 쓰지 않음)."
         return low, high, note
-    per = opt.states_per_param * tensor_bytes(s.executed_numel, s.group.dtype)
+    per = opt.states_per_param * tensor_bytes(s.executed_numel, s.dtype)
     if opt.fused:
         steps = s.executed_tensors * MIN_BLOCK_BYTES
         return (
@@ -362,33 +369,36 @@ def add_trainable_state(
     slices = executed_slices(arch.trainable_groups(inventory, cfg), inventory, cfg)
     qmap_added = False
     for s in slices:
-        g = s.group
-        if g.kind in ("lora", "modules_to_save"):
+        if s.kind in ("lora", "modules_to_save"):
             b.add(
                 spec(
-                    f"adapter.{g.name}",
+                    f"adapter.{s.name}",
                     AllocationCategory.WEIGHTS_ADAPTER,
-                    tensor_bytes(g.numel, g.dtype),
+                    tensor_bytes(s.numel, s.dtype),
                     live_at=weights_live,
                     formula="trainable-state",
-                    dims={"numel": g.numel, "tensors": g.tensor_count},
-                    dtype=g.dtype,
-                    note=g.note or None,
+                    dims={"numel": s.numel, "tensors": s.tensor_count},
+                    dtype=s.dtype,
+                    note=(
+                        "LoRA A·B 행렬 (실제 모듈 차원)"
+                        if s.kind == "lora"
+                        else "modules_to_save 학습 사본 (원본은 base 가중치에 남음)"
+                    ),
                 )
             )
         if s.note:
-            b.assume(f"trainable:{g.name}", s.note, "docs/research/loading-quantization-peft.md")
+            b.assume(f"trainable:{s.name}", s.note, "docs/research/loading-quantization-peft.md")
         if s.executed_numel == 0:
             continue
         b.add(
             spec(
-                f"grad.{g.name}",
+                f"grad.{s.name}",
                 AllocationCategory.GRADIENTS,
-                tensor_bytes(s.executed_numel, g.dtype),
+                tensor_bytes(s.executed_numel, s.dtype),
                 live_at=grads_live,
                 formula="gradients",
                 dims={"numel": s.executed_numel},
-                dtype=g.dtype,
+                dtype=s.dtype,
                 note=(
                     "grad dtype = param dtype; optimizer step 뒤 zero_grad(set_to_none=True)로 "
                     "해제됩니다."
@@ -400,7 +410,7 @@ def add_trainable_state(
             low, high, qmap_added = low + BNB_QMAP_BYTES, high + BNB_QMAP_BYTES, True
         b.add(
             spec(
-                f"optimizer.{g.name}",
+                f"optimizer.{s.name}",
                 AllocationCategory.OPTIMIZER_STATES,
                 low,
                 high,
@@ -414,12 +424,12 @@ def add_trainable_state(
         if not cfg.optimizer.fused and not cfg.optimizer.eight_bit:
             b.add(
                 spec(
-                    f"optimizer.{g.name}.foreach_sqrt",
+                    f"optimizer.{s.name}.foreach_sqrt",
                     AllocationCategory.WORKSPACE,
-                    tensor_bytes(s.executed_numel, g.dtype),
+                    tensor_bytes(s.executed_numel, s.dtype),
                     live_at=[step_tp],
                     formula="optimizer-step",
-                    dtype=g.dtype,
+                    dtype=s.dtype,
                     note=(
                         "foreach AdamW의 exp_avg_sq_sqrt 임시 목록 "
                         "(torch 2.14.1 torch/optim/adam.py _multi_tensor_adam)."

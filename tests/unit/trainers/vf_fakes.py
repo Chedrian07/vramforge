@@ -406,6 +406,21 @@ def _alloc(name, category, size, live_at, *, saved=False, note=None) -> Allocati
     )
 
 
+@dataclass(frozen=True)
+class FlaggedGroup(TrainableGroup):
+    """Mimics the repository adapters: one group per tensor shape plus `receives_grad`."""
+
+    receives_grad: bool = True
+    component: str = "text"
+
+
+def _flagged(groups: dict[tuple[str, str, bool], list[int]], kind: str, dtype: str):
+    return [
+        FlaggedGroup(name, kind, sum(sizes), dtype, len(sizes), "", executed, comp)
+        for (name, comp, executed), sizes in groups.items()
+    ]
+
+
 @dataclass
 class FakeArch:
     """Activations scale with batch x seq: saved 10 B/token, recompute 3, no-grad 7,
@@ -414,6 +429,7 @@ class FakeArch:
     adapter_id: str = "fake"
     unknown_activations: bool = False
     vision_lora_group: bool = False  # split LoRA into text + vision groups
+    flagged_groups: bool = False  # per-shape groups with receives_grad (repository adapters)
 
     def supports(self, facts: ArchitectureFacts) -> bool:
         return True
@@ -445,7 +461,29 @@ class FakeArch:
             )
         ]
 
+    def _flagged_groups(self, inventory, cfg):
+        shapes: dict[tuple[str, str, bool], list[int]] = {}
+        if cfg.strategy is Strategy.FULL:
+            for t in inventory.tensors:
+                comp = t.component.value
+                role = "embedding:" if t.role is TensorRole.EMBEDDING else ""
+                key = (f"full:{comp}:{role}{'x'.join(map(str, t.shape))}", comp, comp == "text")
+                shapes.setdefault(key, []).append(t.numel)
+            return _flagged(shapes, "full", cfg.load_dtype)
+        by = {m.name: m for m in inventory.linear_modules}
+        for n in cfg.lora.target_modules:
+            m = by[n]
+            comp = m.component.value
+            for part, size in (("A", f"16x{m.in_features}"), ("B", f"{m.out_features}x16")):
+                numel = 16 * (m.in_features if part == "A" else m.out_features)
+                shapes.setdefault((f"lora:{part}:{comp}:{size}", comp, comp == "text"), []).append(
+                    numel
+                )
+        return _flagged(shapes, "lora", cfg.effective_dtypes.adapter)
+
     def trainable_groups(self, inventory, cfg):
+        if self.flagged_groups:
+            return self._flagged_groups(inventory, cfg)
         groups: list[TrainableGroup] = []
         if cfg.strategy is Strategy.FULL:
             numel = sum(t.numel for t in inventory.tensors)
@@ -588,6 +626,7 @@ __all__ = [
     "LOAD_TRANSIENT",
     "WEIGHTS",
     "FakeArch",
+    "FlaggedGroup",
     "H",
     "V",
     "all_targets",

@@ -6,6 +6,8 @@ import math
 
 from vf_fakes import (
     FakeArch,
+    H,
+    V,
     all_targets,
     by_name,
     lora_numel,
@@ -93,10 +95,36 @@ def test_vision_lora_keeps_weights_but_gets_no_gradient_or_state() -> None:
     assert by_name(sched, "optimizer.lora").bytes_high == 4 * n_text
     assert any("실행되지 않는" in a.text for a in sched.assumptions)
 
-    split = build(cfg, inv, FakeArch(vision_lora_group=True))
-    assert by_name(split, "grad.lora:text").bytes_high == 2 * n_text
-    assert "grad.lora:vision" not in names(split)
-    assert by_name(split, "adapter.lora:vision").bytes_high == 2 * (n_all - n_text)
+    # Groups are aggregated per (kind, dtype); split or per-shape groups give the same ledger.
+    for arch in (FakeArch(vision_lora_group=True), FakeArch(flagged_groups=True)):
+        split = build(cfg, inv, arch)
+        assert by_name(split, "adapter.lora").bytes_high == 2 * n_all
+        assert by_name(split, "grad.lora").bytes_high == 2 * n_text
+        assert by_name(split, "optimizer.lora").bytes_high == 4 * n_text
+        assert not any(a.name.startswith("adapter.lora:") for a in split.allocations)
+
+
+def test_flagged_groups_give_exact_eight_bit_states() -> None:
+    inv = make_inventory(vision=True)
+    cfg = make_cfg(inventory=inv, targets=all_targets(inv), optimizer="adamw_8bit")
+    plain = by_name(build(cfg, inv), "optimizer.lora")
+    flagged = by_name(build(cfg, inv, FakeArch(flagged_groups=True)), "optimizer.lora")
+    assert plain.bytes_low == plain.bytes_high == flagged.bytes_low == flagged.bytes_high
+    full = make_cfg(Objective.SFT, Strategy.FULL, inventory=inv, optimizer="adamw_8bit")
+    a = by_name(build(full, inv), "optimizer.full")
+    b = by_name(build(full, inv, FakeArch(flagged_groups=True)), "optimizer.full")
+    assert a.bytes_high == b.bytes_high  # embeddings keep 32-bit state on both paths
+
+
+def test_modules_to_save_copy_trains_and_saves_lm_head_input() -> None:
+    inv = make_inventory()
+    cfg = make_cfg(inventory=inv, modules_to_save=["lm_head"])
+    sched = build(cfg, inv)
+    copy = by_name(sched, "adapter.modules_to_save")
+    assert copy.bytes_high == V * H * 2  # TRL casts trainable params of a 4-bit model to bf16
+    assert by_name(sched, "grad.modules_to_save").bytes_high == V * H * 2
+    # chunked_nll with a trainable lm_head accumulates [V, H] weight gradients
+    assert "loss.chunked_nll.lm_head_grad_accumulation" in names(sched)
 
 
 def test_full_finetune_vision_tower_gets_no_gradient() -> None:
