@@ -16,7 +16,8 @@ function* walk(dir) {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
     const rel = relative(outDir, path);
-    if (rel === "cache" || rel.startsWith(`cache/`) || name === "node_modules") continue;
+    // cache: build cache; dev: `next dev` output (may legitimately run with dev mocks).
+    if (rel === "cache" || rel.startsWith("cache/") || rel === "dev" || rel.startsWith("dev/") || name === "node_modules") continue;
     const st = statSync(path);
     if (st.isDirectory()) yield* walk(path);
     else if (TEXT_EXT.test(name)) yield path;
