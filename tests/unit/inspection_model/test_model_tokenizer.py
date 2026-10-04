@@ -11,7 +11,12 @@ import pytest
 
 from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.inspection import TokenizerHandle, load_tokenizer
-from vramforge_estimator.inspection.tokenizer_manifest import max_length, template_kwargs
+from vramforge_estimator.inspection.tokenizer_manifest import (
+    max_length,
+    template_kwargs,
+    template_parse_error,
+    template_sha256,
+)
 from vramforge_estimator.schemas import ErrorCode, ModelSourceRef
 from vramforge_estimator.sources import SourceAccess, hub, resolve_model
 
@@ -74,6 +79,7 @@ def test_tiny_tokenizer_manifest(load_local: Loader) -> None:
     assert m.chat_template_sha256 == TEMPLATE_SHA
     assert m.has_generation_markers is True
     assert m.template_kwargs == ["enable_thinking"]
+    assert m.template_parse_error is None
     assert m.files_sha256 == {
         "chat_template.jinja": TEMPLATE_SHA,
         "tokenizer.json": "0c6e3a3520fc6f70906a5a38ca9983b8034ce0ac57324189dfa1e5e3cc8c1e8e",
@@ -241,6 +247,111 @@ def test_template_kwargs_ignore_assigned_and_standard_names() -> None:
         "enable_thinking",
     ]
     assert template_kwargs("{% if %}") is None
+    # unknown filters fail in the code generator, not the parser: still None, never an exception
+    assert template_kwargs("{{ messages | no_such_filter }}") is None
+
+
+SECRET = "vf_secret_marker"
+# (template, error class, template line or None): every one fails transformers' compile step.
+BROKEN_TEMPLATES = [
+    (f"{{% for m in messages %}}{{{{ {SECRET} }}}}", "TemplateSyntaxError", 1),  # unclosed for
+    (f"{{{{ messages[0].content }}}}\n{{% {SECRET} %}}", "TemplateSyntaxError", 2),  # unknown tag
+    (
+        f"{{%- for m in messages -%}}\n\n{{{{ m.{SECRET} }}\n{{%- endfor -%}}",
+        "TemplateSyntaxError",
+        3,
+    ),
+    (f"{{{{ messages | {SECRET} }}}}", "TemplateAssertionError", 1),  # unknown filter (compile)
+    (f"{{{{ messages is {SECRET} }}}}", "TemplateAssertionError", 1),  # unknown test (compile)
+    # transformers' {% generation %} is a CallBlock: a loop control inside it is not in a loop
+    (
+        "{% for m in messages %}{% generation %}{% break %}{% endgeneration %}{% endfor %}",
+        "SyntaxError",
+        None,
+    ),
+    # too many statically nested blocks for Python's compiler
+    (
+        "".join(f"{{% for x{i} in messages %}}" for i in range(25)) + "{% endfor %}" * 25,
+        "SyntaxError",
+        None,
+    ),
+    ("{{ " + "(" * 400 + "1" + ")" * 400 + " }}", "RecursionError", None),
+]
+COMPILING_TEMPLATES = [
+    (TOKENIZER / "chat_template.jinja").read_text(encoding="utf-8"),
+    "{% for m in messages %}{% if loop.index > 2 %}{% break %}{% endif %}{{ m }}{% endfor %}",
+    "{% for m in messages %}{% generation %}{{ m.content }}{% endgeneration %}{% endfor %}",
+    "{{ messages | tojson(indent=2) }}{{ raise_exception('x') if not messages }}",
+    # unknown filters/tests in a condition or branch only fail if rendered there (Jinja 3.x)
+    "{% if not messages %}{{ messages | no_such_filter }}{% endif %}",
+    "{% if messages is no_such_test %}x{% endif %}",
+    "{% set ns = namespace(n=0) %}{% for m in messages %}{% set ns.n = ns.n + 1 %}{% endfor %}",
+]
+
+
+def _transformers_compiles(template: str) -> bool:
+    from transformers.utils.chat_template_utils import _compile_jinja_template
+
+    try:
+        _compile_jinja_template(template)
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(("template", "error", "line"), BROKEN_TEMPLATES)
+def test_template_parse_error_is_display_safe(template: str, error: str, line: int | None) -> None:
+    message = template_parse_error(template)
+    assert message is not None
+    assert not _transformers_compiles(template)  # same verdict as the renderer
+    assert f"({error}" in message
+    if line is None:
+        assert "번째 줄" not in message  # a Python line of generated code is not a template line
+    else:
+        assert f"{line}번째 줄" in message
+    assert message.startswith("chat template을 Jinja로")
+    # Jinja's own message quotes the template; none of it may reach the manifest
+    for fragment in (SECRET, "{%", "{{", "messages", "for m", "'"):
+        assert fragment not in message
+
+
+@pytest.mark.parametrize("template", COMPILING_TEMPLATES)
+def test_compiling_templates_have_no_parse_error(template: str) -> None:
+    assert _transformers_compiles(template)
+    assert template_parse_error(template) is None
+    assert template_kwargs(template) is not None
+
+
+@pytest.mark.parametrize(("template", "error", "line"), BROKEN_TEMPLATES[:5])
+def test_uncompilable_template_is_reported_not_dropped(
+    load_local: Loader, template: str, error: str, line: int
+) -> None:
+    handle = load_local({"chat_template.jinja": template.encode()})
+    m = handle.manifest
+    # still the model's own template: present, hashed and kept on the tokenizer
+    assert m.chat_template_present is True
+    assert m.chat_template_source == "chat_template.jinja"
+    assert m.chat_template_sha256 == template_sha256(template)
+    assert m.files_sha256["chat_template.jinja"] == template_sha256(template)
+    assert handle.tokenizer.chat_template == template
+    # no kwargs are guessed from a template that cannot be compiled
+    assert m.template_kwargs == []
+    assert m.template_parse_error is not None
+    assert f"({error}, {line}번째 줄)" in m.template_parse_error
+    assert SECRET not in m.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["{%- for m in messages -%}{{ m.content }}", "{{ messages | tojson | vf_custom_filter }}"],
+)
+def test_uncompilable_template_in_tokenizer_config(load_local: Loader, template: str) -> None:
+    m = load_local(
+        {"tokenizer_config.json": _config(chat_template=template)}, drop=("chat_template.jinja",)
+    ).manifest
+    assert (m.chat_template_present, m.chat_template_source) == (True, "tokenizer_config.json")
+    assert m.template_parse_error is not None
+    assert "vf_custom_filter" not in m.template_parse_error
 
 
 @pytest.mark.parametrize(

@@ -29,6 +29,7 @@ from .tokenizer_manifest import (
     max_length,
     special_token_defaults,
     template_kwargs,
+    template_parse_error,
     template_sha256,
     tokenizer_fingerprint,
 )
@@ -176,7 +177,8 @@ def load_tokenizer(source: ResolvedSource, access: SourceAccess) -> TokenizerHan
 
     Raises `EstimatorError` with TOKENIZER_REQUIRED / TEMPLATE_REQUIRED / REMOTE_CODE_REQUIRED.
     Never substitutes another model's tokenizer or template. A missing template is reported as
-    ``chat_template_present=False``; the pipeline decides whether that blocks the objective.
+    ``chat_template_present=False``, one that does not compile as ``template_parse_error``; the
+    pipeline decides whether that blocks the objective.
     """
     files = open_source_files(source, access)
     paths = set(files.entries())
@@ -236,6 +238,7 @@ def load_tokenizer(source: ResolvedSource, access: SourceAccess) -> TokenizerHan
     source_name: TemplateSource = "none"
     sha: str | None = None
     kwargs: list[str] = []
+    parse_error: str | None = None
     if template:
         sha = template_sha256(template)
         if processor is not None:
@@ -243,7 +246,12 @@ def load_tokenizer(source: ResolvedSource, access: SourceAccess) -> TokenizerHan
             files_sha256[processor[1]] = hashlib.sha256(files.read(processor[1])).hexdigest()
         else:
             source_name = _template_source(template, staged, tokenizer_config)
-        kwargs = template_kwargs(template, getattr(tokenizer, "special_tokens_map", {}) or {}) or []
+        # A template that does not compile is still the model's template (present, hashed): the
+        # error is reported instead of an empty kwarg list, and nothing else is substituted.
+        parse_error = template_parse_error(template)
+        if parse_error is None:
+            special = getattr(tokenizer, "special_tokens_map", {}) or {}
+            kwargs = template_kwargs(template, special) or []
 
     adds_bos, adds_eos = special_token_defaults(tokenizer)
     limit, sentinel = max_length(getattr(tokenizer, "model_max_length", None))
@@ -269,6 +277,7 @@ def load_tokenizer(source: ResolvedSource, access: SourceAccess) -> TokenizerHan
         chat_template_sha256=sha,
         has_generation_markers=bool(template) and has_generation_markers(template),
         template_kwargs=kwargs,
+        template_parse_error=parse_error,
         files_sha256=files_sha256,
         fingerprint=tokenizer_fingerprint(
             tokenizer_class=tokenizer_class,

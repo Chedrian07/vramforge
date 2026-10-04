@@ -73,6 +73,7 @@ def test_live_tokenizer_manifest(source: ResolvedSource, access: SourceAccess) -
     )
     assert m.has_generation_markers is True
     assert m.template_kwargs == ["enable_thinking"]
+    assert m.template_parse_error is None
     # docs/research/example-model-dataset.md §1.1
     assert m.files_sha256["tokenizer.json"] == (
         "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
