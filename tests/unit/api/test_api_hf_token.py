@@ -3,10 +3,13 @@ single-user deployment shares it (plan §18, VRAMFORGE_SHARE_SERVER_HF_TOKEN).""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from api_testkit import example_request
 from fastapi.testclient import TestClient
 
@@ -74,6 +77,18 @@ def test_access_denied_issues_get_the_server_token_hint(
     # private repositories look "not found" to callers without access
     private = with_access_hint(_gated("repository_not_found", ErrorCode.SOURCE_NOT_FOUND), settings)
     assert private.details["server_hf_token"] == mode
+
+
+def test_the_hints_name_only_variables_the_compose_stack_forwards() -> None:
+    """An operator following the hint on the default stack must be able to act on it: every
+    variable it names reaches the api and worker containers (compose.yaml x-worker-env)."""
+    compose = yaml.safe_load((Path(__file__).resolve().parents[3] / "compose.yaml").read_text())
+    forwarded = set(compose["x-worker-env"])
+    named = {
+        name for hint in ACCESS_HINTS.values() for name in re.findall(r"[A-Z][A-Z0-9_]{3,}", hint)
+    }
+    assert named == {"HF_TOKEN", "VRAMFORGE_SHARE_SERVER_HF_TOKEN"}
+    assert named <= forwarded
 
 
 @pytest.mark.parametrize(

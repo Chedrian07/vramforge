@@ -19,10 +19,12 @@ from .store import owner_uploads_dir
 NON_TOKEN_REASONS = frozenset({"permission_denied", "disabled", "download_failed"})
 SHARE_HINT_KEY = "server_hf_token"
 
+# The hint names HF_TOKEN: the compose stack forwards only that variable to api and worker
+# (compose.yaml x-worker-env); VRAMFORGE_HF_TOKEN set in .env would never reach the containers.
 ACCESS_HINTS: dict[HfTokenMode, str] = {
     "not_configured": (
         "이 서버에는 Hugging Face 토큰이 설정되어 있지 않아 비공개·gated 저장소에 접근할 수 "
-        "없습니다. 혼자 쓰는 배포라면 운영자가 VRAMFORGE_HF_TOKEN(또는 HF_TOKEN)을 설정하고 "
+        "없습니다. 혼자 쓰는 배포라면 운영자가 HF_TOKEN을 설정하고 "
         "VRAMFORGE_SHARE_SERVER_HF_TOKEN=true로 서버 토큰 사용을 허용할 수 있습니다."
     ),
     "configured_not_shared": (
