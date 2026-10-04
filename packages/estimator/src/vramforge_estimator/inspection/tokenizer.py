@@ -16,9 +16,10 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ErrorCode, Stage, TokenizerManifest
 from vramforge_estimator.sources import ResolvedSource, SourceAccess
+from vramforge_estimator.sources.issues import blocking_error
 
 from .base import TokenizerHandle
 from .model_config import load_config
@@ -69,8 +70,8 @@ TemplateSource = Literal["chat_template.jinja", "tokenizer_config.json", "proces
 
 
 def _error(code: ErrorCode, message: str, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.INSPECTING, component="tokenizer", **details)
+    return blocking_error(
+        code, message, stage=Stage.INSPECTING, component="tokenizer", details=details
     )
 
 

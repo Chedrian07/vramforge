@@ -12,9 +12,10 @@ import hashlib
 from pathlib import Path
 from typing import Any, Protocol
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ErrorCode, FileEntry, Stage
 from vramforge_estimator.sources import ResolvedSource, SourceAccess, hub
+from vramforge_estimator.sources.issues import blocking_error
 from vramforge_estimator.sources.safetensors_frame import HeaderFrameError, read_header_frame
 
 from .safetensors_header import HeaderError, parse_header_bytes
@@ -35,10 +36,13 @@ class SourceFiles(Protocol):
 def _error(
     code: ErrorCode, message: str, *, retryable: bool = False, **details: object
 ) -> EstimatorError:
-    return EstimatorError(
-        make_issue(
-            code, message, stage=Stage.INSPECTING, retryable=retryable, component="model", **details
-        )
+    return blocking_error(
+        code,
+        message,
+        stage=Stage.INSPECTING,
+        retryable=retryable,
+        component="model",
+        details=details,
     )
 
 

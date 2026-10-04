@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.keys import stable_hash
 from vramforge_estimator.schemas import (
     ArchitectureFacts,
@@ -26,6 +26,7 @@ from vramforge_estimator.schemas import (
     TensorInfo,
     TensorRole,
 )
+from vramforge_estimator.sources.issues import blocking_error
 
 from .model_config import CheckpointEvidence, ParsedConfig, build_facts
 from .safetensors_header import HeaderTensor
@@ -107,9 +108,7 @@ class ShardTensors:
 
 
 def _error(code: ErrorCode, message: str, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.INSPECTING, component="model", **details)
-    )
+    return blocking_error(code, message, stage=Stage.INSPECTING, component="model", details=details)
 
 
 def component_of(name: str) -> ModelComponent:

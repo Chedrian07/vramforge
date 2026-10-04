@@ -15,8 +15,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ArchitectureFacts, ErrorCode, LayerTypeCount, Stage
+from vramforge_estimator.sources.issues import blocking_error
 from vramforge_estimator.units import canonical_dtype
 
 TEXT_CONFIG_KEYS = ("text_config", "llm_config", "language_config")
@@ -132,9 +133,7 @@ class CheckpointEvidence:
 
 
 def _error(code: ErrorCode, message: str, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.INSPECTING, component="model", **details)
-    )
+    return blocking_error(code, message, stage=Stage.INSPECTING, component="model", details=details)
 
 
 def load_config(data: bytes) -> ParsedConfig:
@@ -382,7 +381,7 @@ def build_facts(config: ParsedConfig, evidence: CheckpointEvidence) -> Architect
         num_attention_heads=heads,
         num_key_value_heads=kv_heads,
         head_dim=head_dim,
-        head_dim_source=head_dim_source,  # type: ignore[arg-type]
+        head_dim_source=head_dim_source,
         layer_types=layer_types,
         layer_type_counts=[
             LayerTypeCount(layer_type=k, count=v) for k, v in sorted(counts.items())

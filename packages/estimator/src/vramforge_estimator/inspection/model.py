@@ -12,9 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePosixPath
 from typing import Any
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ErrorCode, ModelInventory, Stage
 from vramforge_estimator.sources import ResolvedSource, SourceAccess
+from vramforge_estimator.sources.issues import blocking_error
 
 from .model_config import load_config, quantization_method, requires_remote_code
 from .model_files import SourceFiles, header_error, open_source_files
@@ -42,9 +43,7 @@ _FORMAT_MESSAGES = {
 
 
 def _error(code: ErrorCode, message: str, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.INSPECTING, component="model", **details)
-    )
+    return blocking_error(code, message, stage=Stage.INSPECTING, component="model", details=details)
 
 
 def other_weight_formats(paths: set[str]) -> list[str]:
@@ -130,12 +129,11 @@ def _load_json(files: SourceFiles, path: str) -> dict[str, Any]:
 
 def _index_shards(index: dict[str, Any], paths: set[str]) -> tuple[dict[str, str], int | None]:
     weight_map = index.get("weight_map")
-    valid = (
-        isinstance(weight_map, dict)
-        and bool(weight_map)
-        and all(isinstance(k, str) and isinstance(v, str) for k, v in weight_map.items())
-    )
-    if not valid:
+    if (
+        not isinstance(weight_map, dict)
+        or not weight_map
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in weight_map.items())
+    ):
         raise _error(
             ErrorCode.MODEL_METADATA_UNAVAILABLE,
             "safetensors index의 weight_map 형식이 올바르지 않습니다.",
