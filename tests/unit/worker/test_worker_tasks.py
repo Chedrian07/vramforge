@@ -185,6 +185,8 @@ def test_set_stage_keeps_a_pending_cancel_visible(
     monkeypatch.setattr(pipeline, "analyze", analyze)
     tasks.run_analysis(aid, 1)
     assert seen == ["CANCEL_REQUESTED"]
+    tokenizing = [s for t, s in event_types(sessions, aid) if t == "progress"]
+    assert tokenizing[-1] == "CANCEL_REQUESTED"  # events carry the job status
 
 
 def _empty_result(request, ctx) -> AnalysisResult:

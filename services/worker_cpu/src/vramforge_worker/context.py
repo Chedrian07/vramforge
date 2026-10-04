@@ -115,12 +115,15 @@ class WorkerJobContext:
         partial: dict[str, Any] | None = None,
         lock: bool = True,
     ) -> None:
+        # While a cancel is pending the job status stays CANCEL_REQUESTED (progress.stage still
+        # says where the pipeline is).
+        status = JobStatus.CANCEL_REQUESTED if self.state.cancel_requested else self.current_status
         store.append_event(
             db,
             analysis_id=self.analysis_id,
             fingerprint=self.fingerprint,
             event_type=event_type,
-            status=self.current_status,
+            status=status,
             progress=progress,
             issue=issue,
             partial=_clean_partial(partial),
@@ -162,6 +165,7 @@ class WorkerJobContext:
                 .values(status=stage.value, **values)
             ).rowcount  # type: ignore[attr-defined]
             if not changed:
+                self.state.cancel_requested = True
                 db.execute(update(Analysis).where(self._owned()).values(**values))
             if self._still_leased(db):
                 self._event(db, EventType.PROGRESS, progress=progress, lock=False)
