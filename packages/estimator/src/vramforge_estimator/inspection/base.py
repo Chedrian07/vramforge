@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from vramforge_estimator.schemas import TokenizerManifest
+from vramforge_estimator.schemas import Issue, TokenizerManifest
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,9 @@ class RowStream(Protocol):
     config: str | None
     shards: list[str]
     total_rows: int | None  # None when unknown in advance
+    # Reader-level issues (e.g. SCAN_QUOTA_EXCEEDED, EMPTY_DATASET). Rows that cannot be decoded
+    # are yielded as `FailedSourceRow` (inspection.dataset_rows) instead of aborting the stream.
+    issues: list[Issue]
 
     def __iter__(self) -> Iterator[SourceRow]: ...
 
