@@ -10,17 +10,21 @@ from vramforge_estimator import keys
 from vramforge_estimator.batching import plan_batches
 from vramforge_estimator.inspection import TokenizerHandle
 from vramforge_estimator.preprocessing import get_adapter
-from vramforge_estimator.scan import full_scan, load_lengths
+from vramforge_estimator.scan import audit_preservation, full_scan, load_lengths, validate_context
 from vramforge_estimator.schemas import (
     Branch,
     ColumnMapping,
+    DataPreservation,
     EffectiveDtypes,
     EmptySystemPolicy,
+    ErrorCode,
     Objective,
     OptimizerResolved,
+    PreservationCheckName,
     QuantizationResolved,
     ResolvedConfig,
     ScanCoverage,
+    ScopeConfig,
     Strategy,
     TokenizerManifest,
     WorkspaceAssumptions,
@@ -166,6 +170,52 @@ def test_long_rows_are_kept_whole_and_flagged_against_a_small_context(
     )
     seq = next(b for b in out.result.branches if b.branch is Branch.SEQUENCE).stats
     assert seq.max > 20_000 and out.result.context_exceeded_rows == 1
+
+
+@pytest.mark.parametrize("decode_failure", [False, True])
+def test_corrupt_row_is_kept_located_and_withholds_verification(
+    handle, make_stream, make_ctx, decode_failure
+) -> None:
+    """plan §19.2 "손상 row": count and position kept, nothing reported as verified/ok."""
+    rows = [dict(r) for r in ROWS]
+    if not decode_failure:
+        rows[1]["chosen"] = None  # decodes, but the mapped record cannot be built
+    stream = make_stream(rows, decode_fail_at=1 if decode_failure else None)
+    out = full_scan(
+        stream,
+        get_adapter(Objective.DPO, handle, MAPPING),
+        make_ctx(),
+        objective=Objective.DPO,
+        preprocess_key="pre_corrupt",
+        tokenizer_fingerprint="t",
+        template_fingerprint=None,
+        context_limit=262_144,
+    )
+    res = out.result
+    assert (res.rows_seen, res.rows_ok, res.rows_failed) == (3, 2, 1)
+    assert [f.row_id for f in res.failed_rows_sample] == ["train:1"]
+    assert ErrorCode.SCAN_FAILED_ROWS in [i.code for i in out.issues]
+    # a reader that could not decode the record never confirms a full read
+    assert res.coverage is (ScanCoverage.PARTIAL if decode_failure else ScanCoverage.COMPLETE)
+    context = validate_context(
+        res, model_declared_max=262_144, tokenizer=None, backend_verified_max=None
+    )
+    assert context.status == "unknown"  # the failed row's length is not known
+    plan = plan_batches(load_lengths(out.artifact_path), resolved(Objective.DPO, 1), seed=42)
+    assert len(load_lengths(out.artifact_path)) == 2 and plan.sampler.covers_all_rows
+    audit = audit_preservation(
+        res,
+        context=context,
+        batch_plan=plan,
+        packing=False,
+        scope=ScopeConfig(),
+        template_content_loss_rows=out.template_content_loss_rows,
+    )
+    assert audit.status is DataPreservation.UNKNOWN
+    full_read = next(c for c in audit.checks if c.name is PreservationCheckName.FULL_READ)
+    assert full_read.passed is False
+    expected = ErrorCode.SCAN_PARTIAL if decode_failure else ErrorCode.SCAN_FAILED_ROWS
+    assert expected in [v.code for v in audit.violations]
 
 
 def test_template_change_changes_the_preprocess_key(handle) -> None:
