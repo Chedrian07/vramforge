@@ -199,6 +199,7 @@ def make_cfg(
     accumulation: int = 8,
     loss_path: str | None = None,
     reference: ReferenceStrategy = ReferenceStrategy.FROZEN_BASE_SWITCH,
+    reference_model: str | None = None,
     precompute_batch_size: int | None = None,
     num_generations: int = 4,
     generation_batch_size: int = 4,
@@ -206,6 +207,7 @@ def make_cfg(
     num_iterations: int = 1,
     beta: float = 0.0,
     reward: RewardKind = RewardKind.UNSPECIFIED,
+    reward_on_gpu: bool = True,
     budgets: tuple[int, ...] = (1024,),
     resolutions: list | None = None,
 ) -> ResolvedConfig:
@@ -238,6 +240,7 @@ def make_cfg(
             beta=0.1,
             loss_type="sigmoid",
             precompute_batch_size=precompute_batch_size,
+            reference_model=reference_model,
         )
     grpo = None
     if objective is Objective.GRPO:
@@ -253,6 +256,8 @@ def make_cfg(
             beta=beta,
             reference_needed=beta != 0,
             reward_kind=reward,
+            # the resolver's rule: only a local reward model sits on the training GPU
+            reward_on_training_gpu=reward is RewardKind.LOCAL_MODEL and reward_on_gpu,
             rollout_backend=RolloutBackend.TRANSFORMERS_SHARED_POLICY,
             live_sequences=microbatch * spg,
             update_microbatch=microbatch,

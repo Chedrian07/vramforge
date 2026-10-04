@@ -216,14 +216,6 @@ def renamed(
     return out
 
 
-def resolution_value(cfg: ResolvedConfig, field_name: str, default: object = None) -> object:
-    """Resolved value of a knob recorded only in `cfg.resolutions` (e.g. reward placement)."""
-    for r in cfg.resolutions:
-        if r.field == field_name:
-            return r.resolved
-    return default
-
-
 def residual_dtype(cfg: ResolvedConfig) -> str:
     """Residual stream / hidden-state dtype = load dtype (Linear4bit returns the input dtype and
     embeddings are not autocast; docs/research/loading-quantization-peft.md §Q9.3)."""
@@ -671,7 +663,6 @@ __all__ = [
     "ref",
     "renamed",
     "residual_dtype",
-    "resolution_value",
     "scaled",
     "spec",
     "unknown",

@@ -154,12 +154,18 @@ def test_off_gpu_rewards_are_excluded(kind: RewardKind) -> None:
 
 
 def test_local_reward_on_another_device_is_excluded() -> None:
+    sched = build(cfg_for(reward=RewardKind.LOCAL_MODEL, reward_on_gpu=False))
+    assert any(e.name == "REWARD" for e in sched.excluded)
+    assert "reward_model.weights" not in names(sched)
+
+
+def test_reward_placement_comes_from_the_typed_field_not_the_audit_trail() -> None:
     off_gpu = ConfigResolution(
         field="grpo.reward.on_training_gpu", requested=False, resolved=False, reason="t"
     )
     sched = build(cfg_for(reward=RewardKind.LOCAL_MODEL, resolutions=[off_gpu]))
-    assert any(e.name == "REWARD" for e in sched.excluded)
-    assert "reward_model.weights" not in names(sched)
+    assert REWARD in tp_ids(sched)  # the typed field (on the GPU) decides
+    assert "reward_model.weights" in names(sched)
 
 
 def test_accumulation_never_multiplies_grpo_activations() -> None:

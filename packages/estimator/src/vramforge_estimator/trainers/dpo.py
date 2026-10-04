@@ -41,7 +41,6 @@ from .common import (
     grads_live,
     lm_head_input_saved,
     plan_model_load,
-    resolution_value,
     spec,
     unknown,
 )
@@ -277,8 +276,8 @@ class DpoTrainer:
         cfg: ResolvedConfig,
         ref_load,
     ) -> None:
-        separate = resolution_value(cfg, "dpo.reference_model")
-        if separate:
+        assert cfg.dpo is not None
+        if cfg.dpo.reference_model:  # a different checkpoint, not inspected here
             note = "별도 reference checkpoint의 inventory를 분석하지 않아 크기를 알 수 없습니다."
             b.add(
                 unknown(

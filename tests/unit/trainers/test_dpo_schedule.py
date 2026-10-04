@@ -131,7 +131,18 @@ def test_precompute_batch_defaults_to_the_microbatch() -> None:
 
 
 def test_separate_reference_checkpoint_is_unknown() -> None:
-    cfg = cfg_for(
+    cfg = cfg_for(ReferenceStrategy.STANDALONE_MODEL, Strategy.FULL, reference_model="org/ref")
+    sched = build(cfg)
+    est = evaluate(sched)
+    assert est.scenario_high_bytes is None
+    assert {"reference.weights", "reference.device_map_budget"} <= {
+        u.name for u in est.unknown_components
+    }
+
+
+def test_reference_identity_comes_from_the_typed_field_not_the_audit_trail() -> None:
+    # A stale ConfigResolution entry alone must not turn the reference into another checkpoint.
+    audit_only = cfg_for(
         ReferenceStrategy.STANDALONE_MODEL,
         Strategy.FULL,
         resolutions=[
@@ -140,10 +151,9 @@ def test_separate_reference_checkpoint_is_unknown() -> None:
             )
         ],
     )
-    sched = build(cfg)
-    est = evaluate(sched)
-    assert est.scenario_high_bytes is None
-    assert "reference.weights" in {u.name for u in est.unknown_components}
+    sched = build(audit_only)
+    assert by_name(sched, "reference.weights.base").bytes_high == WEIGHTS
+    assert evaluate(sched).scenario_high_bytes is not None
 
 
 def test_frozen_lm_head_saves_no_input() -> None:

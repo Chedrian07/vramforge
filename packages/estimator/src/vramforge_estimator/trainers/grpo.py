@@ -49,7 +49,6 @@ from .common import (
     extend_live_at,
     lm_head_input_saved,
     plan_model_load,
-    resolution_value,
     spec,
     unknown,
 )
@@ -110,9 +109,7 @@ class GrpoTrainer:
         old, ref, grads_at_rollout = grpo_flags(g)
         peft = cfg.strategy is not Strategy.FULL
         ref_model = ref and not peft
-        reward_on_gpu = g.reward_kind is RewardKind.LOCAL_MODEL and bool(
-            resolution_value(cfg, "grpo.reward.on_training_gpu", True)
-        )
+        reward_on_gpu = g.reward_kind is RewardKind.LOCAL_MODEL and g.reward_on_training_gpu
         b = ScheduleBuilder()
         pfb = Phase.POLICY_FORWARD_BACKWARD
         rollout = Phase.ROLLOUT_PREFILL_AND_DECODE
