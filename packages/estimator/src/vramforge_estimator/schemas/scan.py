@@ -44,6 +44,9 @@ class LengthRecord(VFModel):
     template_fingerprint: str | None = None
     tokenizer_fingerprint: str
     content_digest: str  # sha256 of the mapped record (not the raw row) for change detection
+    # sha256 of the token ids the trainer would see; lets GPU validation confirm a re-read row
+    # tokenizes identically without storing the ids (plan §7.6).
+    token_digest: str | None = None
     processing_status: Literal["ok", "failed"]
     context_status: Literal["ok", "exceeded", "unknown"] = "unknown"
     error_code: ErrorCode | None = None
@@ -107,7 +110,10 @@ class DatasetScanResult(VFModel):
     branches: list[BranchStats] = Field(default_factory=list)
     failed_rows_sample: list[FailedRow] = Field(default_factory=list)
     duplicate_rows: int | None = None
-    context_exceeded_rows: int = 0
+    # None when no context limit is known (unknown is never reported as 0).
+    context_exceeded_rows: int | None = None
+    # System messages skipped by the empty-system policy (OMIT), None when not applicable.
+    omitted_system_messages: int | None = None
     preprocess_key: str
     artifact_id: str | None = None
     tokenizer_fingerprint: str
@@ -150,5 +156,6 @@ class ContextValidation(VFModel):
     effective_limit: int | None = None
     limit_source: str | None = None
     max_observed_length: int | None = None
-    exceeded_rows: int = 0
+    exceeded_rows: int | None = None  # None when no limit is known
+    exceeded_rows_exact: bool = True  # False => exceeded_rows is a lower bound
     status: Literal["ok", "exceeded", "unknown"] = "unknown"
