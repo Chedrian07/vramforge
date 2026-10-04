@@ -316,3 +316,34 @@ def test_hub_client_is_not_used_for_local_sources(
 
     monkeypatch.setattr(hub, "get_hub_client", boom)
     _inspect(*model_dir())
+
+
+def test_single_file_wins_over_index_like_transformers(model_dir: ModelDir, st_writer: Any) -> None:
+    shard = "model-00001-of-00001.safetensors"
+    target, access = _sharded(model_dir, st_writer, {"model.embed_tokens.weight": shard})
+    st_writer.write_safetensors(target / "model.safetensors", TENSORS)
+    inv = _inspect(target, access)
+    assert inv.facts.extra["weights_file"] == "model.safetensors"
+    assert {t.shard for t in inv.tensors} == {"model.safetensors"}
+    assert inv.index_total_size is None
+
+
+def test_explicit_transformers_weights(model_dir: ModelDir, st_writer: Any) -> None:
+    config = {**CONFIG, "transformers_weights": "weights/custom.safetensors"}
+    target, access = model_dir(config=config, tensors=None)
+    st_writer.write_safetensors(target / "weights" / "custom.safetensors", TENSORS)
+    inv = _inspect(target, access)
+    assert inv.facts.extra["weights_file"] == "weights/custom.safetensors"
+    bad_values = ("pytorch_model.bin", "../outside.safetensors", "missing.safetensors", 3)
+    for i, bad in enumerate(bad_values):
+        target, access = model_dir(
+            {"pytorch_model.bin": b"\x80"},
+            config={**CONFIG, "transformers_weights": bad},
+            name=f"bad{i}",
+        )
+        _fails(
+            ErrorCode.UNSUPPORTED_MODEL_FORMAT,
+            target,
+            access,
+            reason="explicit_weights_unsupported",
+        )

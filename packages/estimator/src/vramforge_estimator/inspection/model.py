@@ -1,8 +1,8 @@
 """ModelInspector: config + safetensors headers → `ModelInventory` (plan.md §6.2–6.5).
 
-Order: weight-format triage (only transformers-loadable safetensors; GGUF, pickle ``*.bin``,
-adapter-only and pre-quantized checkpoints are refused, pickles are never opened) → config.json
-→ remote-code check → index → every shard header (no weights) → inventory.
+Order: config.json → weight selection as transformers does it (only safetensors; GGUF, pickle
+``*.bin``, adapter-only and pre-quantized checkpoints are refused, pickles are never opened) →
+remote-code check → index → every shard header (no weights) → inventory.
 """
 
 from __future__ import annotations
@@ -68,12 +68,30 @@ def other_weight_formats(paths: set[str]) -> list[str]:
     return sorted(found)
 
 
-def triage_weights(paths: set[str]) -> str:
-    """ "index" or "single", or raise UNSUPPORTED_MODEL_FORMAT (plan §6.3, §18)."""
-    if INDEX_FILE in paths:
-        return "index"
+def select_weights(paths: set[str], explicit: object = None) -> tuple[str, bool]:
+    """(weights file, is sharded index) exactly as transformers 5.18 picks it.
+
+    An explicit ``transformers_weights`` file from config.json, then ``model.safetensors``, then
+    ``model.safetensors.index.json`` (transformers==5.18.0 modeling_utils.py:585-700). Anything
+    else is UNSUPPORTED_MODEL_FORMAT (plan §6.3, §18); pickles are never opened.
+    """
+    if explicit is not None:
+        name = explicit if isinstance(explicit, str) else ""
+        inside = bool(name) and not name.startswith("/") and ".." not in PurePosixPath(name).parts
+        if inside and name in paths and name.endswith(".safetensors.index.json"):
+            return name, True
+        if inside and name in paths and name.endswith(".safetensors"):
+            return name, False
+        raise _error(
+            ErrorCode.UNSUPPORTED_MODEL_FORMAT,
+            "config.json의 transformers_weights가 "
+            "source 안의 safetensors 파일을 가리키지 않습니다.",
+            reason="explicit_weights_unsupported",
+        )
     if SINGLE_FILE in paths:
-        return "single"
+        return SINGLE_FILE, False
+    if INDEX_FILE in paths:
+        return INDEX_FILE, True
     others = other_weight_formats(paths)
     if "adapter_config.json" in paths:
         fmt = "adapter_only"
@@ -162,14 +180,15 @@ def inspect_model(source: ResolvedSource, access: SourceAccess) -> ModelInventor
         raise _error(ErrorCode.INVALID_REQUEST, "모델 source가 아닙니다.", reason="not_a_model")
     files = open_source_files(source, access)
     paths = set(files.entries())
-    layout = triage_weights(paths)
-    if "config.json" not in paths:
+    config = load_config(files.read("config.json")) if "config.json" in paths else None
+    explicit = config.raw.get("transformers_weights") if config is not None else None
+    weights, sharded = select_weights(paths, explicit)
+    if config is None:
         raise _error(
             ErrorCode.MODEL_METADATA_UNAVAILABLE,
             "config.json이 없어 모델 구조를 확인할 수 없습니다.",
             reason="config_missing",
         )
-    config = load_config(files.read("config.json"))
     if requires_remote_code(config):
         raise _error(
             ErrorCode.REMOTE_CODE_REQUIRED,
@@ -190,11 +209,11 @@ def inspect_model(source: ResolvedSource, access: SourceAccess) -> ModelInventor
 
     index_total_size: int | None = None
     weight_map: dict[str, str] | None = None
-    if layout == "index":
-        weight_map, index_total_size = _index_shards(_load_json(files, INDEX_FILE), paths)
+    if sharded:
+        weight_map, index_total_size = _index_shards(_load_json(files, weights), paths)
         shard_names = sorted(set(weight_map.values()))
     else:
-        shard_names = [SINGLE_FILE]
+        shard_names = [weights]
 
     shards = _read_shards(files, shard_names)
     if weight_map is not None:
@@ -208,10 +227,7 @@ def inspect_model(source: ResolvedSource, access: SourceAccess) -> ModelInventor
                 header_tensors=len(located),
             )
 
-    others = other_weight_formats(paths)
-    return build_inventory(
-        config,
-        shards,
-        index_total_size=index_total_size,
-        extra_facts={"ignored_weight_formats": others} if others else None,
-    )
+    extra: dict[str, Any] = {"weights_file": weights}
+    if others := other_weight_formats(paths):
+        extra["ignored_weight_formats"] = others
+    return build_inventory(config, shards, index_total_size=index_total_size, extra_facts=extra)
