@@ -300,3 +300,32 @@ def test_open_rows_contract_and_errors(tmp_path: Path) -> None:
 def test_local_parquet_split_rows_come_from_footers() -> None:
     result = inspect(local_source(FIXTURES / "prompt_completion.parquet"), Objective.SFT)
     assert [(s.name, s.num_rows, s.num_bytes) for s in result.splits] == [("train", 5, None)]
+
+
+def test_hub_parquet_preview_falls_back_to_the_schema(
+    tmp_path: Path, fake_hub: dict[str, Any]
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    table = pa.table({"prompt": ["p" * 3000] * 300, "completion": ["c" * 3000] * 300})
+    pq.write_table(table, root / "train.parquet", row_group_size=100, compression="none")
+    source = hf_source(root)
+    fake_hub[source.repo_id] = root
+    # Budget above the footer but below one row group: columns come from the Parquet schema.
+    details = inspect_dataset_details(source, ref(), SourceAccess(max_metadata_bytes=80_000), None)
+    assert fake_hub["__log__"] == ["open:train.parquet"]
+    assert details.preview is not None and details.preview.rows == []
+    assert [(c.name, c.kind) for c in details.inspection.columns] == [
+        ("prompt", "string"),
+        ("completion", "string"),
+    ]
+    assert details.inspection.suggested_mapping == ColumnMapping(
+        format=DatasetFormat.PROMPT_COMPLETION, prompt="prompt", completion="completion"
+    )
+    # Budget below the footer: nothing is guessed, the reason is reported.
+    tiny = inspect_dataset(source, ref(), SourceAccess(max_metadata_bytes=1_000), None)
+    assert tiny.columns == [] and tiny.suggested_mapping is None
+    assert codes(tiny) == [ErrorCode.SCAN_QUOTA_EXCEEDED]

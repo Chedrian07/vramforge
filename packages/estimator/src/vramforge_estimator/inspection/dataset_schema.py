@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from datasets import Features
 
-_PREVIEW_FILES = 4  # the byte budget is split between at most this many files
+_PREVIEW_FILES = 4  # files tried when the first ones have no rows (one shared byte budget)
 
 
 @dataclass
@@ -56,13 +56,18 @@ def read_preview(
     budget: int,
     limits: ReaderLimits,
 ) -> Preview:
+    """Up to `limits.preview_rows` rows from the first files of `split`, `budget` bytes in total."""
     preview = Preview()
     schema = SchemaState()
-    per_file = max(budget // _PREVIEW_FILES, 1)
+    remaining = budget
+    quota_hit = False
     for data_file in split.files[:_PREVIEW_FILES]:
+        if remaining <= 0:
+            break
         info = ReadInfo()
+        source = None
         try:
-            source = files.preview_source(data_file, per_file)
+            source = files.preview_source(data_file, remaining)
             spec = FileSpec(
                 module=config.module,  # type: ignore[arg-type]
                 options=config.options,
@@ -76,7 +81,7 @@ def read_preview(
                 if len(preview.rows) >= limits.preview_rows:
                     break
         except QuotaExceeded:
-            pass  # the budget only bounds the preview; what was read is still a valid sample
+            quota_hit = True  # the budget only bounds the preview; what was read stays valid
         except (ShardBroken, UnsupportedFormat) as exc:
             preview.issues.append(_preview_problem(data_file.shard_id, exc.reason))
             break
@@ -86,7 +91,9 @@ def read_preview(
         finally:
             if info.file_format is not None:
                 preview.file_formats[data_file.shard_id] = info.file_format
-        if len(preview.rows) >= limits.preview_rows:
+            if source is not None:
+                remaining -= source.bytes_read
+        if len(preview.rows) >= limits.preview_rows or quota_hit:
             break
     preview.features = schema.features
     if preview.failed_rows:
@@ -99,6 +106,19 @@ def read_preview(
                 stage=Stage.INSPECTING,
                 component="dataset",
                 rows_failed=preview.failed_rows,
+            )
+        )
+    if quota_hit and not preview.rows and preview.features is None:
+        preview.issues.append(
+            make_issue(
+                ErrorCode.SCAN_QUOTA_EXCEEDED,
+                "미리보기 크기 한도 안에서 컬럼을 확인하지 못했습니다. "
+                "첫 레코드나 파일 메타데이터가 한도보다 큽니다.",
+                severity=Severity.WARNING,
+                stage=Stage.INSPECTING,
+                component="dataset",
+                limit="max_metadata_bytes",
+                limit_value=budget,
             )
         )
     return preview

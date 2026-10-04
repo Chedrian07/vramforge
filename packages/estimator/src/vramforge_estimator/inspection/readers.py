@@ -157,15 +157,27 @@ class FileSource:
         self.path = path
         self._opener = opener
         self.size = size
-        self.byte_budget = byte_budget
+        self.byte_budget = byte_budget  # shared by every stream opened from this source
         self.budget_limit = budget_limit
+        self._counter = _Counter()
+
+    @property
+    def bytes_read(self) -> int:
+        """Raw bytes read through budgeted streams so far (all opens together)."""
+        return self._counter.value
 
     def open_raw(self) -> IO[bytes]:
         """A fresh binary stream positioned at 0, counted against the byte budget."""
         raw: IO[bytes] = self.path.open("rb") if self.path is not None else self._opener()  # type: ignore[misc]
         if self.byte_budget is None:
             return raw
-        return io.BufferedReader(_LimitedStream(raw, self.byte_budget, self.budget_limit))
+        limited = _LimitedStream(raw, self.byte_budget, self.budget_limit, self._counter)
+        return io.BufferedReader(limited)
+
+
+@dataclass
+class _Counter:
+    value: int = 0
 
 
 class _LimitedStream(io.RawIOBase):
@@ -175,12 +187,14 @@ class _LimitedStream(io.RawIOBase):
     read completely and only a longer one fails.
     """
 
-    def __init__(self, raw: IO[bytes], cap: int, limit: str) -> None:
+    def __init__(
+        self, raw: IO[bytes], cap: int, limit: str, counter: _Counter | None = None
+    ) -> None:
         super().__init__()
         self._raw = raw
         self._cap = cap
         self._limit = limit
-        self.count = 0
+        self._counter = counter if counter is not None else _Counter()
 
     def readable(self) -> bool:
         return True
@@ -196,14 +210,14 @@ class _LimitedStream(io.RawIOBase):
 
     def readinto(self, buffer: Any) -> int:
         view = memoryview(buffer).cast("B")
-        remaining = self._cap - self.count
+        remaining = self._cap - self._counter.value
         if remaining <= 0:
             if self._raw.read(1):
                 raise QuotaExceeded(self._limit, self._cap)
             return 0
         data = self._raw.read(min(len(view), remaining))
         n = len(data)
-        self.count += n
+        self._counter.value += n
         view[:n] = data
         return n
 
