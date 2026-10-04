@@ -71,6 +71,8 @@ api·worker·migrate ──▶ postgres, redis  (외부와 연결되지 않는 �
 
 포트만 바꿀 때는 `.env`에 `VRAMFORGE_PORT=9000`을 넣고 `docker compose up -d`를 다시 실행합니다.
 
+proxy 설정 파일(`infra/proxy/Caddyfile`)은 원격 Docker host와 SELinux 호스트에서도 동작하도록 bind mount가 아니라 proxy 이미지에 포함됩니다. 이 파일을 고쳤다면 `docker compose up -d --build proxy`로 이미지를 다시 빌드해야 적용됩니다.
+
 ### 3.1 다른 컴퓨터에서 접속하게 할 때
 
 `VRAMFORGE_BIND=0.0.0.0`은 같은 네트워크의 누구나 분석을 실행하게 만듭니다(CPU·디스크·Hugging Face 트래픽 사용). 외부에 열 때는 아래를 **모두** 지킵니다.
@@ -84,7 +86,7 @@ api·worker·migrate ──▶ postgres, redis  (외부와 연결되지 않는 �
 
 ## 4. 환경 변수
 
-`.env`는 선택입니다. 바꾸고 싶은 값만 [`.env.example`](../.env.example)에서 복사해 `.env`에 둡니다(`cp .env.example .env`). `.env.example`과 `compose.yaml`의 기본값이 같은지는 CI가 `infra/scripts/check_env_example.py`로 검사합니다. 값을 바꾼 뒤에는 `docker compose up -d`(이미지 관련 값이면 `--build`)로 다시 적용합니다.
+`.env`는 선택입니다. 바꾸고 싶은 줄만 [`.env.example`](../.env.example)에서 `.env`로 옮겨 적습니다. 파일 전체를 복사하면(`cp .env.example .env`) 모든 기본값이 `.env`에 고정되어, 업그레이드로 `compose.yaml`의 기본값(이미지 버전 등)이 바뀌어도 `.env`의 이전 값이 쓰입니다. `.env.example`과 `compose.yaml`의 기본값이 같은지는 CI가 `infra/scripts/check_env_example.py`로 검사합니다. 값을 바꾼 뒤에는 `docker compose up -d`(이미지 관련 값이면 `--build`)로 다시 적용합니다.
 
 ### 4.1 compose 설정
 
@@ -201,6 +203,7 @@ git pull
 docker compose up -d --build --wait
 ```
 
+- `.env`에 적은 값은 새 버전의 `compose.yaml` 기본값보다 우선합니다. 특히 `*_IMAGE`를 적어 두었다면 업그레이드 뒤에도 이전 이미지가 쓰이므로 `git pull` 뒤에 `.env.example`과 비교합니다.
 - 일회성 `migrate` 서비스가 api·worker보다 먼저 `alembic upgrade head`를 실행합니다. 실패하면 api와 worker가 시작되지 않습니다(`docker compose logs migrate`).
 - PostgreSQL **메이저 버전**(예: 18 → 19)은 데이터 디렉터리 형식이 다르므로 `POSTGRES_IMAGE`만 바꾸면 안 됩니다. dump → 새 볼륨 → restore 순서로 옮깁니다.
 - 이전 빌드 이미지는 `docker image ls 'vramforge-*'`로 확인합니다. 이 프로젝트가 빌드한 이미지만 지우려면 `docker compose down --rmi local`을 씁니다.
