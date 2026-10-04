@@ -19,6 +19,7 @@ from .common import (
     EvidenceLevel,
     ExcludedComponent,
     HardwareFit,
+    Issue,
     UnknownComponent,
     VFModel,
 )
@@ -105,7 +106,7 @@ class AllocationSpec(VFModel):
     recompute_group: str | None = None
     storage_alias_group: str | None = None
     evidence: Evidence
-    formula_ref: str | None = None  # anchor in docs/methodology.md
+    formula_ref: str | None = None  # anchor in docs/methodology.md or methodology-architectures.md
     note: str | None = None
 
 
@@ -176,6 +177,8 @@ FitReason = Literal[
     "fits_with_margin",
     "unknown_components",
     "unsupported",
+    "load_budget_insufficient",
+    "scan_incomplete",
 ]
 
 
@@ -234,3 +237,4 @@ class MemoryEstimate(VFModel):
     scenarios: list[ScenarioEstimate]
     primary_scenario_id: str | None = None
     assumptions: list[Assumption] = Field(default_factory=list)
+    issues: list[Issue] = Field(default_factory=list)

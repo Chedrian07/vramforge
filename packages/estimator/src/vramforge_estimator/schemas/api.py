@@ -155,7 +155,10 @@ class AnalysisStatus(VFModel):
     created_at: datetime
     updated_at: datetime
     finished_at: datetime | None = None
+    # When the result and its artifacts are deleted by retention (plan §16.4); None while running.
+    expires_at: datetime | None = None
     last_event_id: int | None = None
+    request: AnalysisRequest | None = None  # lets the UI restore the form after a reload
     result: AnalysisResult | None = None  # partial while running, final when terminal
     error: Issue | None = None
 
