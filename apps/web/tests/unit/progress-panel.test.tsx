@@ -95,6 +95,28 @@ describe("progress panel", () => {
     expect(screen.getByText(/취소 시점까지 1,200 row/)).toBeInTheDocument();
   });
 
+  it("preselects the mapping candidate the server suggests by label", async () => {
+    const user = userEvent.setup();
+    const onRerun = vi.fn();
+    const result = needsInputStatus.result!;
+    const labels = ["system=system, prompt=question, chosen=chosen, rejected=rejected", "system=system, prompt=instruction, chosen=chosen, rejected=rejected"];
+    const status = {
+      ...needsInputStatus,
+      result: {
+        ...result,
+        needs_input: {
+          ...result.needs_input!,
+          choices: [{ field: "dataset.mapping", options: labels, suggested: labels[1]!, reason: "prompt 후보가 두 개입니다." }],
+        },
+      },
+    };
+    const { form } = renderPanel(terminal(status), { onRerun });
+    expect(screen.getByLabelText("dataset.mapping")).toHaveValue("1");
+    await user.click(screen.getByRole("button", { name: "선택 적용 후 다시 분석" }));
+    expect(form().getValues("mapPrompt")).toBe("instruction");
+    expect(onRerun).toHaveBeenCalled();
+  });
+
   it("resolves NEEDS_INPUT inline and runs again", async () => {
     const user = userEvent.setup();
     const onRerun = vi.fn();

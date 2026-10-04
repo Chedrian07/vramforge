@@ -194,10 +194,18 @@ function RowsProgress({ progress, active }: { progress: NonNullable<RunState["pr
 /** NEEDS_INPUT: pick config / split / mapping inline, then run again (plan.md §4.1). */
 function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRerun: () => void }) {
   const { setValue } = useFormContext<FormValues>();
-  const [choices, setChoices] = useState<Record<string, string>>(() =>
-    Object.fromEntries(needsInput.choices.map((c) => [c.field, c.suggested ?? ""])),
-  );
   const candidates = needsInput.mapping_candidates ?? [];
+  // Mapping options are candidate indices; the server names its suggestion by the candidate's
+  // label (choice.options lists the labels in candidate order).
+  const initial = (c: NeedsInput["choices"][number]): string => {
+    if (c.suggested == null) return "";
+    if (c.field !== "dataset.mapping") return c.suggested;
+    const index = (c.options ?? []).indexOf(c.suggested);
+    return index >= 0 && index < candidates.length ? String(index) : "";
+  };
+  const [choices, setChoices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(needsInput.choices.map((c) => [c.field, initial(c)])),
+  );
   const ready = needsInput.choices.every((c) => (choices[c.field] ?? "") !== "");
 
   const apply = () => {
