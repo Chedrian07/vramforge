@@ -537,3 +537,34 @@ def test_unverified_lengths_withhold_every_scenario_fit(
         HardwareFit.LOW_MARGIN,
         HardwareFit.EXCEEDS,
     ]
+
+
+def test_a_cached_scan_that_cannot_be_adopted_is_scanned_again(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The owner scan cache is optional: if its artifact vanishes while being adopted (e.g. the
+    source analysis is deleted in another tab), the analysis scans instead of failing."""
+    import shutil
+
+    FakeModules().install(monkeypatch)
+    first = analyze(example_request(), ctx)
+    key = first.dataset_scan.preprocess_key
+
+    other_dir = tmp_path / "artifacts" / "owner" / ("b" * 32)
+    other_dir.mkdir(parents=True)
+    second_ctx = CachingContext(
+        artifact_dir=other_dir, analysis_id="b" * 32, cache={key: ctx.cache[key]}
+    )
+
+    def vanished(src, dst, **kwargs):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "part-00007.parquet").write_bytes(b"PAR1")  # copied before the source went
+        raise FileNotFoundError("source deleted during copy")
+
+    monkeypatch.setattr(shutil, "copytree", vanished)
+    fakes = FakeModules().install(monkeypatch)
+    second = analyze(example_request(), second_ctx)
+    assert terminal_status(second) is JobStatus.COMPLETED
+    assert "full_scan" in fakes.calls  # fell back to a real scan
+    assert not (other_dir / "lengths" / "part-00007.parquet").exists()
+    assert (other_dir / "lengths" / "part-00000.parquet").is_file()

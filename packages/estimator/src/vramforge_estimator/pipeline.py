@@ -809,11 +809,20 @@ class _Run:
             or UNRESOLVED_LOCK,
         )
         cached = self.lookup_cache(pkey)
+        adopted: Path | None = None
+        if cached is not None:
+            try:
+                adopted = self.adopt_artifact(cached.artifact_path)
+            except OSError:  # e.g. the source analysis was deleted meanwhile: scan instead
+                log.warning("could not reuse a cached scan; scanning again", exc_info=True)
+                # A half-copied lengths/ must not pass for checkpointed parts of this analysis.
+                shutil.rmtree(self.ctx.artifact_dir / LENGTHS_DIR, ignore_errors=True)
+                cached = None
         if cached is not None:
             # Same owner, same immutable source and preprocessing identity (plan §16.3).
             log.info("reusing a cached complete scan for analysis %s", self.ctx.analysis_id)
             outcome_result = cached.result
-            self.lengths_path = self.adopt_artifact(cached.artifact_path)
+            self.lengths_path = adopted
             self.template_loss_rows = cached.template_content_loss_rows
             issues: list[Issue] = list(cached.issues)
         else:
