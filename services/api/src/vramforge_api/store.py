@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from vramforge_estimator.errors import make_issue
@@ -108,11 +109,21 @@ def remove_data_path(settings: Settings, rel: str) -> None:
 
 
 def ensure_owner(db: Session, owner_key: str) -> None:
+    """Create the owner row on first use.
+
+    A browser's first requests can race (e.g. an upload and an analysis, or two uploads): both
+    see no owner and both insert. The losing insert runs in a savepoint, so its IntegrityError
+    rolls back only the savepoint and the winner's row is read instead of failing the request.
+    """
     owner = db.get(Owner, owner_key)
     now = utcnow()
     if owner is None:
-        db.add(Owner(id=owner_key, created_at=now, last_seen_at=now))
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.add(Owner(id=owner_key, created_at=now, last_seen_at=now))
+        except IntegrityError:
+            if db.get(Owner, owner_key, populate_existing=True) is None:
+                raise  # not the duplicate-owner race
     elif now - owner.last_seen_at > timedelta(hours=1):
         owner.last_seen_at = now
 
