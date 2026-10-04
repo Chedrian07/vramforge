@@ -1,0 +1,26 @@
+# Build context for infra/docker/python.Dockerfile (context = repository root).
+#
+# Allowlist: everything is excluded except what the Python image needs. This keeps the context
+# small and guarantees that .env files, local-sources/ (model weights, datasets), runtime data,
+# node_modules and the git history never reach the build context or an image layer.
+# The web image builds from apps/web with infra/docker/web.Dockerfile.dockerignore instead.
+*
+
+!pyproject.toml
+!uv.lock
+!packages/
+!services/
+!profiles/
+
+# Never include caches, virtualenvs, local secrets or editor state from the allowed trees.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.venv
+**/.venv*
+**/node_modules
+**/.env
+**/.env.*
+**/.DS_Store
