@@ -35,10 +35,42 @@ def test_valid_header_with_metadata_and_scalar() -> None:
     assert by_name["empty"].numel == 0
 
 
+def test_unsigned_complex_and_sub_byte_dtypes_have_exact_sizes() -> None:
+    header = {
+        "u16": _entry("U16", [3], 0, 6),
+        "u32": _entry("U32", [3], 6, 18),
+        "u64": _entry("U64", [3], 18, 42),
+        "c64": _entry("C64", [3], 42, 66),
+        "e8m0": _entry("F8_E8M0", [3], 66, 69),
+        "f4": _entry("F4", [2, 3], 69, 72),  # 6 elements x 4 bits
+        "f6a": _entry("F6_E2M3", [4], 72, 75),  # 4 elements x 6 bits
+        "f6b": _entry("F6_E3M2", [8], 75, 81),
+        "f4_empty": _entry("F4", [0, 3], 81, 81),
+    }
+    tensors, _ = validate_header(header, payload_size=81)
+    assert {t.name: (t.dtype, t.numel, t.nbytes) for t in tensors} == {
+        "u16": ("uint16", 3, 6),
+        "u32": ("uint32", 3, 12),
+        "u64": ("uint64", 3, 24),
+        "c64": ("complex64", 3, 24),
+        "e8m0": ("float8_e8m0fnu", 3, 3),
+        "f4": ("float4_e2m1", 6, 3),
+        "f6a": ("float6_e2m3", 4, 3),
+        "f6b": ("float6_e3m2", 8, 6),
+        "f4_empty": ("float4_e2m1", 0, 0),
+    }
+
+
 @pytest.mark.parametrize(
     ("header", "reason"),
     [
         ({"w": _entry("F32", [2], 0, 4)}, "size_mismatch"),
+        ({"w": _entry("F4", [3], 0, 2)}, "misaligned_slice"),  # 12 bits, not whole bytes
+        ({"w": _entry("F4", [], 0, 1)}, "misaligned_slice"),  # a scalar is 4 bits
+        ({"w": _entry("F6_E3M2", [2], 0, 2)}, "misaligned_slice"),
+        ({"w": _entry("F4", [4], 0, 4)}, "size_mismatch"),  # 2 bytes
+        ({"w": _entry("F6_E2M3", [4], 0, 4)}, "size_mismatch"),  # 3 bytes
+        ({"w": _entry("C64", [1], 0, 4)}, "size_mismatch"),  # 8 bytes
         ({"w": _entry("F32", [-1], 0, 4)}, "invalid_shape"),
         ({"w": _entry("F32", [True], 0, 4)}, "invalid_shape"),
         ({"w": _entry("F32", [1], 4, 0)}, "invalid_offsets"),
@@ -55,6 +87,49 @@ def test_malformed_headers(header: dict[str, Any], reason: str) -> None:
     with pytest.raises(HeaderError) as exc:
         validate_header(header)
     assert exc.value.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("dtype", "shape", "nbytes"),
+    [
+        ("F4", [4], 2),
+        ("F4", [2, 3], 3),
+        ("F4", [0], 0),
+        ("F4", [3], 2),
+        ("F4", [], 1),
+        ("F4", [4], 4),
+        ("F6_E2M3", [4], 3),
+        ("F6_E3M2", [8], 6),
+        ("F6_E3M2", [2], 2),
+        ("F6_E2M3", [4], 4),
+        ("F8_E8M0", [3], 3),
+        ("U16", [3], 6),
+        ("U32", [3], 12),
+        ("U64", [3], 24),
+        ("C64", [3], 24),
+        ("C64", [3], 12),
+    ],
+)
+def test_validation_agrees_with_the_safetensors_library(
+    tmp_path: Path, dtype: str, shape: list[int], nbytes: int
+) -> None:
+    safetensors = pytest.importorskip("safetensors")
+    header = {"w": _entry(dtype, shape, 0, nbytes)}
+    path = _frame(tmp_path / "w.safetensors", json.dumps(header).encode(), nbytes)
+    try:
+        with safetensors.safe_open(str(path), framework="numpy") as handle:
+            assert list(handle.keys()) == ["w"]
+    except safetensors.SafetensorError:
+        library_accepts = False
+    else:
+        library_accepts = True
+    try:
+        validate_header(header, payload_size=nbytes)
+    except HeaderError:
+        accepted = False
+    else:
+        accepted = True
+    assert accepted is library_accepts
 
 
 def test_payload_size_must_be_fully_indexed() -> None:

@@ -1,8 +1,9 @@
 """Validation of safetensors header mappings (plan.md §6.2).
 
 Mirrors the checks the safetensors library applies before loading: known dtype, non-negative
-shape, ``data_offsets`` sized exactly ``numel × itemsize`` and laid out contiguously from 0
-without overlaps or holes (and, when the file size is known, ending at the payload size).
+shape, sub-byte tensors (FP4/FP6) ending on a byte boundary, ``data_offsets`` sized exactly
+``numel × bits / 8`` and laid out contiguously from 0 without overlaps or holes (and, when the
+file size is known, ending at the payload size).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from vramforge_estimator.units import SAFETENSORS_DTYPES, tensor_bytes
+from vramforge_estimator.units import SAFETENSORS_DTYPES, dtype_bytes
 
 
 class HeaderError(ValueError):
@@ -85,8 +86,12 @@ def validate_header(
         if dtype is None:
             raise HeaderError("unknown_dtype", tensor=name, dtype=raw_dtype)
         numel = math.prod(shape)
+        bits = numel * round(dtype_bytes(dtype) * 8)  # safetensors Dtype::bitsize (F4: 4, F6: 6)
+        if bits % 8:
+            # safetensors 0.8.0 refuses the file: "the slice does not end up at a byte boundary"
+            raise HeaderError("misaligned_slice", tensor=name)
         nbytes = offsets[1] - offsets[0]
-        if nbytes != tensor_bytes(numel, dtype):
+        if nbytes != bits // 8:
             raise HeaderError("size_mismatch", tensor=name)
         tensors.append(
             HeaderTensor(
