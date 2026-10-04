@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useFormContext } from "react-hook-form";
+import { useFormContext, useWatch } from "react-hook-form";
 
 import { Badge, Button, Mono, NativeSelect } from "@/components/ui/primitives";
 import { IssueList } from "@/components/ui/values";
@@ -220,6 +220,10 @@ function RowsProgress({ progress, active }: { progress: NonNullable<RunState["pr
 function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRerun: () => void }) {
   const { setValue, getValues } = useFormContext<FormValues>();
   const candidates = needsInput.mapping_candidates ?? [];
+  // No candidate to offer (e.g. the inspector found no text column it could assign): the roles
+  // are set by hand in the dataset section's column mapping, and that mapping answers the question.
+  const mappingByHand = candidates.length === 0;
+  const formMapping = useWatch<FormValues, "mappingEnabled">({ name: "mappingEnabled" });
   // Mapping options are candidate indices; the server names its suggestion by the candidate's
   // label (choice.options lists the labels in candidate order).
   const initial = (c: NeedsInput["choices"][number]): string => {
@@ -231,7 +235,9 @@ function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRe
   const [choices, setChoices] = useState<Record<string, string>>(() =>
     Object.fromEntries(needsInput.choices.map((c) => [c.field, initial(c)])),
   );
-  const ready = needsInput.choices.every((c) => (choices[c.field] ?? "") !== "");
+  const answered = (c: NeedsInput["choices"][number]) =>
+    c.field === "dataset.mapping" && mappingByHand ? formMapping === true : (choices[c.field] ?? "") !== "";
+  const ready = needsInput.choices.every(answered);
 
   const apply = () => {
     const opts = { shouldDirty: true, shouldValidate: true };
@@ -262,7 +268,12 @@ function NeedsInputPanel({ needsInput, onRerun }: { needsInput: NeedsInput; onRe
               <Mono>{choice.field}</Mono>
             </label>
             <p className="text-[12px] text-muted">{choice.reason}</p>
-            {choice.field === "dataset.mapping" ? (
+            {choice.field === "dataset.mapping" && mappingByHand ? (
+              <p id={id} className="text-[12px] text-ink-2">
+                자동으로 제안할 매핑 후보가 없습니다. 위 &lsquo;컬럼 매핑&rsquo;에서 역할을 직접 지정한 뒤 다시 분석하세요.
+                {formMapping ? " (지정한 매핑으로 다시 분석합니다.)" : ""}
+              </p>
+            ) : choice.field === "dataset.mapping" ? (
               <NativeSelect id={id} value={choices[choice.field] ?? ""} onChange={(e) => setChoices((prev) => ({ ...prev, [choice.field]: e.target.value }))}>
                 <option value="">— 매핑 후보 선택 —</option>
                 {candidates.map((c, i) => (

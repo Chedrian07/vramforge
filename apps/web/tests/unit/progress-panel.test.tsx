@@ -167,6 +167,39 @@ describe("progress panel", () => {
     expect(onRerun).toHaveBeenCalled();
   });
 
+  it("sends a mapping question without candidates to the column mapping editor", async () => {
+    const user = userEvent.setup();
+    const onRerun = vi.fn();
+    const result = needsInputStatus.result!;
+    // One malformed row made every column non-text for the inspector: nothing to suggest.
+    const status = {
+      ...needsInputStatus,
+      result: {
+        ...result,
+        needs_input: {
+          choices: [{ field: "dataset.mapping", options: [], suggested: null, reason: "컬럼 역할을 자동으로 정할 수 없습니다." }],
+          columns: ["prompt", "completion"],
+          mapping_candidates: [],
+        },
+      },
+    };
+    const { form } = renderPanel(terminal(status), { onRerun });
+    expect(screen.getByText(/자동으로 제안할 매핑 후보가 없습니다\. 위 ‘컬럼 매핑’에서 역할을 직접 지정한 뒤 다시 분석하세요\./)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    const rerun = screen.getByRole("button", { name: "선택 적용 후 다시 분석" });
+    expect(rerun).toBeDisabled();
+    // Roles set by hand in the mapping editor answer the question.
+    act(() => {
+      form().setValue("mapPrompt", "prompt");
+      form().setValue("mapCompletion", "completion");
+      form().setValue("mappingEnabled", true);
+    });
+    expect(rerun).toBeEnabled();
+    await user.click(rerun);
+    expect(onRerun).toHaveBeenCalled();
+    expect(form().getValues("mapPrompt")).toBe("prompt");
+  });
+
   it("starts the split over when a NEEDS_INPUT answer picks another config", async () => {
     const user = userEvent.setup();
     const result = needsInputStatus.result!;
