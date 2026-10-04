@@ -229,7 +229,15 @@ async def analysis_events(
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     after: Annotated[int | None, Query(ge=0, description="Resume after this event id")] = None,
 ) -> Response:
-    """Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID."""
+    """Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.
+
+    Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:
+    `progress` (stage changes and coalesced scan progress), `partial_result` (refetch the
+    analysis for the result so far), `warning`, and the terminal types `completed`, `failed`
+    (status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`
+    and `needs_input`. The stream ends after a terminal event; reconnecting with the last id
+    of a finished analysis returns 204. `after` resumes without the header (first connect).
+    """
     after_id = parse_last_event_id(last_event_id, after)
     exists, finished = await run_in_threadpool(
         _stream_precheck, state, owner, analysis_id, after_id

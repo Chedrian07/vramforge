@@ -31,6 +31,7 @@ FAILED_LOGIN_DELAY_S = 0.5
 
 @router.get("", response_model=SessionStatus)
 def session_status(request: Request, state: StateDep) -> SessionStatus:
+    """Whether an access token is required and whether this browser already has access."""
     token = state.settings.access_token_value()
     if token is None:
         return SessionStatus(auth_required=False, authenticated=True)
@@ -40,6 +41,7 @@ def session_status(request: Request, state: StateDep) -> SessionStatus:
 
 @router.post("", response_model=SessionStatus)
 async def login(body: SessionLogin, response: Response, state: StateDep) -> SessionStatus:
+    """Exchange the access token for the httpOnly `vf_access` cookie (EventSource-friendly)."""
     token = state.settings.access_token_value()
     if token is None:
         return SessionStatus(auth_required=False, authenticated=True)
@@ -60,6 +62,7 @@ async def login(body: SessionLogin, response: Response, state: StateDep) -> Sess
 
 @router.delete("", response_model=SessionStatus)
 def logout(response: Response, state: StateDep) -> SessionStatus:
+    """Forget the access cookie."""
     response.headers.append(
         "set-cookie",
         cookie_header(ACCESS_COOKIE, "", secure=state.settings.cookie_secure, max_age=0),
