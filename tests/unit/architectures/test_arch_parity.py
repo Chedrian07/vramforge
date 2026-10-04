@@ -12,6 +12,7 @@ Tiny random-init models only (no downloads). Three checks:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 from types import ModuleType
 from typing import Any
 
@@ -412,6 +413,32 @@ def test_qwen35_layer_saved_bytes_match_torch(
     for index in (1, 2):  # a non-first linear layer and the full-attention layer
         measured = _measure_layer(model, top, index, batch, seq, autocast, mrope=True)
         assert measured == _expected_layer(inv, "qwen3_5", cfg, index, batch, seq), (mode, index)
+
+
+@pytest.mark.parametrize(("a_log", "dt_bias"), [(False, True), (True, False), (False, False)])
+def test_only_a_log_changes_the_g_path_saved_set(
+    ib: ModuleType, a_log: bool, dt_bias: bool
+) -> None:
+    # g = -exp(A_log.float()) * softplus(a.float() + dt_bias): a frozen A_log still leaves
+    # -exp(A_log) [Hv] saved by the mul (not 0, AM §4.3 correction); dt_bias only enters an add
+    model = causal_q35(["linear_attention", "linear_attention", "full_attention"])
+    inv = inventory(ib, model, "Qwen3_5ForCausalLM")
+    cfg = make_cfg(strategy=Strategy.FULL)
+    mixer = model.model.layers[1].linear_attn
+    mixer.A_log.requires_grad_(a_log)
+    mixer.dt_bias.requires_grad_(dt_bias)
+    model.train()
+    measured = _measure_layer(model, model, 1, 2, 100, autocast=True, mrope=True)
+    st = ModelStructure(inv, "qwen3_5")
+    lt = layer_train(st, st.layers[1], build_trainability(st, cfg))
+    mode = act_mode(cfg)
+    assert mode is not None and lt.params_trainable  # full FT: the layer's A_log trains
+    terms = act.q35_linear_attention_layer(
+        2, 100, act_dims(st), dataclasses.replace(lt, params_trainable=a_log), mode, "torch"
+    )
+    assert measured == act.total(terms)
+    hv = st.dims.lin_value_heads
+    assert [t.nbytes for t in terms if t.label == "a_path"] == [(2 if a_log else 1) * 4 * hv]
 
 
 @pytest.mark.parametrize("kind", ["llama", "qwen3"])

@@ -272,8 +272,11 @@ def layer_train(structure: ModelStructure, layer: Layer, tr: Trainability) -> ac
         for kind, m in layer.linears.items()
     }
     norms = {leaf: tr.module_trainable(t.module) for leaf, t in layer.norms.items()}
-    params = [t for t in layer.tensors if t.name.endswith(("A_log", "dt_bias"))]
-    params_trainable = any(tr.module_trainable(t.module) for t in params)
+    # g = -exp(A_log.float()) * softplus(a.float() + dt_bias): only A_log changes the saved set
+    # (a frozen one still leaves -exp(A_log) [Hv] in the mul); dt_bias enters an add, which saves
+    # nothing (measured, test_arch_parity).
+    a_log = [t for t in layer.tensors if t.name.rpartition(".")[2] == "A_log"]
+    params_trainable = any(tr.module_trainable(t.module) for t in a_log)
     widths = None
     if structure.family == "dense" and "q_norm" in layer.norms and "k_norm" in layer.norms:
         widths = (layer.norms["q_norm"].shape[0], layer.norms["k_norm"].shape[0])

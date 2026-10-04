@@ -48,7 +48,7 @@ class ModuleTrain:
 class LayerTrain:
     linears: Mapping[str, ModuleTrain]
     norm_trainable: Mapping[str, bool] = field(default_factory=dict)  # norm leaf -> trains
-    params_trainable: bool = False  # Gated DeltaNet A_log / dt_bias train
+    params_trainable: bool = False  # Gated DeltaNet A_log trains (dt_bias never changes the set)
     qk_norm_widths: tuple[int, int] | None = None  # dense q_norm / k_norm weight widths
 
 
@@ -354,7 +354,8 @@ def q35_linear_attention_layer(
     acc.add(g, "beta", b * n * hv, "[N,Hv]")
     # g = -exp(A_log.float()) * softplus(a.float() + dt_bias) runs in the modeling code for both
     # kernels. The mul keeps -exp(A_log) [Hv] even for a frozen A_log; a trainable A_log adds
-    # the softplus output and exp's result (measured: one [Hv] tensor stays when frozen).
+    # the softplus output (also kept by the mul) and exp's result. Measured: one [Hv] tensor
+    # stays when frozen; dt_bias trainability changes nothing (its add saves no tensor).
     acc.add(g, "softplus.input", F * n * hv, "[N,Hv] fp32")
     if lt.params_trainable:
         acc.add(g, "softplus.output", F * n * hv, "[N,Hv] fp32")
