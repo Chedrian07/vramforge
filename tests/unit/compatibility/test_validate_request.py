@@ -10,6 +10,7 @@ import pytest
 
 from vramforge_estimator.compatibility import validate_request
 from vramforge_estimator.compatibility.grpo_rules import resolve_grpo_batch
+from vramforge_estimator.compatibility.validation import MAX_COMPLETION_BUDGET
 from vramforge_estimator.schemas import AnalysisRequest, ErrorCode, Severity
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "requests" / "plan_example_grpo.json"
@@ -169,6 +170,28 @@ def test_grpo_batch_constraints_use_trl_rules() -> None:
 def test_empty_budget_candidates_are_rejected() -> None:
     issues = validate_request(request(grpo__completion_budget_candidates=[]))
     assert ErrorCode.GRPO_BUDGET_UNSPECIFIED in codes(issues)
+
+
+@pytest.mark.parametrize("bad", [0, -5, MAX_COMPLETION_BUDGET + 1])
+def test_budget_candidates_must_be_positive_and_bounded(bad: int) -> None:
+    # The schema bounds completion_budget but not the candidate items; a zero or negative budget
+    # would turn into zero/negative logits and grad buffers.
+    issues = validate_request(request(grpo__completion_budget_candidates=[bad, 1024]))
+    assert ErrorCode.INVALID_REQUEST in codes(issues)
+    issue = next(i for i in issues if i.code is ErrorCode.INVALID_REQUEST)
+    assert issue.details["invalid"] == [bad] and issue.user_message
+    # An explicit budget replaces the candidates, so they are not used.
+    explicit = validate_request(
+        request(grpo__completion_budget=2048, grpo__completion_budget_candidates=[bad])
+    )
+    assert codes(explicit) == set()
+
+
+def test_candidate_bound_matches_the_schema_bound() -> None:
+    from vramforge_estimator.schemas import GrpoConfig
+
+    le = [m.le for m in GrpoConfig.model_fields["completion_budget"].metadata if hasattr(m, "le")]
+    assert le == [MAX_COMPLETION_BUDGET]
 
 
 @pytest.mark.parametrize(

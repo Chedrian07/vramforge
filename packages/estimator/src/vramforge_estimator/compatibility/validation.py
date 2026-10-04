@@ -37,6 +37,9 @@ from .profiles import load_registry
 # analytic profiles carry the same values; test_profiles checks they stay in sync.
 PRESET_MICROBATCH = {Objective.SFT: 1, Objective.DPO: 1, Objective.GRPO: 1}
 PRESET_ACCUMULATION = {Objective.SFT: 8, Objective.DPO: 8, Objective.GRPO: 4}
+# Same bound as `GrpoConfig.completion_budget` (schemas/request.py); a budget is a finite
+# max_new_tokens >= 1 (docs/research/trl-grpo.md §9).
+MAX_COMPLETION_BUDGET = 1_048_576
 
 
 def _err(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
@@ -288,6 +291,20 @@ def _grpo_issues(request: AnalysisRequest) -> list[Issue]:
                 "grpo.completion_budget",
             )
         )
+    invalid = sorted(
+        {b for b in g.completion_budget_candidates if not 1 <= b <= MAX_COMPLETION_BUDGET}
+    )
+    if g.completion_budget is None and invalid:
+        # The schema bounds `completion_budget` but not the candidate items.
+        issues.append(
+            _err(
+                ErrorCode.INVALID_REQUEST,
+                f"completion budget 후보는 1 이상 {MAX_COMPLETION_BUDGET:,} 이하의 정수여야 "
+                "합니다.",
+                "grpo.completion_budget_candidates",
+                invalid=invalid[:10],
+            )
+        )
     return issues
 
 
@@ -367,4 +384,4 @@ def validate_request(request: AnalysisRequest) -> list[Issue]:
     return issues
 
 
-__all__ = ["PRESET_ACCUMULATION", "PRESET_MICROBATCH", "validate_request"]
+__all__ = ["MAX_COMPLETION_BUDGET", "PRESET_ACCUMULATION", "PRESET_MICROBATCH", "validate_request"]
