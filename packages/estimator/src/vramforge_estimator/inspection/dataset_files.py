@@ -207,10 +207,16 @@ class SourceFiles:
         return FileSignature(size=stat.st_size, mtime_ns=stat.st_mtime_ns, inode=stat.st_ino)
 
     def verify(self, data_file: DataFile, path: Path) -> Issue | None:
-        """Compare size and content digest with the manifest entry (None = consistent)."""
+        """Compare size and content digest with the manifest entry (None = consistent).
+
+        The resolver lists every file of the snapshot, so a data file without an entry appeared
+        after resolution. An empty manifest (nothing listed) cannot be checked.
+        """
         entry = data_file.entry
         if entry is None:
-            return None
+            return (
+                _changed_issue(data_file.shard_id, "not_in_manifest") if len(self.index) else None
+            )
         size = _size(path)
         if entry.size is not None and size != entry.size:
             return _changed_issue(data_file.shard_id, "size_mismatch")

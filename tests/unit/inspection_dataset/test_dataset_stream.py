@@ -269,3 +269,26 @@ def test_unknown_total_rows_is_none() -> None:
     stream = stream_for(local_source(FIXTURES / "preference.jsonl"))
     assert stream.total_rows is None
     assert stream.split == "train" and stream.config == "default"
+
+
+def test_data_file_missing_from_the_manifest_is_a_changed_snapshot(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    write_jsonl(root / "train-0.jsonl", [{"a": 1}])
+    entries = file_entries(root)
+    write_jsonl(root / "train-1.jsonl", [{"a": 2}])  # appeared after the manifest was taken
+    stream = stream_for(local_source(root, entries))
+    assert [r.row["a"] for r in stream] == [1]
+    assert stream.issues[-1].code == ErrorCode.SOURCE_REVISION_CHANGED
+    assert stream.issues[-1].details["reason"] == "not_in_manifest"
+    assert not stream.complete
+
+
+def test_parquet_files_with_different_columns_stop_with_schema_mismatch(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    root.mkdir()
+    pq.write_table(pa.table({"prompt": ["a"]}), root / "train-0.parquet")
+    pq.write_table(pa.table({"prompt": ["b"], "extra": [1]}), root / "train-1.parquet")
+    stream = stream_for(local_source(root))
+    assert [r.row["prompt"] for r in stream] == ["a"]
+    assert stream.issues[-1].code == ErrorCode.SCAN_PARTIAL
+    assert stream.issues[-1].details["reason"] == "schema_mismatch"

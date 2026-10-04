@@ -101,7 +101,6 @@ def iter_parquet_file(
     import pyarrow as pa
     import pyarrow.parquet as pq
     from datasets import Features
-    from datasets.table import table_cast
 
     _reject_compression(spec)
     options = spec.options
@@ -138,11 +137,11 @@ def iter_parquet_file(
             while True:
                 try:
                     batch = next(batches)
-                    table = table_cast(pa.Table.from_batches([batch]), target)
                 except StopIteration:
                     break
-                except (pa.ArrowInvalid, pa.ArrowTypeError, OSError, ValueError) as exc:
+                except (pa.ArrowInvalid, OSError, ValueError) as exc:
                     raise ShardBroken("parquet_unreadable", row_group=group) from exc
+                table = _cast_or_broken(pa.Table.from_batches([batch]), target, info)
                 yield from _emit(table, limits, schema, info)
     finally:
         _close(handle)
@@ -157,7 +156,6 @@ def iter_arrow_file(
 ) -> Iterator[ReadItem]:
     import pyarrow as pa
     from datasets import Features
-    from datasets.table import table_cast
 
     _reject_compression(spec)
     handle = _columnar_handle(source)
@@ -187,14 +185,31 @@ def iter_arrow_file(
                 if batch.nbytes > limits.max_batch_bytes:
                     raise QuotaExceeded("max_batch_bytes", limits.max_batch_bytes)
                 batch.validate(full=True)
-                table = table_cast(pa.Table.from_batches([batch]), target)
             except StopIteration:
                 break
-            except (pa.ArrowInvalid, pa.ArrowTypeError, OSError, ValueError) as exc:
+            except (pa.ArrowInvalid, OSError, ValueError) as exc:
                 raise ShardBroken("arrow_unreadable", rows_read=info.rows) from exc
+            table = _cast_or_broken(pa.Table.from_batches([batch]), target, info)
             yield from _emit(table, limits, schema, info)
     finally:
         _close(handle)
+
+
+def _cast_or_broken(table: pa.Table, target: pa.Schema, info: ReadInfo) -> pa.Table:
+    """Cast to the split schema; a file whose columns differ cannot be read like datasets."""
+    import pyarrow as pa
+    from datasets.table import CastError, table_cast
+
+    try:
+        return table_cast(table, target)
+    except (
+        CastError,
+        pa.ArrowInvalid,
+        pa.ArrowTypeError,
+        pa.ArrowNotImplementedError,
+        ValueError,
+    ) as exc:
+        raise ShardBroken("schema_mismatch", rows_read=info.rows) from exc
 
 
 def _emit(
