@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+/* Class-based dark mode toggled on <html> (docs/research/stack-compat.md §1.6, W5). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens (plan.md §3.2): light page + white cards, 1 px borders, minimal shadows,
+ * accent #4F46E5, state colours always paired with text.
+ */
+:root {
+  --vf-page: #f4f5f8;
+  --vf-surface: #ffffff;
+  --vf-surface-2: #f8f9fb;
+  --vf-line: #e1e4ea;
+  --vf-line-strong: #c9ced8;
+  --vf-ink: #111827;
+  --vf-ink-2: #374151;
+  --vf-muted: #5b6475;
+  --vf-accent: #4f46e5;
+  --vf-accent-ink: #ffffff;
+  --vf-accent-soft: #eef0fe;
+  --vf-ok: #15803d;
+  --vf-ok-soft: #e9f7ee;
+  --vf-warn: #a15c07;
+  --vf-warn-soft: #fdf4e3;
+  --vf-err: #b42318;
+  --vf-err-soft: #fdecea;
+  --vf-info: #1d4ed8;
+  --vf-info-soft: #eaf0fe;
+  --vf-neutral-soft: #eef0f3;
+  --vf-focus: #4f46e5;
+  color-scheme: light;
+}
+
+.dark {
+  --vf-page: #0c0f15;
+  --vf-surface: #131823;
+  --vf-surface-2: #182030;
+  --vf-line: #263043;
+  --vf-line-strong: #36425a;
+  --vf-ink: #e8ebf1;
+  --vf-ink-2: #c9cfda;
+  --vf-muted: #98a2b6;
+  --vf-accent: #8a85ff;
+  --vf-accent-ink: #0c0f15;
+  --vf-accent-soft: #1f2142;
+  --vf-ok: #5ad08a;
+  --vf-ok-soft: #12291c;
+  --vf-warn: #f1b54a;
+  --vf-warn-soft: #2d2412;
+  --vf-err: #ff8a80;
+  --vf-err-soft: #34191a;
+  --vf-info: #8fb3ff;
+  --vf-info-soft: #172440;
+  --vf-neutral-soft: #1c2433;
+  --vf-focus: #a5a1ff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans:
+    system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Segoe UI",
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-page: var(--vf-page);
+  --color-surface: var(--vf-surface);
+  --color-surface-2: var(--vf-surface-2);
+  --color-line: var(--vf-line);
+  --color-line-strong: var(--vf-line-strong);
+  --color-ink: var(--vf-ink);
+  --color-ink-2: var(--vf-ink-2);
+  --color-muted: var(--vf-muted);
+  --color-accent: var(--vf-accent);
+  --color-accent-ink: var(--vf-accent-ink);
+  --color-accent-soft: var(--vf-accent-soft);
+  --color-ok: var(--vf-ok);
+  --color-ok-soft: var(--vf-ok-soft);
+  --color-warn: var(--vf-warn);
+  --color-warn-soft: var(--vf-warn-soft);
+  --color-err: var(--vf-err);
+  --color-err-soft: var(--vf-err-soft);
+  --color-info: var(--vf-info);
+  --color-info-soft: var(--vf-info-soft);
+  --color-neutral-soft: var(--vf-neutral-soft);
+  --color-focus: var(--vf-focus);
+}
+
+@layer base {
+  html {
+    background: var(--vf-page);
+    color: var(--vf-ink);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Visible keyboard focus everywhere (plan §3.2 accessibility). */
+  :focus-visible {
+    outline: 2px solid var(--vf-focus);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+
+  ::selection {
+    background: var(--vf-accent-soft);
+  }
+}
+
+@layer utilities {
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* Long model ids, tensor names and digests wrap instead of forcing page scroll (plan §3.2). */
+  .wrap-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+/* Reduced motion: no animated transitions or spinners (plan §3.2). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
