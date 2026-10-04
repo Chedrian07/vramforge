@@ -261,6 +261,30 @@ describe("useAnalysisRun", () => {
     expect(result.current.state.jobStatus).toBe("TOKENIZING");
   });
 
+  it("never lets a late resume answer take over a run started meanwhile", async () => {
+    const OLD = "vf-fixture-old-0001";
+    const NEW = "vf-fixture-new-0002";
+    window.history.replaceState(null, "", `/?analysis=${OLD}`);
+    let answerOld: (status: AnalysisStatus) => void = () => {};
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>((id) =>
+      id === OLD ? new Promise((resolve) => (answerOld = resolve)) : Promise.resolve({ ...runningStatus, analysis_id: id }),
+    );
+    const createAnalysis = vi.fn(async () => ({ analysis_id: NEW, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const { result } = setup({ getAnalysis, createAnalysis });
+    await waitFor(() => expect(getAnalysis).toHaveBeenCalledWith(OLD));
+
+    await act(() => result.current.start(grpoRequest));
+    const stream = FakeEventSource.latest();
+    expect(stream.url).toBe(`/api/v1/analyses/${NEW}/events`);
+
+    // The reload's GET for the old analysis answers only now.
+    await act(async () => answerOld({ ...runningStatus, analysis_id: OLD }));
+    expect(FakeEventSource.latest()).toBe(stream);
+    expect(stream.closed).toBe(false);
+    expect(result.current.state.analysisId).toBe(NEW);
+    expect(window.location.search).toBe(`?analysis=${NEW}`);
+  });
+
   it("requests cancellation", async () => {
     const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
     const cancelAnalysis = vi.fn(async () => ({ ...runningStatus, status: "CANCEL_REQUESTED" as const }));

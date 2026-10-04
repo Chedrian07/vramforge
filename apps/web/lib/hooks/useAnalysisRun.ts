@@ -151,6 +151,10 @@ export function useAnalysisRun() {
   const { api, eventSourceFactory } = useApiEnvironment();
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const streamRef = useRef<{ close: () => void } | null>(null);
+  // Every start, resume and reset begins a new generation. Work that awaited an answer checks it
+  // afterwards, so a late reply for an earlier run never follows (or closes the stream of) the run
+  // on screen, e.g. a reload's resume answering after a new analysis was started.
+  const generation = useRef(0);
   const partialRefresh = useRef<{ last: number; timer: ReturnType<typeof setTimeout> | null }>({ last: 0, timer: null });
 
   const closeStream = useCallback(() => {
@@ -211,8 +215,9 @@ export function useAnalysisRun() {
    * does); should the job in fact still be running, follow it again after the last seen event.
    */
   const settle = useCallback(
-    async (id: string, lastSeen: number | null) => {
+    async (id: string, lastSeen: number | null, gen: number) => {
       const outcome = await fetchStatusOrError(id);
+      if (gen !== generation.current) return;
       if (outcome == null || outcome instanceof ApiError || isTerminalStatus(outcome.status)) return;
       const after = Math.max(outcome.last_event_id ?? -1, lastSeen ?? -1);
       followRef.current(id, after >= 0 ? after : null);
@@ -223,6 +228,7 @@ export function useAnalysisRun() {
   const follow = useCallback(
     (id: string, lastEventId: number | null) => {
       closeStream();
+      const gen = generation.current;
       streamRef.current = openAnalysisStream(
         {
           url: (after) => api.eventsUrl(id, after),
@@ -248,7 +254,7 @@ export function useAnalysisRun() {
             if (event.type === "partial_result") refreshPartial(id);
           },
           onTerminal: (event) => {
-            void settle(id, event?.event_id ?? lastEventId);
+            void settle(id, event?.event_id ?? lastEventId, gen);
           },
           onConnection: (connection) => dispatch({ type: "connection", state: connection }),
         },
@@ -262,17 +268,19 @@ export function useAnalysisRun() {
 
   const start = useCallback(
     async (request: AnalysisRequest) => {
+      const gen = ++generation.current;
       closeStream();
       dispatch({ type: "create", request });
       try {
         // A fresh key per click: retries of the same click are deduplicated by the server.
         const created = await api.createAnalysis(request, newIdempotencyKey());
+        if (gen !== generation.current) return;
         writeAnalysisParam(created.analysis_id);
         dispatch({ type: "created", id: created.analysis_id, jobStatus: created.status });
         if (isTerminalStatus(created.status)) void fetchStatus(created.analysis_id);
         else follow(created.analysis_id, null);
       } catch (error) {
-        dispatch({ type: "error", error: asApiError(error), fatal: true });
+        if (gen === generation.current) dispatch({ type: "error", error: asApiError(error), fatal: true });
       }
     },
     [api, closeStream, fetchStatus, follow],
@@ -280,9 +288,11 @@ export function useAnalysisRun() {
 
   const resume = useCallback(
     async (id: string) => {
+      const gen = ++generation.current;
       closeStream();
       dispatch({ type: "resume", id });
       const outcome = await fetchStatusOrError(id);
+      if (gen !== generation.current) return;
       if (outcome instanceof ApiError) {
         // Gone or not ours: forget the id. Transient failures keep it so a refresh can reconnect.
         if (outcome.status === 403 || outcome.status === 404) writeAnalysisParam(null);
@@ -306,6 +316,7 @@ export function useAnalysisRun() {
   }, [api, state.analysisId]);
 
   const reset = useCallback(() => {
+    generation.current += 1;
     closeStream();
     writeAnalysisParam(null);
     dispatch({ type: "reset" });
