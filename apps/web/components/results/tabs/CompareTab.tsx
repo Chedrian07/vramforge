@@ -67,6 +67,7 @@ export function CompareTab({
     fit: s.hardware_fit,
   }));
   const chartRows = rows.filter((r): r is typeof r & { high: number } => r.high != null);
+  const unknownRows = rows.filter((r) => r.high == null);
   const first = rows[0]?.high ?? null;
   const chartHeight = Math.max(140, chartRows.length * 40 + 48);
   const axis = gibTicks(Math.max(0, ...chartRows.map((r) => r.high)));
@@ -80,41 +81,49 @@ export function CompareTab({
           description="같은 토큰화 결과에서 조건만 바꾼 시나리오입니다 (예: GRPO completion budget)."
           label={`시나리오별 예상 피크 상한: ${chartRows.map((r) => `${r.label} ${formatSize(r.high)}`).join(", ")}`}
           chart={
-            <ChartBox height={chartHeight}>
-              {(width) => (
-                <BarChart
-                  width={width}
-                  height={chartHeight}
-                  layout="vertical"
-                  data={chartRows}
-                  margin={{ top: 4, right: 16, bottom: 4, left: 4 }}
-                  barSize={20}
-                >
-                  <CartesianGrid horizontal={false} stroke={GRID_STROKE} />
-                  <XAxis
-                    type="number"
-                    domain={[0, axis.max]}
-                    ticks={axis.ticks}
-                    tickFormatter={gibTickLabel}
-                    unit=" GiB"
-                    {...AXIS_PROPS}
-                  />
-                  <YAxis type="category" dataKey="label" width={160} {...AXIS_PROPS} />
-                  <Tooltip
-                    content={ScenarioTooltip}
-                    cursor={{ fill: "var(--vf-accent-soft)" }}
-                    isAnimationActive={false}
-                  />
-                  <Bar
-                    dataKey="high"
-                    name="예상 피크 상한"
-                    fill="var(--vf-accent)"
-                    radius={[0, 4, 4, 0]}
-                    isAnimationActive={false}
-                  />
-                </BarChart>
-              )}
-            </ChartBox>
+            <div className="flex flex-col gap-2">
+              <ChartBox height={chartHeight}>
+                {(width) => (
+                  <BarChart
+                    width={width}
+                    height={chartHeight}
+                    layout="vertical"
+                    data={chartRows}
+                    margin={{ top: 4, right: 16, bottom: 4, left: 4 }}
+                    barSize={20}
+                  >
+                    <CartesianGrid horizontal={false} stroke={GRID_STROKE} />
+                    <XAxis
+                      type="number"
+                      domain={[0, axis.max]}
+                      ticks={axis.ticks}
+                      tickFormatter={gibTickLabel}
+                      unit=" GiB"
+                      {...AXIS_PROPS}
+                    />
+                    <YAxis type="category" dataKey="label" width={160} {...AXIS_PROPS} />
+                    <Tooltip
+                      content={ScenarioTooltip}
+                      cursor={{ fill: "var(--vf-accent-soft)" }}
+                      isAnimationActive={false}
+                    />
+                    <Bar
+                      dataKey="high"
+                      name="예상 피크 상한"
+                      fill="var(--vf-accent)"
+                      radius={[0, 4, 4, 0]}
+                      isAnimationActive={false}
+                    />
+                  </BarChart>
+                )}
+              </ChartBox>
+              {unknownRows.length > 0 ? (
+                <p className="text-[12px] text-warn">
+                  예상 피크를 산정하지 못한 시나리오 {unknownRows.length}개({unknownRows.map((r) => r.label).join(", ")})는 막대에
+                  그리지 않았습니다. 사유는 표와 &lsquo;적용 설정·근거&rsquo; 탭에 있습니다.
+                </p>
+              ) : null}
+            </div>
           }
           table={
             <DataTable

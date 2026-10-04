@@ -101,6 +101,16 @@ describe("detail tabs", () => {
     expect(screen.getByRole("table", { name: "단계별 피크 (제외한 단계 포함)" })).toHaveTextContent("산정 불가: fla workspace");
   });
 
+  it("says which scenarios of unknown size the comparison chart leaves out", async () => {
+    const user = userEvent.setup();
+    const scenarios = grpoResult.memory!.scenarios.map((s, i) =>
+      i === 3 ? { ...s, devices: [{ ...s.devices[0]!, scenario_low_bytes: null, scenario_high_bytes: null }], recommendation: null } : s,
+    );
+    renderTabs({ ...grpoResult, memory: { ...grpoResult.memory!, scenarios } });
+    await user.click(screen.getByRole("tab", { name: "비교" }));
+    expect(screen.getByText(new RegExp(`산정하지 못한 시나리오 1개\\(${scenarios[3]!.label}\\)`))).toBeInTheDocument();
+  });
+
   it("compares budget scenarios and recompute deltas", async () => {
     const user = userEvent.setup();
     renderWithProviders(
