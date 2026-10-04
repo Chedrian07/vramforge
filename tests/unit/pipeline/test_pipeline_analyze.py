@@ -595,7 +595,7 @@ def test_sample_scan_withholds_the_fit_verdict(
     assert card.hardware_fit.reason == "scan_incomplete"
     assert card.hardware_fit.utilization_ratio is None
     assert result.hardware_fit.reason == "scan_incomplete"
-    assert "적합 판정을 보류" in result.hardware_fit.message
+    assert result.hardware_fit.message == pipeline.SCAN_INCOMPLETE_FIT_MESSAGE
     reasons = [w.details.get("reason") for w in result.warnings]
     assert reasons.count("scan_incomplete") == 1
 
@@ -966,6 +966,7 @@ def test_sample_scan_that_read_every_row_still_withholds_the_fit(
     assert result.status.scan_coverage is ScanCoverage.COMPLETE
     assert result.hardware_fit.status is HardwareFit.UNKNOWN
     assert result.hardware_fit.reason == "scan_incomplete"
+    assert result.hardware_fit.message == pipeline.SAMPLE_SCAN_FIT_MESSAGE
 
 
 @pytest.mark.parametrize(

@@ -165,8 +165,12 @@ _LENGTH_INDEPENDENT_FITS = frozenset(
     {"not_evaluated", "floor_exceeds_capacity", "load_budget_insufficient", "unsupported"}
 )
 SCAN_INCOMPLETE_FIT_MESSAGE = (
-    "데이터셋 전체를 분석하지 않아(샘플 분석 또는 끝나지 않은 스캔) 적합 판정을 보류합니다. 확인한 "
+    "데이터셋 전체를 분석하지 못해(샘플 분석 또는 끝나지 않은 스캔) 적합 판정을 보류합니다. 확인한 "
     "row의 최대 길이는 데이터셋 전체의 최대 길이가 아닐 수 있습니다."
+)
+SAMPLE_SCAN_FIT_MESSAGE = (
+    "샘플 분석으로 요청한 결과라 적합 판정을 보류합니다. 전체 스캔으로 다시 분석하면 적합 여부를 "
+    "판정합니다."
 )
 # Column kinds (`DatasetColumn.kind`) each role accepts; "other" (e.g. all-null preview) passes.
 # Same rule as the inspector's mapping analysis (inspection.dataset_mapping.ROLE_KINDS).
@@ -1390,6 +1394,12 @@ class _Run:
         self.collect_estimate_notes(estimate)
         self.secondary_estimates()
 
+    def scan_incomplete_message(self) -> str:
+        scan_result = self.result.dataset_scan
+        if scan_result is not None and scan_result.coverage is ScanCoverage.COMPLETE:
+            return SAMPLE_SCAN_FIT_MESSAGE  # a sample request that happened to read every row
+        return SCAN_INCOMPLETE_FIT_MESSAGE
+
     def scan_incomplete(self) -> bool:
         """Not every row of the split was analyzed (partial/failed coverage or a sample scan)."""
         scan_result = self.result.dataset_scan
@@ -1413,7 +1423,7 @@ class _Run:
         reason: Literal["scan_incomplete", "unknown_components"]
         if self.scan_incomplete():
             reason = "scan_incomplete"
-            message = SCAN_INCOMPLETE_FIT_MESSAGE
+            message = self.scan_incomplete_message()
             detail = "scan_incomplete"
             statuses = {HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN, HardwareFit.EXCEEDS}
         elif scan_result is not None and scan_result.rows_failed:
@@ -1466,7 +1476,7 @@ class _Run:
             self.result.hardware_fit = HardwareFitResult(
                 status=HardwareFit.UNKNOWN,
                 reason="scan_incomplete",
-                message=SCAN_INCOMPLETE_FIT_MESSAGE,
+                message=self.scan_incomplete_message(),
             )
 
     def guard_context_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
