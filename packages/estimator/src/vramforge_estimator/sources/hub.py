@@ -134,24 +134,34 @@ class HfHubClient:
         return Path(str(path))
 
     def read_safetensors_header(self, repo_id: str, revision: str, filename: str) -> dict[str, Any]:
-        meta = self._api.parse_safetensors_file_metadata(
-            repo_id,
-            filename,
-            repo_type="model",
-            revision=revision,
-            token=self._token,
-            timeout=self._timeout,
-        )
-        header: dict[str, Any] = {
-            name: {
-                "dtype": tensor.dtype,
-                "shape": list(tensor.shape),
-                "data_offsets": list(tensor.data_offsets),
+        from huggingface_hub import errors as hf_errors
+
+        try:
+            meta = self._api.parse_safetensors_file_metadata(
+                repo_id,
+                filename,
+                repo_type="model",
+                revision=revision,
+                token=self._token,
+                timeout=self._timeout,
+            )
+            header: dict[str, Any] = {
+                name: {
+                    "dtype": tensor.dtype,
+                    "shape": list(tensor.shape),
+                    "data_offsets": list(tensor.data_offsets),
+                }
+                for name, tensor in meta.tensors.items()
             }
-            for name, tensor in meta.tensors.items()
-        }
-        if meta.metadata:
-            header["__metadata__"] = dict(meta.metadata)
+            if meta.metadata:
+                header["__metadata__"] = dict(meta.metadata)
+        except hf_errors.HFValidationError:
+            raise
+        except (TypeError, AttributeError, ValueError):
+            # huggingface_hub==1.33.0 hf_api.py:2205-2218 (_parse_safetensors_header) converts only
+            # KeyError/IndexError: a header that is a JSON array, or has non-object entries or
+            # scalar offsets, escapes as TypeError/AttributeError (ValueError from dict()).
+            raise hf_errors.SafetensorsParsingError("malformed safetensors header") from None
         return header
 
 

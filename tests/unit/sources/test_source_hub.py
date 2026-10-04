@@ -181,6 +181,36 @@ def test_client_converts_repo_info_and_never_uses_implicit_token(
     assert stub.calls[1][1]["revision"] == SHA
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"[1, 2]",  # not an object: AttributeError inside huggingface_hub
+        b'{"w": [1, 2]}',  # entry is not an object: TypeError
+        b'{"w": {"dtype": "F32", "shape": [1], "data_offsets": 4}}',  # scalar offsets
+        b'{"w": {"dtype": ["F32"], "shape": [1], "data_offsets": [0, 4]}}',  # unhashable dtype
+        b'{"__metadata__": "x", "w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}',
+        b'{"w": {"dtype": "F32", "shape": 4, "data_offsets": [0, 16]}}',  # scalar shape
+    ],
+)
+def test_malformed_remote_header_is_a_parsing_error(raw: bytes) -> None:
+    # The pinned parser (huggingface_hub==1.33.0) only converts KeyError/IndexError; everything
+    # else must still become MODEL_METADATA_UNAVAILABLE instead of an internal error.
+    from huggingface_hub.hf_api import _parse_safetensors_header
+
+    class _Api:
+        def parse_safetensors_file_metadata(self, repo_id: str, filename: str, **_: Any) -> Any:
+            return _parse_safetensors_header(raw, filename, "test")
+
+    client = hub.HfHubClient(SourceAccess())
+    client._api = _Api()  # type: ignore[assignment]
+    with pytest.raises(hf_errors.SafetensorsParsingError) as exc:
+        client.read_safetensors_header("org/name", SHA, "model.safetensors")
+    assert hub.is_hub_exception(exc.value)
+    issue = hub.hub_error(exc.value, kind="model").issue
+    assert issue.code is ErrorCode.MODEL_METADATA_UNAVAILABLE
+    assert issue.details["reason"] == "malformed_safetensors_header"
+
+
 def test_client_passes_user_token(monkeypatch: pytest.MonkeyPatch) -> None:
     client = hub.HfHubClient(SourceAccess(hf_token=TOKEN))
     stub = _StubApi(_info(gated=False))
