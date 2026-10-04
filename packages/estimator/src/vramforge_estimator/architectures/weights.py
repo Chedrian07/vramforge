@@ -14,16 +14,18 @@ from dataclasses import dataclass
 from vramforge_estimator.schemas import (
     AllocationCategory,
     AllocationSpec,
+    ErrorCode,
     Evidence,
     ModelComponent,
     ResolvedConfig,
+    Stage,
     TensorInfo,
     TensorRole,
 )
 from vramforge_estimator.units import canonical_dtype, dtype_bytes, tensor_bytes
 
 from .matching import bnb_skip_match, name_matches_any
-from .structure import TOWER_COMPONENTS, ModelStructure
+from .structure import TOWER_COMPONENTS, ModelStructure, arch_issue
 
 DOC = "methodology-architectures.md"
 BNB_BLOCKSIZE = 64  # Params4bit default; transformers cannot change it (§3.1)
@@ -80,13 +82,24 @@ def quantized_modules(structure: ModelStructure, cfg: ResolvedConfig) -> set[str
     """Linear modules converted to Linear4bit in the loading scope (§3.2).
 
     Only `nn.Linear` is converted; embeddings, norms, conv and raw parameters stay in the load
-    dtype. The request schema has no skip-module knob, so the effective list is the transformers
-    default (lm_head, tied modules) united with `quantization.skip_module_patterns`.
+    dtype. `quantization.skip_module_patterns` is exported as `llm_int8_skip_modules`, and a given
+    list REPLACES transformers' defaults (quantizers/base.py:238-258, add_default_skips=False;
+    LQ §2.2). An empty list means the defaults: output embedding and tied modules.
     """
     if not cfg.quantization.enabled:
         return set()
-    skip = default_skip_modules(structure)
     patterns = list(cfg.quantization.skip_module_patterns)
+    skip = set() if patterns else default_skip_modules(structure)
+    head = structure.output_embedding
+    if head and head not in skip and not bnb_skip_match(head, patterns):
+        raise arch_issue(
+            ErrorCode.UNSUPPORTED_BACKEND_COMBINATION,
+            "양자화 제외 목록에 출력 projection(lm_head)이 없어 lm_head가 4-bit로 바뀝니다. "
+            "4-bit lm_head의 logits·loss 메모리 모델이 없어 지원하지 않습니다.",
+            Stage.ESTIMATING,
+            "quantization",
+            {"skip_module_patterns": patterns[:10], "output_embedding": head},
+        )
     return {
         m.name
         for m in structure.linear_modules

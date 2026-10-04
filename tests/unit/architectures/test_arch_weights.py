@@ -12,6 +12,7 @@ import pytest
 from arch_helpers import by_name, make_cfg
 
 from vramforge_estimator.architectures.structure import ModelStructure
+from vramforge_estimator.architectures.trainable import trainable_group_list
 from vramforge_estimator.architectures.weights import (
     bnb_q4_bytes,
     device_map_load_bytes,
@@ -19,7 +20,14 @@ from vramforge_estimator.architectures.weights import (
     quantized_modules,
     resident_weight_allocations,
 )
-from vramforge_estimator.schemas import AllocationCategory, Evidence, ModelInventory, Strategy
+from vramforge_estimator.errors import EstimatorError
+from vramforge_estimator.schemas import (
+    AllocationCategory,
+    ErrorCode,
+    Evidence,
+    ModelInventory,
+    Strategy,
+)
 
 LIVE = ["MODEL_LOAD_AND_QUANTIZE:*", "POLICY_FORWARD_BACKWARD:*"]
 
@@ -103,18 +111,32 @@ def test_fp32_load_doubles_non_quantized_modules(mimo: ModelInventory) -> None:
 
 def test_quantization_skip_patterns_keep_modules_dense(mimo: ModelInventory) -> None:
     st = ModelStructure(mimo, "qwen3_5")
-    cfg = make_cfg(skip=["model.visual"])
+    cfg = make_cfg(skip=["lm_head", "model.visual"])
     qmods = quantized_modules(st, cfg)
     assert len(qmods) == 248 and "lm_head" not in qmods
     vision = by_name(resident_weight_allocations(st, cfg, LIVE))["weights.vision_tower"]
     assert vision.bytes_low == 2 * 456_010_480  # whole tower stays bf16
 
 
-def test_default_skip_applies_even_with_an_empty_pattern_list(mimo: ModelInventory) -> None:
-    # The request schema has no skip knob: the effective list always holds transformers'
-    # defaults (output embedding + tied modules), so lm_head is never silently 4-bit.
+def test_default_skip_applies_with_an_empty_pattern_list(mimo: ModelInventory) -> None:
+    # no llm_int8_skip_modules: transformers' defaults (output embedding + tied modules)
     st = ModelStructure(mimo, "qwen3_5")
-    assert "lm_head" not in quantized_modules(st, make_cfg(skip=[]))
+    qmods = quantized_modules(st, make_cfg(skip=[]))
+    assert len(qmods) == 358 and "lm_head" not in qmods
+
+
+def test_a_skip_list_replaces_the_defaults(mimo: ModelInventory) -> None:
+    # The resolved list is exported as llm_int8_skip_modules, which REPLACES transformers'
+    # defaults (add_default_skips=False, LQ §2.2): without lm_head the head would be Linear4bit,
+    # which no LM-head/loss ledger models -> refused instead of silently estimated.
+    st = ModelStructure(mimo, "qwen3_5")
+    with pytest.raises(EstimatorError) as err:
+        quantized_modules(st, make_cfg(skip=["model.visual"]))
+    assert err.value.issue.code is ErrorCode.UNSUPPORTED_BACKEND_COMBINATION
+    assert err.value.issue.details["output_embedding"] == "lm_head"
+    target = ["model.language_model.layers.3.self_attn.o_proj"]
+    with pytest.raises(EstimatorError):  # the resolver turns this into a blocker
+        trainable_group_list(st, make_cfg(targets=target, skip=["model.visual"]))
 
 
 def test_lora_without_quantization_keeps_everything_in_load_dtype(mimo: ModelInventory) -> None:

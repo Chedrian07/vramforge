@@ -94,8 +94,10 @@ B_q4_DQ(n)   = ceil(n/2) + nb + 4·ceil(nb/256) + 4 + 64 + 1024  # uint8 absmax 
 ```
 
 - 양자화 대상: `type(module) is nn.Linear`인 모듈만(conv1d, `A_log`, `dt_bias`, norm, embedding은 load dtype). vision Linear도 4-bit다.
-- 제외: transformers 기본 skip(출력 embedding = `lm_head`, tied 모듈)과 `quantization.skip_module_patterns`의 합집합.
-  요청 스키마에 skip 옵션이 없어 기본 skip은 항상 유지된다. 매칭은 `re.match(key, name) or name.endswith(key)`(LQ §2.2).
+- 제외: `quantization.skip_module_patterns`는 trainer config의 `llm_int8_skip_modules`로 그대로 나가고, transformers는 이 목록이 있으면
+  기본 skip을 **대체**한다(`get_modules_to_not_convert`, `add_default_skips=False`, LQ §2.2). 그래서 목록이 비어 있을 때만 기본 skip
+  (출력 embedding = `lm_head`, tied 모듈)을 쓰고, 목록이 있으면 그 목록만 쓴다. 매칭은 `re.match(key, name) or name.endswith(key)`.
+  목록이 출력 embedding을 빼서 `lm_head`가 4-bit가 되는 구성은 LM head·loss 쪽 메모리 모델이 없어 `UNSUPPORTED_BACKEND_COMBINATION`으로 거절한다.
 - `quant_storage`는 byte 수를 바꾸지 않는다. CUDA allocator의 512 B 반올림(MiMo +422,544 B)은 allocator slack 쪽이다.
 
 | MiMo (NF4) | DQ | no-DQ |
