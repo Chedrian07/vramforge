@@ -1,5 +1,6 @@
 # VRAMForge CI (docs/goals.md M0-5, Q5).
-#   python  ruff lint + format check, .env.example/compose consistency, pytest (no network)
+#   python  ruff lint + format check, .env.example/compose consistency, compose contract and
+#           helper script tests (infra/tests), pytest (no network)
 #   web     pnpm install --frozen-lockfile, lint, typecheck, test, build (apps/web)
 #   docker  zero-.env compose config, build, up --wait, smoke test, one offline full analysis
 #           through the proxy (tiny fixtures, no GPU, no Hugging Face), down -v
@@ -55,6 +56,10 @@ jobs:
 
       - name: .env.example documents every compose variable
         run: uv run --no-sync python infra/scripts/check_env_example.py
+
+      # infra/tests is outside the default testpaths (tests/), so it runs as its own step.
+      - name: Compose contract and infra helper script tests
+        run: uv run --no-sync pytest infra/tests -q
 
       - name: Pytest (network tests skip without VRAMFORGE_NETWORK_TESTS=1)
         run: uv run --no-sync pytest -q
