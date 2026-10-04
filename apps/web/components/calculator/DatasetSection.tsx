@@ -193,7 +193,9 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
                 <Mono>{s.name}</Mono> {s.num_rows != null ? `${formatCount(s.num_rows)} rows` : "row 수 미확인"}
               </span>
             ))}
-            {data.split_auto_selected && data.selected_split ? (
+            {/* The inspection always picks the split itself; it is "automatic" only while the
+                form names none (the analysis then reports split_auto_selected too). */}
+            {data.split_auto_selected && data.selected_split && !split.trim() ? (
               <span className="text-muted">({data.selected_split} 자동 선택)</span>
             ) : null}
           </div>

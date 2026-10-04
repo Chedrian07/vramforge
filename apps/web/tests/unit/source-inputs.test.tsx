@@ -207,6 +207,10 @@ describe("dataset input and mapping editor", () => {
     expect(form().getValues("mappingEnabled")).toBe(true);
     expect(form().getValues("datasetSplit")).toBe("");
     expect(screen.getByText("(train 자동 선택)")).toBeInTheDocument();
+    // A split named in the form (the example input does) is the user's choice, not an automatic one.
+    act(() => form().setValue("datasetSplit", "train"));
+    expect(screen.queryByText("(train 자동 선택)")).not.toBeInTheDocument();
+    act(() => form().setValue("datasetSplit", ""));
 
     await user.selectOptions(screen.getByLabelText("user prompt"), "vulnerability");
     expect(form().getValues("mapPrompt")).toBe("vulnerability");
