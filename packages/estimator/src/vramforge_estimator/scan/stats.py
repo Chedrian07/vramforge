@@ -59,9 +59,7 @@ def branch_values(objective: Objective, rec: TokenizedRecord) -> Iterator[tuple[
 
 
 def _bin_width(minimum: int) -> int:
-    """Smallest power-of-two bin width >= minimum. Power-of-two edges make typical context
-    thresholds (limit - budget, multiples of 2^k) land on bin boundaries, so counts above them
-    stay exact when read back from the histogram (validation.validate_context)."""
+    """Smallest power-of-two bin width >= minimum."""
     width = 1
     while width < minimum:
         width *= 2
@@ -111,17 +109,21 @@ class LengthAccumulator:
         return sum(c for length, c in self.counts.items() if length > threshold)
 
     def histogram(self, target_bins: int = HISTOGRAM_TARGET_BINS) -> list[HistogramBin]:
+        """Contiguous bins covering lengths (k*w, (k+1)*w] for a power-of-two width w, i.e.
+        ``lo = k*w + 1``. Typical context thresholds t (limit - budget, multiples of 2^k) then
+        start a bin, so "rows longer than t" stays exact when read back from the histogram
+        (validation.validate_context)."""
         if self.n == 0:
             return []
         keys = sorted(self.counts)
         lo, hi = keys[0], keys[-1]
         width = _bin_width(-(-(hi - lo + 1) // target_bins))
-        start = (lo // width) * width
+        start = ((lo - 1) // width) * width + 1
         bins = [0] * ((hi - start) // width + 1)
         for length in keys:
             bins[(length - start) // width] += self.counts[length]
         return [
-            HistogramBin(lo=start + i * width, hi=start + (i + 1) * width, count=count)
+            HistogramBin(lo=max(0, start + i * width), hi=start + (i + 1) * width, count=count)
             for i, count in enumerate(bins)
         ]
 
