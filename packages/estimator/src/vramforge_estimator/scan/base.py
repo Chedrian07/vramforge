@@ -50,6 +50,9 @@ class LengthTable:
     loss_token_count: list[int | None] = field(default_factory=list)
     chosen_total_tokens: list[int | None] = field(default_factory=list)
     rejected_total_tokens: list[int | None] = field(default_factory=list)
+    # preprocess_key of the scan that wrote the artifact (load_lengths fills it), so batch keys
+    # chain source -> preprocess -> batch as plan §16.3 specifies.
+    preprocess_key: str | None = None
 
     def __len__(self) -> int:
         return len(self.row_ids)
