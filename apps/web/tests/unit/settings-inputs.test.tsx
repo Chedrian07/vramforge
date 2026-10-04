@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UseFormReturn } from "react-hook-form";
 import { describe, expect, it } from "vitest";
@@ -142,6 +142,24 @@ describe("advanced settings", () => {
 });
 
 describe("dataset & reproducibility group", () => {
+  it("applies the empty-system policy only with an explicit mapping", async () => {
+    const user = userEvent.setup();
+    const { form } = renderForm(<AdvancedSettings resolved={null} datasetInspection={null} />);
+    await user.click(screen.getByRole("button", { name: /^Dataset & reproducibility/ }));
+    const auto = screen.getByLabelText("빈 system 메시지");
+    expect(auto).toBeDisabled();
+    expect(auto).toHaveValue("omit");
+    expect(auto).toHaveAccessibleDescription(/자동 감지 매핑에는 기본값\(빈 system 생략\)이 적용됩니다/);
+
+    act(() => {
+      form().setValue("mappingEnabled", true);
+      form().setValue("mappingFormat", "preference");
+    });
+    await waitFor(() => expect(screen.getByLabelText("빈 system 메시지")).toBeEnabled());
+    await user.selectOptions(screen.getByLabelText("빈 system 메시지"), "keep");
+    expect(form().getValues("emptySystemPolicy")).toBe("keep");
+  });
+
   it("summarises the mapping and the template/scope options", async () => {
     const user = userEvent.setup();
     renderForm(<AdvancedSettings resolved={null} datasetInspection={null} />, {

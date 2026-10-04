@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 
 import { Segmented } from "@/components/ui/controls";
-import { Mono } from "@/components/ui/primitives";
+import { Field, Mono, NativeSelect } from "@/components/ui/primitives";
 import type { DatasetInspection, ResolvedConfig } from "@/lib/api/types";
 import {
   ATTENTION_BACKEND_LABEL,
@@ -166,7 +166,7 @@ export function AdvancedSettings({ resolved, datasetInspection }: { resolved: Re
         <MethodSpecific values={values} setGenerationUnit={(u) => setValue("grpoGenerationUnit", u, { shouldDirty: true, shouldValidate: true })} setBudgetMode={(m) => setValue("grpoBudgetMode", m, { shouldDirty: true, shouldValidate: true })} />
       </Group>
 
-      <Group value="dataset" title="Dataset & reproducibility" summary={`split ${values.datasetSplit || "자동"} · ${EMPTY_SYSTEM_POLICY_LABEL[values.emptySystemPolicy]} · thinking ${values.enableThinking === "default" ? "템플릿 기본" : values.enableThinking === "on" ? "켬" : "끔"}`}>
+      <Group value="dataset" title="Dataset & reproducibility" summary={`split ${values.datasetSplit || "자동"} · ${EMPTY_SYSTEM_POLICY_LABEL[values.mappingEnabled ? values.emptySystemPolicy : "omit"]} · thinking ${values.enableThinking === "default" ? "템플릿 기본" : values.enableThinking === "on" ? "켬" : "끔"}`}>
         <DatasetReproducibility inspection={datasetInspection} />
       </Group>
     </Accordion.Root>
@@ -331,6 +331,7 @@ function MappingSummary() {
 
 function DatasetReproducibility({ inspection }: { inspection: DatasetInspection | null }) {
   const splits = (inspection?.splits ?? []).map((s) => s.name);
+  const mappingEnabled = useWatch<FormValues, "mappingEnabled">({ name: "mappingEnabled" });
   return (
     <>
       <MappingSummary />
@@ -345,7 +346,17 @@ function DatasetReproducibility({ inspection }: { inspection: DatasetInspection 
         <TextField name="datasetEvalSplit" label="평가 split" placeholder="없음" />
       )}
       <TextField name="datasetConfig" label="데이터셋 config" placeholder="자동" />
-      <SelectField name="emptySystemPolicy" label="빈 system 메시지" options={enumOptions(EMPTY_SYSTEM_POLICY_LABEL)} hint="유지하면 템플릿이 빈 system 블록을 렌더링해 길이가 늘 수 있습니다." />
+      {mappingEnabled ? (
+        <SelectField name="emptySystemPolicy" label="빈 system 메시지" options={enumOptions(EMPTY_SYSTEM_POLICY_LABEL)} hint="유지하면 템플릿이 빈 system 블록을 렌더링해 길이가 늘 수 있습니다." />
+      ) : (
+        // The policy is part of an explicit ColumnMapping (schemas/request.py); with auto-detection
+        // the server applies "omit", so the control shows that and cannot be changed here.
+        <Field label="빈 system 메시지" htmlFor="f-emptySystemPolicy" hint="자동 감지 매핑에는 기본값(빈 system 생략)이 적용됩니다. 컬럼 매핑을 지정하면 바꿀 수 있습니다.">
+          <NativeSelect id="f-emptySystemPolicy" value="omit" disabled aria-describedby="f-emptySystemPolicy-hint" onChange={() => {}}>
+            <option value="omit">{EMPTY_SYSTEM_POLICY_LABEL.omit}</option>
+          </NativeSelect>
+        </Field>
+      )}
       <SelectField
         name="enableThinking"
         label="enable_thinking (chat template)"
