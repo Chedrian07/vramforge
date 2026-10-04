@@ -5,6 +5,9 @@ aborting: it is a `SourceRow` (same `row_index` / `shard_id` contract) with an e
 `ErrorCode` to record, a stable `reason` code, a Korean display-safe `message` and the record's
 position in its shard. Consumers turn it into a `FailedRow`; one that does not know the subclass
 still sees an empty row, which fails mapping, so a failed record is never counted as a success.
+
+Part of the inspection contract: `vramforge_estimator.inspection` re-exports `FailedSourceRow` and
+`is_failed_row` (the same objects), so consumers need not import this module directly.
 """
 
 from __future__ import annotations

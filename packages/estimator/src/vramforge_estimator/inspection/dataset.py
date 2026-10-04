@@ -14,16 +14,18 @@ failed request after some rows were previewed, included).
 The requested config/split are the request fields, or, when a field is empty, the
 `/viewer/<config>/<split>` path of a dataset viewer URL (`requested_selection`). A viewer value is
 a user choice like a field: it is never auto-selected, a missing one is DATASET_CONFIG_REQUIRED /
-DATASET_SPLIT_REQUIRED, and the applied choice is recorded as a manifest note. A URL value that
-contradicts a field is rejected while the reference is normalized (CONFLICTING_OPTIONS).
+DATASET_SPLIT_REQUIRED (details `requested_from="viewer_url"`), and the applied choice is recorded
+as a manifest note and as `config_origin` / `split_origin` of `DatasetInspectionDetails`. A URL
+value that contradicts a field is rejected while the reference is normalized (CONFLICTING_OPTIONS).
 
 `open_rows` returns a `DatasetRowStream` over every record of one split. Failure signal and stop
 contract (see `dataset_stream`): undecodable records arrive as `FailedSourceRow` (a `SourceRow`
 with an empty `row`, `error_code`, `reason`, Korean `message` and its line/element position;
-import it from the dependency-free `dataset_rows` module); quotas, broken shards, manifest
-mismatches and download failures end the stream with an entry in `stream.issues`;
-`stream.complete` is True only after a clean EOF of every shard with no failed record. A split
-without any record is complete and reports EMPTY_DATASET in `stream.issues`.
+`vramforge_estimator.inspection` re-exports it and `is_failed_row` from the dependency-free
+`dataset_rows` module); quotas, broken shards, manifest mismatches and download failures end the
+stream with an entry in `stream.issues`; `stream.complete` is True only after a clean EOF of every
+shard with no failed record. A split without any record is complete and reports EMPTY_DATASET in
+`stream.issues`.
 
 Heavy libraries (datasets, pyarrow, pandas, huggingface_hub) are imported lazily so that importing
 the package stays cheap and works without the `analysis` extra.
