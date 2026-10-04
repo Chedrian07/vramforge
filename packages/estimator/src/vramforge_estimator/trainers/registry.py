@@ -6,6 +6,7 @@ from vramforge_estimator.schemas import Objective
 
 from .base import TrainerAdapter
 from .dpo import DpoTrainer
+from .grpo import GrpoTrainer
 from .sft import SftTrainer
 
 TRAINER_PREFIX = "trl-1.14.1"
@@ -13,6 +14,7 @@ TRAINER_PREFIX = "trl-1.14.1"
 _TRAINERS: dict[Objective, TrainerAdapter] = {
     Objective.SFT: SftTrainer(),
     Objective.DPO: DpoTrainer(),
+    Objective.GRPO: GrpoTrainer(),
 }
 
 
