@@ -237,7 +237,9 @@ async def analysis_events(
 ) -> Response:
     """Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.
 
-    Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:
+    Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`; the payload schema
+    is `#/components/schemas/AnalysisEvent` (with `EventType`, `JobProgress`, `ShardProgress`;
+    the keys of `AnalysisEvent.partial` are documented there). Types:
     `progress` (stage changes and coalesced scan progress), `partial_result` (refetch the
     analysis for the result so far), `warning`, and the terminal types `completed`, `failed`
     (status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`
