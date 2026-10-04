@@ -128,8 +128,9 @@ def resolve_upload_target(norm: NormalizedReference, access: SourceAccess) -> tu
             kind,
             reason="uploads_disabled",
         )
-    root_real = _real_root(access.uploads_dir, kind)
     try:
+        # the owner-scoped directory only exists after the owner's first upload
+        root_real = _real_root(access.uploads_dir, kind)
         _confined(root_real / norm.upload_id, root_real, kind)
     except EstimatorError as exc:
         if exc.issue.code is ErrorCode.SOURCE_NOT_FOUND:

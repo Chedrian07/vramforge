@@ -271,6 +271,16 @@ def test_unknown_root_and_missing_paths(access: SourceAccess, roots: dict[str, P
         roots,
         "uploads_disabled",
     )
+    # an owner without any upload yet has no upload directory: still "upload not found"
+    _expect(
+        ErrorCode.SOURCE_NOT_FOUND,
+        lambda: resolve_dataset(
+            DatasetSourceRef(reference=f"upload:{UPLOAD_ID}"),
+            SourceAccess(uploads_dir=roots["uploads"] / "owner-without-uploads"),
+        ),
+        roots,
+        "upload_missing",
+    )
 
 
 def test_model_path_must_be_a_directory(access: SourceAccess, roots: dict[str, Path]) -> None:
