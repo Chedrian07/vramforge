@@ -151,15 +151,18 @@ artifact: `/data/artifacts/<owner>/<analysis_id>/` 아래 `lengths/*.parquet`(ro
 
 ## 8. 작업 소유권 (병렬 구현 단계)
 
-| 소유 경로 | 담당 |
-|---|---|
-| `packages/estimator/src/vramforge_estimator/schemas/`, `pipeline.py`의 시그니처, 루트 설정 | 오케스트레이터 |
-| `sources/`, `inspection/` + `tests/unit/{sources,inspection}` | ingest 에이전트 |
-| `preprocessing/`, `scan/`, `batching/` + `tests/unit/{preprocessing,scan,batching}`, `tests/preprocessing_parity/` | scan 에이전트 |
-| `architectures/` + `tests/unit/architectures` | architecture 에이전트 |
-| `trainers/`, `memory/`, `compatibility/`, `calibration/`, `profiles/` + 관련 테스트, `docs/methodology.md`, `docs/support-matrix.md` | memory 에이전트 |
-| `services/`, `exports/`, `pipeline.py` 본문, `tests/{integration,security}`, `tests/unit/{api,worker,exports,pipeline}` | api 에이전트 |
-| `apps/web/` | web 에이전트 |
-| `infra/`, `compose.yaml`, `.github/`, `docs/deployment.md` | infra 에이전트 |
+각 패키지의 `__init__.py`와 `base.py`(계약)는 오케스트레이터 소유다. 구현자는 아래 **서브모듈과 새 파일**만 만든다. `__init__.py`는 서브모듈에서 re-export만 하므로 구현자가 수정할 필요가 없다.
 
-공용 schema 변경이 필요하면 소유 에이전트는 직접 고치지 않고 `CHANGE REQUEST`로 보고한다 (git-conventions §6.1).
+| 에이전트 | 소유 경로 |
+|---|---|
+| `impl-sources-model` | `sources/resolver.py`, `sources/*` 새 모듈, `inspection/model.py`, `inspection/tokenizer.py`, `inspection/model_*.py`, `inspection/tokenizer_*.py`, `tests/unit/sources/`, `tests/unit/inspection_model/`, `tests/fixtures/models/`, `tests/fixtures/tokenizers/` |
+| `impl-dataset-io` | `inspection/dataset.py`, `inspection/dataset_*.py`, `inspection/readers*.py`, `tests/unit/inspection_dataset/`, `tests/fixtures/datasets/` |
+| `impl-scan` | `preprocessing/` (registry·새 모듈), `scan/scanner.py`, `scan/validation.py`, `scan/*` 새 모듈, `batching/planner.py`, `batching/*` 새 모듈, `tests/unit/{preprocessing,scan,batching}/`, `tests/preprocessing_parity/`, `tests/fixtures/golden/` |
+| `impl-arch` | `architectures/registry.py`, `architectures/*` 새 모듈, `tests/unit/architectures/`, `tests/fixtures/inventories/`, `docs/methodology-architectures.md` |
+| `impl-memory` | `trainers/registry.py`, `trainers/*` 새 모듈, `memory/{engine,estimate,host}.py`, `memory/*` 새 모듈, `compatibility/resolver.py`, `compatibility/*` 새 모듈, `profiles/`, `tests/unit/{trainers,memory,compatibility}/`, `docs/methodology.md`, `docs/support-matrix.md` |
+| `impl-api` | `services/api/`, `services/worker_cpu/`, `services/worker_gpu/README.md`, `exports/exporters.py`, `exports/*` 새 모듈, `pipeline.py` 본문(시그니처 유지), `tests/unit/{api,worker,exports,pipeline}/`, `tests/integration/`, `tests/security/`, `docs/api/openapi.json`, `docs/privacy-and-retention.md` |
+| `impl-web` | `apps/web/` |
+| `impl-infra` | `infra/`, `compose.yaml`, `.env.example`, `.dockerignore`, `.github/`, `docs/deployment.md`, `local-sources/README.md` |
+| 오케스트레이터 | `schemas/`, 각 `__init__.py`·`base.py`, `keys.py`, `errors.py`, `units.py`, 루트 설정(`pyproject.toml`, `uv.lock`, `.gitignore`), `tests/conftest.py`, `README.md`, `docs/{architecture,goals,git-conventions}.md` |
+
+경로는 `packages/estimator/src/vramforge_estimator/` 기준이다(서비스·문서·테스트 경로 제외). 공용 계약 변경이 필요하면 직접 고치지 않고 `CHANGE REQUEST`로 보고한다 (git-conventions §6.1).
