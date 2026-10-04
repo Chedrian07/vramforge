@@ -42,10 +42,13 @@ from vramforge_estimator.schemas import (  # noqa: E402
     ColumnMapping,
     EffectiveDtypes,
     EmptySystemPolicy,
+    GrpoResolved,
     Objective,
     OptimizerResolved,
     QuantizationResolved,
     ResolvedConfig,
+    RewardKind,
+    RolloutBackend,
     Strategy,
     TokenizerManifest,
     WorkspaceAssumptions,
@@ -420,6 +423,58 @@ def test_dpo_plain_strings(tiny_dir, plain, tmp_path) -> None:
     assert_dpo_matches(trainer, [adapter.process(r, f"train:{i}") for i, r in enumerate(raw)])
 
 
+@pytest.mark.parametrize("objective", [Objective.SFT, Objective.DPO])
+def test_one_step_trains_on_the_planned_untruncated_shape(
+    tiny_dir, mimo, tmp_path, objective
+) -> None:
+    """One real optimizer step with max_length=None (trl-sft-dpo.md §11.2): the batch the model
+    receives is exactly our worst-case shape (SFT B x T, DPO 2B x T) and longer than TRL's
+    default max_length of 1024, so nothing was truncated on the way."""
+    kw = {
+        "max_length": None,
+        "max_steps": 1,
+        "per_device_train_batch_size": len(RAW),
+        "train_sampling_strategy": "sequential",
+    }
+    prompts = [trl_prompt(r, OMIT) for r in RAW]
+    trainer: SFTTrainer | DPOTrainer
+    if objective is Objective.SFT:
+        rows = [
+            {"prompt": p, "completion": [a(r["chosen"])]} for p, r in zip(prompts, RAW, strict=True)
+        ]
+        trainer = SFTTrainer(
+            model=tiny_dir,
+            args=args(SFTConfig, tmp_path, **kw),
+            train_dataset=datasets.Dataset.from_list(rows),
+            processing_class=mimo,
+        )
+    else:
+        rows = [
+            {"prompt": p, "chosen": [a(r["chosen"])], "rejected": [a(r["rejected"])]}
+            for p, r in zip(prompts, RAW, strict=True)
+        ]
+        trainer = DPOTrainer(
+            model=tiny_dir,
+            args=args(DPOConfig, tmp_path, **kw),
+            train_dataset=datasets.Dataset.from_list(rows),
+            processing_class=mimo,
+        )
+    seen: list[tuple[int, ...]] = []
+    original = trainer.compute_loss
+
+    def spy(model: Any, inputs: dict[str, Any], *rest: Any, **kwargs: Any) -> Any:
+        seen.append(tuple(inputs["input_ids"].shape))
+        return original(model, inputs, *rest, **kwargs)
+
+    trainer.compute_loss = spy  # type: ignore[method-assign]
+    trainer.train()
+    adapter = get_adapter(objective, handle(mimo), PREF)
+    ours = [adapter.process(r, f"train:{i}") for i, r in enumerate(RAW)]
+    worst = plan_batches(table(ours), resolved(objective, len(RAW), None), seed=42).worst_case
+    assert seen == [(worst.sequences_per_forward, worst.padded_length)]
+    assert worst.padded_length > 1024
+
+
 # ---------------------------------------------------------------- GRPO
 
 
@@ -458,6 +513,88 @@ def test_grpo_plain_prompts(tiny_dir, plain, tmp_path) -> None:
     adapter = get_adapter(Objective.GRPO, handle(plain), ColumnMapping(prompt="p"))
     ours = [adapter.process({"p": p}, f"train:{i}") for i, p in enumerate(prompts)]
     assert [r.prompt_tokens for r in ours] == [len(ids) for ids in trl_ids]
+
+
+def grpo_resolved(
+    *, update: int, spg: int, accumulation: int, budget: int, pad: int | None
+) -> ResolvedConfig:
+    grpo = GrpoResolved(
+        num_generations=2,
+        generation_batch_size=update * spg,
+        steps_per_generation=spg,
+        num_iterations=1,
+        completion_budgets=[budget],
+        budget_explicit=True,
+        beta=0.0,
+        reference_needed=False,
+        reward_kind=RewardKind.CPU_RULE,
+        rollout_backend=RolloutBackend.TRANSFORMERS_SHARED_POLICY,
+        live_sequences=update * spg,
+        update_microbatch=update,
+        accumulation=accumulation,
+    )
+    base = resolved(Objective.GRPO, update, pad)
+    return base.model_copy(update={"accumulation": accumulation, "grpo": grpo})
+
+
+@pytest.mark.parametrize("pad", [None, 64])
+def test_grpo_update_forward_matches_the_planned_scenario(tiny_dir, mimo, tmp_path, pad) -> None:
+    """Two prompts of different lengths in one generation batch (G=2, B=2, spg=2 -> U=2): every
+    update microbatch is as wide as the generation-batch-wide prompt maximum plus the completion
+    width, both rounded by pad_to_multiple_of, and the LM head keeps L + 1 positions per sequence
+    (docs/research/trl-grpo.md §6.4, R2). min_new_tokens pins L to the budget."""
+    budget = 8
+    raw = [RAW[0], RAW[3]]
+    prompts = [trl_prompt(r, OMIT) for r in raw]
+    trainer = grpo_trainer(
+        tiny_dir,
+        mimo,
+        tmp_path,
+        prompts,
+        steps_per_generation=2,
+        gradient_accumulation_steps=2,
+        max_steps=1,
+        pad_to_multiple_of=pad,
+        generation_kwargs={"min_new_tokens": budget},
+    )
+    calls: list[dict[str, tuple[int, ...]]] = []
+    original = trainer._compute_loss
+
+    def spy(model: Any, inputs: dict[str, Any]) -> Any:
+        call = {
+            "prompt": tuple(inputs["prompt_ids"].shape),
+            "completion": tuple(inputs["completion_ids"].shape),
+        }
+
+        def hook(module: Any, args_: Any, kwargs: Any, output: Any) -> None:
+            call["logits"] = tuple(output.logits.shape)
+
+        handle_ = model.register_forward_hook(hook, with_kwargs=True)
+        try:
+            return original(model, inputs)
+        finally:
+            handle_.remove()
+            calls.append(call)
+
+    trainer._compute_loss = spy  # type: ignore[method-assign]
+    trainer.train()
+    adapter = get_adapter(Objective.GRPO, handle(mimo), PREF)
+    ours = [adapter.process(r, f"train:{i}") for i, r in enumerate(raw)]
+    assert len({r.prompt_tokens for r in ours}) == 2  # the shorter prompt is padded up
+    config = grpo_resolved(update=2, spg=2, accumulation=2, budget=budget, pad=pad)
+    plan = plan_batches(table(ours), config, seed=42)
+    assert plan.grpo is not None and plan.grpo.unique_prompts_per_generation == 2
+    shape = plan.scenarios[0]
+    assert shape.prompt_length is not None and shape.completion_length is not None
+    vocab = len(mimo)
+    expected = {
+        "prompt": (shape.sequences_per_forward, shape.prompt_length),
+        "completion": (shape.sequences_per_forward, shape.completion_length),
+        "logits": (shape.sequences_per_forward, shape.completion_length + 1, vocab),
+    }
+    assert len(calls) == 2 and all(call == expected for call in calls)
+    assert shape.logits_positions == shape.sequences_per_forward * (shape.completion_length + 1)
+    assert shape.padded_length == shape.prompt_length + shape.completion_length
 
 
 # ---------------------------------------------------------------- TRL defaults (regression)
