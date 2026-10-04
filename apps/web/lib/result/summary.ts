@@ -144,7 +144,10 @@ export function summarize(result: AnalysisResult): ResultSummary {
   const peakHigh = device?.scenario_high_bytes ?? null;
   let peakNullReason: string | null = null;
   if (!memory) peakNullReason = memoryMissingReason(result);
-  else if (!isBudgets && (peakLow == null || peakHigh == null)) peakNullReason = unknownReason(unknown);
+  else if (isBudgets && budgetRange == null) {
+    const missing = budgets.filter((b) => b.low == null || b.high == null).map((b) => b.label);
+    peakNullReason = `${missing.join(", ")}의 피크를 산정하지 못해 전체 범위를 만들지 않았습니다. budget별 값과 사유는 아래 표에 있습니다.`;
+  } else if (!isBudgets && (peakLow == null || peakHigh == null)) peakNullReason = unknownReason(unknown);
 
   const recommendation = scenario?.recommendation ?? null;
   const recommendationNullReason =

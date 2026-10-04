@@ -19,6 +19,18 @@ describe("summarize", () => {
     expect(s.scenario).toBeNull();
   });
 
+  it("gives no budget range when one budget is unknown, and says which", () => {
+    const scenarios = grpoResult.memory!.scenarios.map((sc, i) =>
+      i === 2 ? { ...sc, devices: [{ ...sc.devices[0]!, scenario_low_bytes: null, scenario_high_bytes: null }], recommendation: null } : sc,
+    );
+    const s = summarize({ ...grpoResult, memory: { ...grpoResult.memory!, scenarios } });
+    expect(s.kind).toBe("budgets");
+    expect(s.budgetRange).toBeNull();
+    expect(s.peakNullReason).toContain(scenarios[2]!.label);
+    expect(s.budgets.filter((b) => b.high != null)).toHaveLength(3);
+    expect(s.budgets.find((b) => b.high == null)?.nullReason).toBeTruthy();
+  });
+
   it("uses the primary scenario when the budget is explicit", () => {
     const s = summarize(grpoExplicitBudgetResult);
     expect(s.kind).toBe("single");
