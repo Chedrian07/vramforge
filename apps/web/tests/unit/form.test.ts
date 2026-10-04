@@ -239,6 +239,25 @@ describe("form validation", () => {
   });
 });
 
+describe("GRPO budget candidates", () => {
+  it("accepts at most 16 budgets of 1–1,048,576 tokens like the contract", () => {
+    const sixteen = Array.from({ length: 16 }, (_, i) => String(1024 * (i + 1))).join(", ");
+    const seventeen = `${sixteen}, 32768`;
+    expect(fieldErrors({ ...base, objective: "grpo", grpoBudgetCandidates: sixteen }).grpoBudgetCandidates).toBeUndefined();
+    expect(fieldErrors({ ...base, objective: "grpo", grpoBudgetCandidates: seventeen }).grpoBudgetCandidates).toMatch(/최대 16개/);
+    expect(fieldErrors({ ...base, objective: "grpo", grpoBudgetCandidates: "0, 1024" }).grpoBudgetCandidates).toBeDefined();
+    expect(fieldErrors({ ...base, objective: "grpo", grpoBudgetCandidates: "2097152" }).grpoBudgetCandidates).toBeDefined();
+  });
+
+  it("never sends a candidate list the server would refuse", () => {
+    const r = request({ ...base, objective: "grpo" });
+    const tooMany = { ...r, grpo: { ...r.grpo, completion_budget_candidates: Array.from({ length: 17 }, () => 1024) } };
+    expect(analysisRequestSchema.safeParse(tooMany).success).toBe(false);
+    expect(analysisRequestSchema.safeParse({ ...r, grpo: { ...r.grpo, completion_budget_candidates: [] } }).success).toBe(false);
+    expect(analysisRequestSchema.safeParse({ ...r, grpo: { ...r.grpo, completion_budget_candidates: [0] } }).success).toBe(false);
+  });
+});
+
 describe("mapping after an inspection", () => {
   const suggestion = { format: "preference" as const, system: "system", prompt: "question", chosen: "chosen", rejected: "rejected", completion: null, messages: null, text: null, empty_system_policy: "omit" as const };
   const columns = ["system", "question", "chosen", "rejected", "lang"].map((name) => ({ name, dtype: "string", kind: "string" }));

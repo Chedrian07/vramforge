@@ -124,7 +124,7 @@ export const grpoSchema = z.strictObject({
   steps_per_generation: z.number().int().min(1).nullable(),
   num_iterations: z.number().int().min(1),
   completion_budget: z.number().int().min(1).max(1_048_576).nullable(),
-  completion_budget_candidates: z.array(z.number().int()),
+  completion_budget_candidates: z.array(z.number().int().min(1).max(1_048_576)).min(1).max(16),
   max_live_sequences: z.number().int().min(1).nullable(),
   beta: z.number().min(0),
   reward: rewardSchema,

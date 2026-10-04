@@ -50,10 +50,13 @@ export function parseRankPattern(text: string): Record<string, number> | null {
   return out;
 }
 
-/** "1024, 2048" -> [1024, 2048]; null when any entry is not a valid budget. */
+/** Budget candidates per request (schemas/request.py GrpoConfig.completion_budget_candidates). */
+export const MAX_BUDGET_CANDIDATES = 16;
+
+/** "1024, 2048" -> [1024, 2048]; null when any entry is not a valid budget or there are too many. */
 export function parseBudgetList(text: string): number[] | null {
   const items = parseList(text);
-  if (items.length === 0) return null;
+  if (items.length === 0 || items.length > MAX_BUDGET_CANDIDATES) return null;
   const values = items.map((s) => (/^\d+$/.test(s) ? Number(s) : Number.NaN));
   if (values.some((n) => !Number.isInteger(n) || n < 1 || n > 1_048_576)) return null;
   return values;
@@ -203,7 +206,7 @@ export const formSchema = z
           issue("grpoCompletionBudget", "1–1,048,576 사이 정수를 입력하세요");
         }
       } else if (parseBudgetList(v.grpoBudgetCandidates) === null) {
-        issue("grpoBudgetCandidates", "쉼표로 구분한 정수 목록을 입력하세요 (각 1–1,048,576)");
+        issue("grpoBudgetCandidates", `쉼표로 구분한 정수 목록을 입력하세요 (각 1–1,048,576, 최대 ${MAX_BUDGET_CANDIDATES}개)`);
       }
       if (v.grpoRewardKind === "local_model" && v.grpoRewardModelReference === "") {
         issue("grpoRewardModelReference", "로컬 reward 모델 참조를 입력하세요");
