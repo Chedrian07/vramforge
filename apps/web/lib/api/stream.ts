@@ -24,7 +24,8 @@ export type ConnectionState = "connecting" | "open" | "reconnecting" | "closed";
 export type ClosedResolution = "terminal" | "retry" | "stop";
 
 export interface AnalysisStreamOptions {
-  url: string;
+  /** Fixed URL, or built from the last seen event id on every (re)connect. */
+  url: string | ((lastEventId: number | null) => string);
   factory: EventSourceFactory;
   resolveClosed: () => Promise<ClosedResolution>;
   /** Events with an id at or below this value are ignored. */
@@ -93,7 +94,8 @@ export function openAnalysisStream(
     timer = null;
     handlers.onConnection?.(attempts === 0 ? "connecting" : "reconnecting");
     attempts += 1;
-    const es = options.factory(options.url);
+    const url = typeof options.url === "function" ? options.url(lastId >= 0 ? lastId : null) : options.url;
+    const es = options.factory(url);
     source = es;
     for (const type of EVENT_TYPES) es.addEventListener(type, onMessage);
     es.addEventListener("message", onMessage);

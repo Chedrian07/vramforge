@@ -84,6 +84,29 @@ describe("analysis stream", () => {
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 
+  it("builds each connection URL from the last seen event id", async () => {
+    vi.useFakeTimers();
+    const urls: Array<number | null> = [];
+    openAnalysisStream(
+      {
+        url: (after) => {
+          urls.push(after);
+          return `/events${after != null ? `?after=${after}` : ""}`;
+        },
+        factory: fakeEventSourceFactory,
+        resolveClosed: async () => "retry",
+        initialBackoffMs: 50,
+      },
+      { onEvent: vi.fn(), onTerminal: vi.fn() },
+    );
+    const first = FakeEventSource.latest();
+    first.emit("progress", makeEvent({ event_id: 7, type: "progress", status: "TOKENIZING" }));
+    first.fail();
+    await vi.advanceTimersByTimeAsync(60);
+    expect(urls).toEqual([null, 7]);
+    expect(FakeEventSource.latest().url).toBe("/events?after=7");
+  });
+
   it("stops for good when told to (e.g. analysis deleted)", async () => {
     const { onStop, onTerminal } = start(async () => "stop");
     FakeEventSource.latest().fail();

@@ -226,7 +226,7 @@ const api: ApiClient = {
     );
   },
   createSession: async () => delay(undefined, 100),
-  eventsUrl: (id) => `vf-dev-mock://events/${encodeURIComponent(id)}`,
+  eventsUrl: (id) => `vf-dev-mock://events/${encodeURIComponent(id)}`, // replays from the start
   exportUrl: (id, format) => `/api/v1/analyses/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`,
 };
 

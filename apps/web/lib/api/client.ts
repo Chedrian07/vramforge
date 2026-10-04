@@ -62,7 +62,8 @@ export interface ApiClient {
   deleteAnalysis(analysisId: string): Promise<void>;
   scenarios(analysisId: string, body: ScenarioRequest, signal?: AbortSignal): Promise<ScenarioResponse>;
   createSession(token: string): Promise<void>;
-  eventsUrl(analysisId: string): string;
+  /** SSE URL; `after` resumes after that event id on a fresh connection (no header needed). */
+  eventsUrl(analysisId: string, after?: number | null): string;
   exportUrl(analysisId: string, format: ExportFormat): string;
 }
 
@@ -201,8 +202,10 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
     createSession: async (token) => {
       await request<unknown>("POST", SESSION_PATH, { json: { token } });
     },
-    eventsUrl: (analysisId) =>
-      apiPath("/api/v1/analyses/{analysis_id}/events", { analysis_id: analysisId }),
+    eventsUrl: (analysisId, after) => {
+      const base = apiPath("/api/v1/analyses/{analysis_id}/events", { analysis_id: analysisId });
+      return after != null && after >= 0 ? `${base}?after=${Math.floor(after)}` : base;
+    },
     exportUrl: (analysisId, format) =>
       `${apiPath("/api/v1/analyses/{analysis_id}/export", { analysis_id: analysisId })}?format=${encodeURIComponent(format)}`,
   };

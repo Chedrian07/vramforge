@@ -132,6 +132,8 @@ describe("http client", () => {
   it("builds events and export URLs", () => {
     const { api } = setup(jsonResponse(200, {}));
     expect(api.eventsUrl("a1")).toBe("/api/v1/analyses/a1/events");
+    expect(api.eventsUrl("a1", 42)).toBe("/api/v1/analyses/a1/events?after=42");
+    expect(api.eventsUrl("a1", null)).toBe("/api/v1/analyses/a1/events");
     expect(api.exportUrl("a1", "trainer-config")).toBe("/api/v1/analyses/a1/export?format=trainer-config");
   });
 });
