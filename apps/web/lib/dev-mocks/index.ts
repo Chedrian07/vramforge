@@ -226,6 +226,15 @@ const api: ApiClient = {
       400,
     );
   },
+  exportScenario: async (id, body) => {
+    const run = runs.get(id);
+    if (!run?.final.result) throw notFound();
+    if (body.format !== "json") {
+      throw new ApiError(501, { code: "NOT_IMPLEMENTED", severity: "error", retryable: false, user_message: "개발용 mock은 시나리오를 JSON으로만 내보냅니다." });
+    }
+    const result = { ...run.final.result, requested_config: body.request };
+    return delay({ blob: new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }), filename: "analysis.json" }, 200);
+  },
   createSession: async () => delay(undefined, 100),
   eventsUrl: (id) => `vf-dev-mock://events/${encodeURIComponent(id)}`, // replays from the start
   exportUrl: (id, format) => `/api/v1/analyses/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`,

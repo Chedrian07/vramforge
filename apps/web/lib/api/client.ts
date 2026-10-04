@@ -18,6 +18,7 @@ import type {
   InspectResponse,
   Issue,
   LocalRootsResponse,
+  ScenarioExportRequest,
   ScenarioRequest,
   ScenarioResponse,
   SessionStatus,
@@ -65,10 +66,38 @@ export interface ApiClient {
   /** Deletes the analysis with its artifacts (plan.md §16.4). */
   deleteAnalysis(analysisId: string): Promise<void>;
   scenarios(analysisId: string, body: ScenarioRequest, signal?: AbortSignal): Promise<ScenarioResponse>;
+  /**
+   * Export file of a recomputed scenario (POST /analyses/{id}/scenarios/export): what the screen
+   * shows after a light change, which the stored analysis behind `exportUrl` does not contain.
+   */
+  exportScenario(analysisId: string, body: ScenarioExportRequest, signal?: AbortSignal): Promise<ExportFile>;
   createSession(token: string): Promise<void>;
   /** SSE URL; `after` resumes after that event id on a fresh connection (no header needed). */
   eventsUrl(analysisId: string, after?: number | null): string;
   exportUrl(analysisId: string, format: ExportFormat): string;
+}
+
+export interface ExportFile {
+  blob: Blob;
+  /** From Content-Disposition; null when the server did not name the file. */
+  filename: string | null;
+}
+
+/** `attachment; filename="report.md"` -> "report.md" (plain or RFC 5987 form). */
+export function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const extended = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header);
+  if (extended?.[1]) {
+    try {
+      return decodeURIComponent(extended[1].trim());
+    } catch {
+      return null;
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"|filename\s*=\s*([^;]+)/.exec(header);
+  const name = (plain?.[1] ?? plain?.[2] ?? "").trim();
+  // Only a bare file name is ever used for the download.
+  return name && !/[\\/]/.test(name) ? name : null;
 }
 
 export interface HttpClientOptions {
@@ -150,7 +179,8 @@ interface SendOptions {
 export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
   const doFetch: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
 
-  async function send<T>(method: Method, url: string, init: SendOptions = {}): Promise<T> {
+  /** One request; non-2xx answers become ApiError (401 also opens the token prompt). */
+  async function fetchOk(method: Method, url: string, init: SendOptions = {}): Promise<Response> {
     const headers: Record<string, string> = { Accept: "application/json", ...init.headers };
     if (method !== "GET") headers[CSRF_HEADER] = "1";
     let body = init.body;
@@ -177,6 +207,11 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
       if (response.status === 401) options.onUnauthorized?.();
       throw error;
     }
+    return response;
+  }
+
+  async function send<T>(method: Method, url: string, init: SendOptions = {}): Promise<T> {
+    const response = await fetchOk(method, url, init);
     if (response.status === 204) return undefined as T;
     const text = await response.text();
     if (!text) return undefined as T;
@@ -245,6 +280,20 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
         apiPath("/api/v1/analyses/{analysis_id}/scenarios", { analysis_id: analysisId }),
         { json: body, signal },
       ),
+    exportScenario: async (analysisId, body, signal) => {
+      await ensureOwner();
+      // Not in the generated paths yet: built next to the scenarios route it belongs to.
+      const url = `${apiPath("/api/v1/analyses/{analysis_id}/scenarios", { analysis_id: analysisId })}/export`;
+      const response = await fetchOk("POST", url, { json: body, signal, headers: { Accept: "*/*" } });
+      let blob: Blob;
+      try {
+        blob = await response.blob();
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        throw unreadableBody(response.status);
+      }
+      return { blob, filename: filenameFromDisposition(response.headers.get("Content-Disposition")) };
+    },
     createSession: async (token) => {
       await request<unknown>("POST", apiPath("/api/v1/session"), { json: { token } });
     },

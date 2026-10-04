@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError, CSRF_HEADER, apiPath, createHttpClient, newIdempotencyKey } from "@/lib/api/client";
+import { ApiError, CSRF_HEADER, apiPath, createHttpClient, filenameFromDisposition, newIdempotencyKey } from "@/lib/api/client";
 import type { AnalysisRequest } from "@/lib/api/types";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -148,6 +148,28 @@ describe("http client", () => {
     expect(JSON.parse(String(call().init.body))).toEqual({ token: "secret-token" });
   });
 
+  it("exports a recomputed scenario with a POST and returns the file", async () => {
+    const { api, call } = setup(
+      new Response("# 보고서\n", { status: 200, headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": 'attachment; filename="report.md"' } }),
+    );
+    const file = await api.exportScenario("a/1", { request, format: "md" });
+    expect(call().url).toBe("/api/v1/analyses/a%2F1/scenarios/export");
+    expect(call().init.method).toBe("POST");
+    expect(call().headers[CSRF_HEADER]).toBe("1");
+    expect(JSON.parse(String(call().init.body))).toEqual({ request, format: "md" });
+    expect(file.filename).toBe("report.md");
+    expect(await file.blob.text()).toBe("# 보고서\n");
+  });
+
+  it("reports a refused scenario export as a Korean ApiError", async () => {
+    const refusal = { code: "REANALYSIS_REQUIRED", severity: "error", retryable: false, user_message: "데이터 재분석이 필요합니다." };
+    const { api } = setup(jsonResponse(409, { error: refusal }));
+    const error = (await api.exportScenario("a1", { request, format: "json" }).catch((e: unknown) => e)) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(409);
+    expect(error.issue.user_message).toBe("데이터 재분석이 필요합니다.");
+  });
+
   it("builds events and export URLs", () => {
     const { api } = setup(jsonResponse(200, {}));
     expect(api.eventsUrl("a1")).toBe("/api/v1/analyses/a1/events");
@@ -211,6 +233,15 @@ describe("owner cookie bootstrap", () => {
 });
 
 describe("helpers", () => {
+  it("reads only a bare file name from Content-Disposition", () => {
+    expect(filenameFromDisposition('attachment; filename="analysis.json"')).toBe("analysis.json");
+    expect(filenameFromDisposition("attachment; filename=report.md")).toBe("report.md");
+    expect(filenameFromDisposition("attachment; filename*=UTF-8''%EB%B3%B4%EA%B3%A0%EC%84%9C.md")).toBe("보고서.md");
+    expect(filenameFromDisposition('attachment; filename="../../etc/passwd"')).toBeNull();
+    expect(filenameFromDisposition("attachment")).toBeNull();
+    expect(filenameFromDisposition(null)).toBeNull();
+  });
+
   it("fills contract path parameters", () => {
     expect(apiPath("/api/v1/analyses/{analysis_id}", { analysis_id: "x y" })).toBe("/api/v1/analyses/x%20y");
     expect(() => apiPath("/api/v1/analyses/{analysis_id}")).toThrow();
