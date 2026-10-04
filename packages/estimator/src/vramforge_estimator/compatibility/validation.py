@@ -331,19 +331,38 @@ def _grpo_issues(request: AnalysisRequest) -> list[Issue]:
 
 
 def _hardware_issues(request: AnalysisRequest) -> list[Issue]:
+    """Capacity inputs must describe one device. A preset with a total equal to the preset's
+    nominal total is consistent (the web form sends both); only a different total conflicts.
+    `usable_bytes` may not exceed the device total, given or taken from the preset."""
     hw = request.hardware
+    preset = None
     if hw.mode is HardwareMode.GPU_PRESET:
         if not hw.gpu_preset:
             return [
                 _err(ErrorCode.INVALID_REQUEST, "GPU preset을 선택하세요.", "hardware.gpu_preset")
             ]
-        if load_registry().gpu(hw.gpu_preset) is None and hw.device_total_bytes is None:
+        preset = load_registry().gpu(hw.gpu_preset)
+        if preset is None and hw.device_total_bytes is None:
             return [
                 _err(
                     ErrorCode.INVALID_REQUEST,
                     "알 수 없는 GPU preset입니다.",
                     "hardware.gpu_preset",
                     gpu_preset=hw.gpu_preset,
+                )
+            ]
+        total = hw.device_total_bytes
+        if preset is not None and total is not None and total != preset.total_bytes:
+            return [
+                _err(
+                    ErrorCode.CONFLICTING_OPTIONS,
+                    f"GPU preset {preset.name}의 총 용량({preset.total_bytes:,} B)과 입력한 총 "
+                    f"용량({total:,} B)이 다릅니다. preset을 쓰려면 총 용량을 비우거나 preset과 "
+                    "같은 값을 쓰고, 다른 용량은 직접 입력 모드로 지정하세요.",
+                    "hardware.device_total_bytes",
+                    gpu_preset=preset.id,
+                    preset_total_bytes=preset.total_bytes,
+                    device_total_bytes=total,
                 )
             ]
     if hw.mode is HardwareMode.CUSTOM and hw.device_total_bytes is None and hw.usable_bytes is None:
@@ -354,11 +373,10 @@ def _hardware_issues(request: AnalysisRequest) -> list[Issue]:
                 "hardware.device_total_bytes",
             )
         ]
-    if (
-        hw.usable_bytes is not None
-        and hw.device_total_bytes is not None
-        and hw.usable_bytes > hw.device_total_bytes
-    ):
+    total = hw.device_total_bytes
+    if total is None and preset is not None:
+        total = preset.total_bytes
+    if hw.usable_bytes is not None and total is not None and hw.usable_bytes > total:
         return [
             _err(
                 ErrorCode.INVALID_REQUEST,

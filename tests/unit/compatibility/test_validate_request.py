@@ -242,6 +242,28 @@ def test_known_preset_and_custom_capacity_are_valid() -> None:
     assert validate_request(request(hardware={"mode": "custom", "usable_bytes": 10**10})) == []
 
 
+def test_preset_with_its_own_total_is_consistent() -> None:
+    h100 = 80 * 1024**3
+    same = {"mode": "gpu_preset", "gpu_preset": "h100-80gb", "device_total_bytes": h100}
+    assert validate_request(request(hardware=same)) == []
+    other = {**same, "device_total_bytes": h100 - 1}
+    issues = validate_request(request(hardware=other))
+    (conflict,) = [i for i in issues if i.code is ErrorCode.CONFLICTING_OPTIONS]
+    assert conflict.affected_component == "hardware.device_total_bytes"
+    assert conflict.details["preset_total_bytes"] == h100
+    # an unknown preset with an explicit total stays usable; nothing to compare against
+    unknown = {"mode": "gpu_preset", "gpu_preset": "unknown-gpu", "device_total_bytes": h100}
+    assert validate_request(request(hardware=unknown)) == []
+
+
+def test_usable_capacity_cannot_exceed_the_preset_total() -> None:
+    too_much = {"mode": "gpu_preset", "gpu_preset": "rtx-4090-24gb", "usable_bytes": 25 * 1024**3}
+    issues = validate_request(request(hardware=too_much))
+    assert [i.affected_component for i in issues] == ["hardware.usable_bytes"]
+    fits = {**too_much, "usable_bytes": 22 * 1024**3}
+    assert validate_request(request(hardware=fits)) == []
+
+
 def test_sample_scan_and_profiling_are_flagged_not_blocked() -> None:
     issues = validate_request(request(dataset__scan_mode="sample", profiling={"enabled": True}))
     assert codes(issues) == set()
