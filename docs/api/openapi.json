@@ -201,6 +201,93 @@
         "title": "AnalysisCreated",
         "type": "object"
       },
+      "AnalysisEvent": {
+        "additionalProperties": false,
+        "description": "One server-sent event of `GET /api/v1/analyses/{analysis_id}/events` (the JSON in `data:`). `event:` repeats `type`, `id:` is `event_id` (resume with Last-Event-ID).",
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "integer"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Issue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "partial": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Display-only scan statistics on `progress` events while TOKENIZING; never raw rows, token ids or credentials, and null on other events. Keys: `status` (`partial` while scanning; the final report carries the scan coverage: `complete`, `partial` or `failed`), `rows_ok` and `rows_failed` (rows tokenized / failed so far) and, in tokens, the longest row seen so far of every length branch that has data: `max_prompt`, `max_completion`, `max_sequence`, `max_loss_tokens`, `max_chosen`, `max_rejected`, `max_chosen_sequence`, `max_rejected_sequence`, `max_pair_max`. Sanitized by the worker: at most 32 keys, strings cut at 200 characters, booleans sent as 0/1, nested values dropped. Partial values are not dataset maxima until the scan is complete.",
+            "title": "Partial"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/EventType"
+          }
+        },
+        "required": [
+          "event_id",
+          "analysis_id",
+          "type",
+          "status",
+          "fingerprint",
+          "timestamp"
+        ],
+        "title": "AnalysisEvent",
+        "type": "object"
+      },
       "AnalysisRamEstimate": {
         "additionalProperties": false,
         "description": "RAM used by this analysis service while scanning (plan §10.1).",
@@ -2607,6 +2694,19 @@
         ],
         "title": "EstimateItem",
         "type": "object"
+      },
+      "EventType": {
+        "enum": [
+          "progress",
+          "partial_result",
+          "warning",
+          "needs_input",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "title": "EventType",
+        "type": "string"
       },
       "Evidence": {
         "description": "Evidence attached to a single number (allocation, assumption).",
@@ -5149,6 +5249,43 @@
         "title": "ScenarioEstimate",
         "type": "object"
       },
+      "ScenarioExportRequest": {
+        "additionalProperties": false,
+        "description": "`POST /analyses/{id}/scenarios/export`: the form state of `/scenarios` plus the file format.\n\nThe server recomputes exactly like `/scenarios` and exports that result, so the file matches\nthe scenario shown on screen.",
+        "properties": {
+          "client_fingerprint": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Fingerprint"
+          },
+          "format": {
+            "default": "json",
+            "enum": [
+              "json",
+              "yaml",
+              "md",
+              "trainer-config"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/AnalysisRequest"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "ScenarioExportRequest",
+        "type": "object"
+      },
       "ScenarioRequest": {
         "additionalProperties": false,
         "description": "The full current form state; the server decides what can be recomputed.",
@@ -6327,6 +6464,7 @@
         ]
       },
       "get": {
+        "description": "Status, progress, the stored request and the partial/final result. `expires_at` is when\nretention deletes a finished analysis (None while it runs).",
         "operationId": "get_analysis_api_v1_analyses__analysis_id__get",
         "parameters": [
           {
@@ -6531,7 +6669,7 @@
     },
     "/api/v1/analyses/{analysis_id}/events": {
       "get": {
-        "description": "Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.\n\nFrames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:\n`progress` (stage changes and coalesced scan progress), `partial_result` (refetch the\nanalysis for the result so far), `warning`, and the terminal types `completed`, `failed`\n(status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`\nand `needs_input`. The stream ends after a terminal event; reconnecting with the last id\nof a finished analysis returns 204. `after` resumes without the header (first connect).",
+        "description": "Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.\n\nFrames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`; the payload schema\nis `#/components/schemas/AnalysisEvent` (with `EventType`, `JobProgress`, `ShardProgress`;\nthe keys of `AnalysisEvent.partial` are documented there). Types:\n`progress` (stage changes and coalesced scan progress), `partial_result` (refetch the\nanalysis for the result so far), `warning`, and the terminal types `completed`, `failed`\n(status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`\nand `needs_input`. The stream ends after a terminal event; reconnecting with the last id\nof a finished analysis returns 204. `after` resumes without the header (first connect).",
         "operationId": "analysis_events_api_v1_analyses__analysis_id__events_get",
         "parameters": [
           {
@@ -6582,7 +6720,34 @@
         "responses": {
           "200": {
             "content": {
-              "text/event-stream": {}
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "$ref": "#/components/schemas/AnalysisEvent"
+                      },
+                      "type": "string"
+                    },
+                    "event": {
+                      "$ref": "#/components/schemas/EventType"
+                    },
+                    "id": {
+                      "description": "AnalysisEvent.event_id",
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
             },
             "description": "SSE stream"
           },
@@ -6995,6 +7160,119 @@
           }
         },
         "summary": "Scenarios",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/scenarios/export": {
+      "post": {
+        "description": "Export the result of a scenario: recomputed exactly like `/scenarios` with the same form\nstate, then exported like `/export` (same formats and file names).\n\n409 REANALYSIS_REQUIRED when the change needs a new analysis (the reasons are in\n`details.reasons`); `trainer-config` is 409 unless the recomputed result is ready.",
+        "operationId": "export_scenario_api_v1_analyses__analysis_id__scenarios_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenarioExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/yaml": {},
+              "text/markdown": {}
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Export Scenario",
         "tags": [
           "analyses"
         ]
@@ -7591,7 +7869,7 @@
     },
     "/api/v1/uploads": {
       "post": {
-        "description": "Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.\n\nStreams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap; the\nextension must match the content. Use the returned `reference` as the dataset reference.",
+        "description": "Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.\n\nStreams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap and the\nowner's remaining `VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER` quota (413 UPLOAD_TOO_LARGE, with\n`details.reason = \"owner_quota\"` for the quota); the extension must match the content. Use\nthe returned `reference` as the dataset reference.",
         "operationId": "upload_dataset_api_v1_uploads_post",
         "requestBody": {
           "content": {
