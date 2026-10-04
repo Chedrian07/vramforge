@@ -195,8 +195,8 @@ def test_corrupt_row_is_kept_located_and_withholds_verification(
     assert (res.rows_seen, res.rows_ok, res.rows_failed) == (3, 2, 1)
     assert [f.row_id for f in res.failed_rows_sample] == ["train:1"]
     assert ErrorCode.SCAN_FAILED_ROWS in [i.code for i in out.issues]
-    # a reader that could not decode the record never confirms a full read
-    assert res.coverage is (ScanCoverage.PARTIAL if decode_failure else ScanCoverage.COMPLETE)
+    # every row was read, but one length is unknown: never complete (no complete badge)
+    assert res.coverage is ScanCoverage.PARTIAL and res.rows_unprocessed == 0
     context = validate_context(
         res, model_declared_max=262_144, tokenizer=None, backend_verified_max=None
     )
@@ -214,8 +214,8 @@ def test_corrupt_row_is_kept_located_and_withholds_verification(
     assert audit.status is DataPreservation.UNKNOWN
     full_read = next(c for c in audit.checks if c.name is PreservationCheckName.FULL_READ)
     assert full_read.passed is False
-    expected = ErrorCode.SCAN_PARTIAL if decode_failure else ErrorCode.SCAN_FAILED_ROWS
-    assert expected in [v.code for v in audit.violations]
+    codes = [v.code for v in audit.violations]
+    assert ErrorCode.SCAN_FAILED_ROWS in codes and ErrorCode.SCAN_PARTIAL not in codes
 
 
 def test_template_change_changes_the_preprocess_key(handle) -> None:

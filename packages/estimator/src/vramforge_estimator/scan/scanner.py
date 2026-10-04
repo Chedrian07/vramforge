@@ -4,9 +4,14 @@ One sequential pass over the `RowStream`. Only integer lengths are kept in memor
 `LengthAccumulator` counts); per-row `LengthRecord` columns go to Parquet part files under
 ``ctx.artifact_dir/lengths/``. After every part the checkpoint (last processed ``row_index`` +
 accumulators) is saved; a resumed scan re-reads the stream and skips processed indices.
-Coverage is COMPLETE only when the stream reached EOF on every shard, the manifest row count
-matches and no row is unprocessed. Limits, read errors and partial streams give PARTIAL, never
-complete; failed rows are counted, sampled and reported (SCAN_FAILED_ROWS).
+Coverage (plan §7.7, §19.2 "손상 row"):
+
+* COMPLETE — the reader confirmed EOF on every shard, the manifest row count matches and every
+  row was tokenized.
+* PARTIAL — rows were read but the maximum is not guaranteed: a limit, a read error or an
+  unconfirmed stream left rows unread, or some rows could not be read/tokenized (their lengths
+  are unknown even when every row was read; SCAN_FAILED_ROWS says how many were read and failed).
+* FAILED — no row was read at all; a confirmed empty split adds EMPTY_DATASET.
 """
 
 from __future__ import annotations
@@ -69,6 +74,11 @@ _FINAL_MESSAGES = {
     ScanCoverage.FAILED: "데이터를 읽지 못해 토큰화한 row가 없습니다.",
     ScanCoverage.NOT_STARTED: "데이터셋 토큰화를 시작하지 않았습니다.",
 }
+_FAILED_ROWS_MESSAGE = (
+    "모든 row를 읽었지만 {failed:,}개 row를 읽거나 토큰화하지 못했습니다. 통계는 처리한 row의 "
+    "값이며 전체 최대 길이로 보장되지 않습니다."
+)
+_EMPTY_MESSAGE = "선택한 split에 row가 없어 토큰화한 row가 없습니다."
 _WINDOWS_ABS = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -151,6 +161,70 @@ class _State:
         )
 
 
+@dataclass(frozen=True)
+class _Ending:
+    """How reading ended; decides coverage and which issues explain it."""
+
+    stop_reason: str | None  # our own limit: "max_rows" | "max_seconds"
+    read_error: BaseException | None
+    read_all: bool  # the reader confirmed EOF on every shard and the manifest count matches
+    manifest_mismatch: bool
+    unprocessed: int | None  # rows known to exist that were never read; None = unknown
+    rows_seen: int
+    rows_failed: int
+
+    @property
+    def all_rows_seen(self) -> bool:
+        """Every row of the split was read, even if the reader did not call the stream complete
+        (e.g. it flags undecodable records): known only when the manifest row count is known."""
+        finished = self.stop_reason is None and self.read_error is None
+        return self.read_all or (finished and not self.manifest_mismatch and self.unprocessed == 0)
+
+    @property
+    def empty(self) -> bool:
+        return self.read_all and self.rows_seen == 0
+
+    @property
+    def coverage(self) -> ScanCoverage:
+        if self.rows_seen == 0:
+            return ScanCoverage.FAILED
+        if self.read_all and self.rows_failed == 0:
+            return ScanCoverage.COMPLETE
+        return ScanCoverage.PARTIAL
+
+    def final_message(self) -> str:
+        coverage = self.coverage
+        if coverage is ScanCoverage.FAILED and self.empty:
+            return _EMPTY_MESSAGE
+        if coverage is ScanCoverage.PARTIAL and self.rows_failed and self.all_rows_seen:
+            return _FAILED_ROWS_MESSAGE.format(failed=self.rows_failed)
+        return _FINAL_MESSAGES[coverage]
+
+
+def _ending(
+    state: _State, stream: RowStream, stop_reason: str | None, read_error: BaseException | None
+) -> _Ending:
+    reader_complete = stop_reason is None and read_error is None and stream.complete
+    total = stream.total_rows
+    manifest_mismatch = reader_complete and total is not None and total != state.rows_seen
+    read_all = reader_complete and not manifest_mismatch
+    if read_all:
+        unprocessed: int | None = 0
+    elif total is not None:
+        unprocessed = max(0, total - state.rows_seen)
+    else:
+        unprocessed = None
+    return _Ending(
+        stop_reason=stop_reason,
+        read_error=read_error,
+        read_all=read_all,
+        manifest_mismatch=manifest_mismatch,
+        unprocessed=unprocessed,
+        rows_seen=state.rows_seen,
+        rows_failed=state.rows_failed,
+    )
+
+
 def _identity(
     stream: RowStream,
     adapter: PreprocessingAdapter,
@@ -220,8 +294,14 @@ def full_scan(
 ) -> ScanOutcome:
     """Tokenize every row of the stream, write the Parquet row-length artifact under
     `ctx.artifact_dir`, compute exact counts/max and statistics, and resume from the checkpoint
-    when present. Coverage is COMPLETE only when the stream is complete and no row is
-    unprocessed."""
+    when present.
+
+    Coverage is COMPLETE only when the reader confirmed every shard, the manifest count matches
+    and every row was tokenized. Rows that could not be read or tokenized make it PARTIAL even
+    when every row was read: their lengths are unknown, so the maximum is not guaranteed and the
+    complete badge is withheld (plan §19.2); SCAN_FAILED_ROWS states how many rows were read and
+    how many failed. A scan that read no row is FAILED, with EMPTY_DATASET for a confirmed empty
+    split."""
     if adapter.objective is not objective:
         raise EstimatorError(
             make_issue(
@@ -262,7 +342,7 @@ def full_scan(
     def elapsed() -> float:
         return elapsed_before + (clock() - started)
 
-    def report(*, coverage: ScanCoverage | None = None) -> None:
+    def report(*, coverage: ScanCoverage | None = None, final_message: str = "") -> None:
         """Progress while scanning; the final report (coverage given) never calls a partial or
         failed scan finished (plan §7.7, §19.2)."""
         nonlocal last_report
@@ -278,7 +358,7 @@ def full_scan(
         if coverage is None:
             code, message = "scan_progress", "데이터셋 전체를 토큰화하는 중입니다."
         else:
-            code, message = f"scan_{coverage.value}", _FINAL_MESSAGES[coverage]
+            code, message = f"scan_{coverage.value}", final_message or _FINAL_MESSAGES[coverage]
         ctx.report(
             JobProgress(
                 stage=JobStatus.TOKENIZING,
@@ -341,17 +421,8 @@ def full_scan(
     flush()
     state.elapsed = elapsed()
 
-    complete = stop_reason is None and read_error is None and stream.complete
-    manifest_mismatch = (
-        complete and stream.total_rows is not None and stream.total_rows != state.rows_seen
-    )
-    complete = complete and not manifest_mismatch
-    if complete:
-        coverage = ScanCoverage.COMPLETE
-    elif read_error is not None and state.rows_seen == 0:
-        coverage = ScanCoverage.FAILED
-    else:
-        coverage = ScanCoverage.PARTIAL
+    ending = _ending(state, stream, stop_reason, read_error)
+    coverage = ending.coverage
 
     paths = [lengths_dir / p for p in state.parts]
     duplicates = _count_duplicates(paths)
@@ -369,20 +440,14 @@ def full_scan(
             "coverage": coverage.value,
         },
     )
-    report(coverage=coverage)
+    report(coverage=coverage, final_message=ending.final_message())
 
-    issues = _issues(state, stream, coverage, stop_reason, read_error, manifest_mismatch, limits)
+    issues = _issues(state, stream, ending, limits)
     mapping = getattr(adapter, "mapping", None)
     note = adapter.transformation_note()
     omitted = state.diag_counts["system_omitted"]
     if omitted:
         note += f" 빈 system 값 때문에 {omitted:,}개 row에서 system 메시지를 생략했습니다."
-    if complete:
-        unprocessed: int | None = 0
-    elif stream.total_rows is not None:
-        unprocessed = max(0, stream.total_rows - state.rows_seen)
-    else:
-        unprocessed = None
     result = DatasetScanResult(
         coverage=coverage,
         objective=objective,
@@ -394,7 +459,7 @@ def full_scan(
         rows_seen=state.rows_seen,
         rows_ok=state.rows_ok,
         rows_failed=state.rows_failed,
-        rows_unprocessed=unprocessed,
+        rows_unprocessed=ending.unprocessed,
         shards_total=len(stream.shards) or None,
         shards_completed=stream.shards_completed,
         branches=_branch_stats(state, objective),
@@ -551,21 +616,40 @@ def _issue(code: ErrorCode, severity: Severity, message: str, **details: object)
     )
 
 
-def _issues(
-    state: _State,
-    stream: RowStream,
-    coverage: ScanCoverage,
-    stop_reason: str | None,
-    read_error: BaseException | None,
-    manifest_mismatch: bool,
-    limits: ScanLimits,
-) -> list[Issue]:
+def _failed_rows_issue(state: _State, ending: _Ending) -> Issue:
+    """Rows that were read but could not be decoded or tokenized: their lengths are unknown, so
+    the scan is PARTIAL even when every row was read (plan §19.2)."""
+    failed, seen = state.rows_failed, state.rows_seen
+    if ending.all_rows_seen:
+        message = (
+            f"데이터셋의 row {seen:,}개를 모두 읽었지만 그중 {failed:,}개를 읽거나 토큰화하지 "
+            "못했습니다. 이 row들의 길이를 알 수 없어 최대 길이를 보장할 수 없으므로 전체 스캔 "
+            "완료로 표시하지 않습니다(부분 스캔). 실패한 row의 위치는 실패 row 목록에 있습니다."
+        )
+    else:
+        message = (
+            f"읽은 row {seen:,}개 중 {failed:,}개를 읽거나 토큰화하지 못했습니다. 이 row들의 "
+            "길이는 통계에 포함되지 않았습니다. 실패한 row의 위치는 실패 row 목록에 있습니다."
+        )
+    return _issue(
+        ErrorCode.SCAN_FAILED_ROWS,
+        Severity.ERROR,
+        message,
+        rows_seen=seen,
+        rows_ok=state.rows_ok,
+        rows_failed=failed,
+        all_rows_read=ending.all_rows_seen,
+        row_ids=[f["row_id"] for f in state.failed_sample[:ROW_ID_SAMPLE_LIMIT]],
+    )
+
+
+def _issues(state: _State, stream: RowStream, ending: _Ending, limits: ScanLimits) -> list[Issue]:
     # The reader's own stop/failure reasons (e.g. inspection's DatasetRowStream.issues) are the
     # most precise explanation of an incomplete stream, so they come first.
     stream_issues = [i for i in (getattr(stream, "issues", None) or []) if isinstance(i, Issue)]
     issues: list[Issue] = list(stream_issues)
     seen = {"rows_seen": state.rows_seen, "rows_expected": stream.total_rows}
-    if stop_reason == "max_rows":
+    if ending.stop_reason == "max_rows":
         issues.append(
             _issue(
                 ErrorCode.SCAN_QUOTA_EXCEEDED,
@@ -576,7 +660,7 @@ def _issues(
                 **seen,
             )
         )
-    elif stop_reason == "max_seconds":
+    elif ending.stop_reason == "max_seconds":
         issues.append(
             _issue(
                 ErrorCode.SCAN_QUOTA_EXCEEDED,
@@ -587,6 +671,7 @@ def _issues(
                 **seen,
             )
         )
+    read_error = ending.read_error
     if read_error is not None:
         cause = None
         if isinstance(read_error, EstimatorError):
@@ -604,7 +689,7 @@ def _issues(
                 **seen,
             )
         )
-    elif manifest_mismatch:
+    elif ending.manifest_mismatch:
         issues.append(
             _issue(
                 ErrorCode.SCAN_PARTIAL,
@@ -614,7 +699,7 @@ def _issues(
                 **seen,
             )
         )
-    elif coverage is not ScanCoverage.COMPLETE and stop_reason is None and not stream_issues:
+    elif not ending.read_all and ending.stop_reason is None and not stream_issues:
         issues.append(
             _issue(
                 ErrorCode.SCAN_PARTIAL,
@@ -625,17 +710,19 @@ def _issues(
                 **seen,
             )
         )
-    if state.rows_failed:
+    if ending.empty and not any(i.code is ErrorCode.EMPTY_DATASET for i in issues):
         issues.append(
             _issue(
-                ErrorCode.SCAN_FAILED_ROWS,
+                ErrorCode.EMPTY_DATASET,
                 Severity.ERROR,
-                f"읽거나 토큰화하지 못한 row가 {state.rows_failed:,}개 있습니다. 해당 row는 "
-                "길이 통계에서 빠졌으므로 데이터 보존을 검증할 수 없습니다.",
-                rows_failed=state.rows_failed,
-                row_ids=[f["row_id"] for f in state.failed_sample[:ROW_ID_SAMPLE_LIMIT]],
+                "선택한 split에 row가 없습니다(0개). 분석할 데이터가 없어 길이 통계와 batch 계획을 "
+                "만들 수 없습니다.",
+                split=stream.split,
+                **seen,
             )
         )
+    if state.rows_failed:
+        issues.append(_failed_rows_issue(state, ending))
     loss = state.diag_counts["template_loss"]
     if loss:
         issues.append(

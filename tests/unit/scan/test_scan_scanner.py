@@ -85,12 +85,18 @@ def test_corrupt_row_is_counted_with_position_and_blocks_verification(
     out = scan(make_stream(data, shards=["/abs/host/path/train.jsonl"]), adapter, ctx)
     res = out.result
     assert res.rows_failed == 1 and res.rows_ok == 6
+    # every row was read, but one length is unknown: the maximum is not guaranteed (plan §19.2)
+    assert res.coverage is ScanCoverage.PARTIAL and res.rows_unprocessed == 0
     failed = res.failed_rows_sample[0]
     assert failed.row_id == "train:4" and failed.error_code is ErrorCode.DATASET_FORMAT_UNSUPPORTED
     assert failed.shard_id == "train.jsonl"  # host path stripped
     codes = [i.code for i in out.issues]
-    assert codes == [ErrorCode.SCAN_FAILED_ROWS]
-    assert out.issues[0].details["row_ids"] == ["train:4"]
+    assert codes == [ErrorCode.SCAN_FAILED_ROWS]  # the reader is not blamed for an unread stream
+    issue = out.issues[0]
+    assert issue.details["row_ids"] == ["train:4"]
+    assert (issue.details["rows_seen"], issue.details["rows_failed"]) == (7, 1)
+    assert issue.details["all_rows_read"] is True
+    assert "row 7개를 모두 읽었지만 그중 1개를" in issue.user_message
     table = pq.read_table(sorted(out.artifact_path.glob("part-*.parquet"))).to_pylist()
     assert table[4]["processing_status"] == "failed" and table[4]["error_code"] is not None
     assert len(load_lengths(out.artifact_path)) == 6
@@ -99,6 +105,68 @@ def test_corrupt_row_is_counted_with_position_and_blocks_verification(
 def test_failed_sample_is_capped_at_100(make_stream, adapter, ctx) -> None:
     out = scan(make_stream([{"fail": True}] * 130), adapter, ctx)
     assert out.result.rows_failed == 130 and len(out.result.failed_rows_sample) == 100
+    assert out.result.coverage is ScanCoverage.PARTIAL  # rows were read; none has a length
+
+
+def test_failed_rows_in_a_partial_read_say_how_many_were_read(make_stream, adapter, ctx) -> None:
+    data = rows()
+    data[1] = {"fail": True}
+    out = scan(make_stream(data, stop_early_at=4), adapter, ctx)
+    assert out.result.coverage is ScanCoverage.PARTIAL and out.result.rows_unprocessed == 3
+    failed = next(i for i in out.issues if i.code is ErrorCode.SCAN_FAILED_ROWS)
+    assert failed.details["all_rows_read"] is False
+    assert "읽은 row 4개 중 1개를" in failed.user_message
+    assert ErrorCode.SCAN_PARTIAL in [i.code for i in out.issues]  # the unread rows, separately
+
+
+def test_final_report_never_calls_failed_rows_finished(make_stream, adapter, ctx) -> None:
+    data = rows()
+    data[2] = {"fail": True}
+    scan(make_stream(data), adapter, ctx)
+    final, final_partial = ctx.reports[-1]
+    assert final.message_code == "scan_partial" and final_partial["status"] == "partial"
+    assert final_partial["rows_failed"] == 1
+    assert "모든 row를 읽었지만 1개 row를" in final.message
+    assert "데이터셋 전체 토큰화를 마쳤습니다" not in final.message
+
+
+def test_empty_split_is_failed_with_empty_dataset(make_stream, adapter, ctx) -> None:
+    out = scan(make_stream([]), adapter, ctx)
+    res = out.result
+    assert res.coverage is ScanCoverage.FAILED
+    assert (res.rows_expected, res.rows_seen, res.rows_unprocessed) == (0, 0, 0)
+    assert [i.code for i in out.issues] == [ErrorCode.EMPTY_DATASET]
+    assert out.issues[0].details["split"] == "train"
+    seq = branch(res, Branch.SEQUENCE).stats
+    assert seq.count == 0 and seq.max is None  # nothing invented
+    final, final_partial = ctx.reports[-1]
+    assert final.message_code == "scan_failed" and "row가 없어" in final.message
+    assert final_partial["status"] == "failed" and final_partial["rows_ok"] == 0
+    assert len(load_lengths(out.artifact_path)) == 0
+
+
+def test_reader_empty_dataset_issue_is_not_repeated(make_stream, adapter, ctx) -> None:
+    from vramforge_estimator.schemas import Issue, Severity
+
+    class EmptyStream(make_stream):
+        def __iter__(self):
+            yield from super().__iter__()
+            self.issues.append(
+                Issue(
+                    code=ErrorCode.EMPTY_DATASET, severity=Severity.ERROR, user_message="빈 split"
+                )
+            )
+
+    out = scan(EmptyStream([]), adapter, ctx)
+    assert [i.code for i in out.issues] == [ErrorCode.EMPTY_DATASET]
+    assert out.issues[0].user_message == "빈 split"  # the reader's own wording is kept
+
+
+def test_nothing_read_is_failed_but_not_called_empty(make_stream, adapter, ctx) -> None:
+    out = scan(make_stream(rows(), stop_early_at=0), adapter, ctx)
+    assert out.result.coverage is ScanCoverage.FAILED and out.result.rows_unprocessed == 7
+    codes = [i.code for i in out.issues]
+    assert ErrorCode.EMPTY_DATASET not in codes and codes == [ErrorCode.SCAN_PARTIAL]
 
 
 def test_oversized_row_is_reported_not_truncated(make_stream, adapter, ctx) -> None:
@@ -165,7 +233,7 @@ def test_oversized_record_fails_that_row_only(make_stream, adapter, make_ctx) ->
     data = rows()
     data[2]["blob"] = "x" * 500
     out = scan(make_stream(data), adapter, make_ctx(limits=ScanLimits(max_record_chars=200)))
-    assert out.result.rows_failed == 1
+    assert out.result.rows_failed == 1 and out.result.coverage is ScanCoverage.PARTIAL
     assert out.result.failed_rows_sample[0].error_code is ErrorCode.SCAN_QUOTA_EXCEEDED
     assert "train:2" not in adapter.calls  # never tokenized
 
@@ -318,6 +386,8 @@ def test_reader_decode_failures_keep_their_reason(make_stream, adapter, ctx) -> 
     assert failed.message == "JSON으로 해석할 수 없는 레코드입니다"
     assert "train:2" not in adapter.calls  # nothing to tokenize
     assert res.coverage is ScanCoverage.PARTIAL  # the reader did not confirm a full read
+    assert res.rows_unprocessed == 0  # but every expected row was read
     codes = [i.code for i in out.issues]
     assert codes == [ErrorCode.SCAN_FAILED_ROWS, ErrorCode.SCAN_FAILED_ROWS]
     assert out.issues[0].user_message.startswith("해석할 수 없는 레코드")  # reader's own issue
+    assert out.issues[1].details["all_rows_read"] is True

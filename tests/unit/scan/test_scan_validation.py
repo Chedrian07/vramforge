@@ -28,6 +28,7 @@ def scan_result(
     objective: Objective = Objective.SFT,
     coverage: ScanCoverage = ScanCoverage.COMPLETE,
     rows_failed: int = 0,
+    rows_unprocessed: int | None = None,
 ) -> DatasetScanResult:
     acc = LengthAccumulator()
     for i, n in enumerate(lengths):
@@ -39,6 +40,7 @@ def scan_result(
         rows_seen=len(lengths) + rows_failed,
         rows_ok=len(lengths),
         rows_failed=rows_failed,
+        rows_unprocessed=rows_unprocessed,
         branches=[
             BranchStats(
                 branch=primary_branch(objective), stats=acc.stats(), top_rows=acc.top_rows()
@@ -238,10 +240,33 @@ def test_partial_scan_is_unknown_not_verified() -> None:
 
 
 def test_failed_rows_withhold_verification() -> None:
-    result = audit(scan_result([10, 20], rows_failed=1))
+    every_row_read = scan_result(
+        [10, 20], coverage=ScanCoverage.PARTIAL, rows_failed=1, rows_unprocessed=0
+    )
+    legacy_complete = scan_result([10, 20], rows_failed=1)  # cached before failed rows = partial
+    for scan in (every_row_read, legacy_complete):
+        result = audit(scan)
+        assert result.status is DataPreservation.UNKNOWN
+        assert checks(result)[C.FULL_READ] is False
+        codes = [i.code for i in result.violations]
+        assert ErrorCode.SCAN_FAILED_ROWS in codes and ErrorCode.SCAN_PARTIAL not in codes
+        full_read = next(c for c in result.checks if c.name is C.FULL_READ)
+        assert "전체 3 row를 읽었지만 1 row를" in full_read.detail
+
+
+def test_failed_rows_of_an_unfinished_read_are_a_partial_scan() -> None:
+    result = audit(scan_result([10], coverage=ScanCoverage.PARTIAL, rows_failed=2))
+    codes = [i.code for i in result.violations]
+    assert ErrorCode.SCAN_PARTIAL in codes and ErrorCode.SCAN_FAILED_ROWS not in codes
+    full_read = next(c for c in result.checks if c.name is C.FULL_READ)
+    assert "실패 2 row" in full_read.detail
+
+
+def test_empty_split_is_reported_as_empty() -> None:
+    empty = scan_result([], coverage=ScanCoverage.FAILED, rows_unprocessed=0)
+    result = audit(empty)
     assert result.status is DataPreservation.UNKNOWN
-    assert checks(result)[C.FULL_READ] is False
-    assert ErrorCode.SCAN_FAILED_ROWS in [i.code for i in result.violations]
+    assert [i.code for i in result.violations][:1] == [ErrorCode.EMPTY_DATASET]
 
 
 def test_context_exceeded_is_a_violation_without_truncation_advice() -> None:

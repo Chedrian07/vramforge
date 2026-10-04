@@ -140,25 +140,38 @@ def _issue(code: ErrorCode, message: str, **details: object) -> Issue:
 
 
 def _full_read(scan: DatasetScanResult) -> _Check:
+    """Every row read and tokenized. Failed rows keep the scan PARTIAL even when every row was
+    read (`rows_unprocessed == 0`); results cached before that rule may still say COMPLETE with
+    failed rows, which is read the same way."""
     name = PreservationCheckName.FULL_READ
-    if scan.coverage is not ScanCoverage.COMPLETE:
+    if scan.coverage is ScanCoverage.COMPLETE and not scan.rows_failed:
+        return _Check(name, "pass", f"전체 {scan.rows_seen:,} row를 끝까지 읽고 모두 처리했습니다.")
+    all_read = scan.coverage is ScanCoverage.COMPLETE or scan.rows_unprocessed == 0
+    if scan.rows_seen == 0 and all_read:
+        detail = "선택한 split에 row가 없어 검사할 데이터가 없습니다."
+        return _Check(name, "unknown", detail, _issue(ErrorCode.EMPTY_DATASET, detail))
+    if scan.rows_failed and all_read:
         detail = (
-            f"스캔이 끝나지 않았습니다(coverage: {scan.coverage.value}, "
-            f"처리 {scan.rows_seen:,} row). 읽지 않은 row의 길이는 확인되지 않았습니다."
-        )
-        return _Check(name, "unknown", detail, _issue(ErrorCode.SCAN_PARTIAL, detail))
-    if scan.rows_failed:
-        detail = (
-            f"전체 {scan.rows_seen:,} row를 읽었지만 {scan.rows_failed:,} row를 토큰화하지 못해 "
-            "보존 여부를 검증할 수 없습니다."
+            f"전체 {scan.rows_seen:,} row를 읽었지만 {scan.rows_failed:,} row를 읽거나 토큰화하지 "
+            "못해 그 길이와 보존 여부를 검증할 수 없습니다."
         )
         return _Check(
             name,
             "unknown",
             detail,
-            _issue(ErrorCode.SCAN_FAILED_ROWS, detail, rows_failed=scan.rows_failed),
+            _issue(
+                ErrorCode.SCAN_FAILED_ROWS,
+                detail,
+                rows_seen=scan.rows_seen,
+                rows_failed=scan.rows_failed,
+            ),
         )
-    return _Check(name, "pass", f"전체 {scan.rows_seen:,} row를 끝까지 읽고 모두 처리했습니다.")
+    failed = f", 실패 {scan.rows_failed:,} row" if scan.rows_failed else ""
+    detail = (
+        f"스캔이 끝나지 않았습니다(coverage: {scan.coverage.value}, "
+        f"처리 {scan.rows_seen:,} row{failed}). 읽지 않은 row의 길이는 확인되지 않았습니다."
+    )
+    return _Check(name, "unknown", detail, _issue(ErrorCode.SCAN_PARTIAL, detail))
 
 
 def _packing_checks(packing: bool) -> list[_Check]:
