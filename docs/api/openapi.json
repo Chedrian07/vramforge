@@ -6393,7 +6393,7 @@
     },
     "/api/v1/analyses/{analysis_id}/events": {
       "get": {
-        "description": "Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.",
+        "description": "Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.\n\nFrames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:\n`progress` (stage changes and coalesced scan progress), `partial_result` (refetch the\nanalysis for the result so far), `warning`, and the terminal types `completed`, `failed`\n(status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`\nand `needs_input`. The stream ends after a terminal event; reconnecting with the last id\nof a finished analysis returns 204. `after` resumes without the header (first connect).",
         "operationId": "analysis_events_api_v1_analyses__analysis_id__events_get",
         "parameters": [
           {
@@ -7069,6 +7069,7 @@
     },
     "/api/v1/session": {
       "delete": {
+        "description": "Forget the access cookie.",
         "operationId": "logout_api_v1_session_delete",
         "responses": {
           "200": {
@@ -7158,6 +7159,7 @@
         ]
       },
       "get": {
+        "description": "Whether an access token is required and whether this browser already has access.",
         "operationId": "session_status_api_v1_session_get",
         "responses": {
           "200": {
@@ -7247,6 +7249,7 @@
         ]
       },
       "post": {
+        "description": "Exchange the access token for the httpOnly `vf_access` cookie (EventSource-friendly).",
         "operationId": "login_api_v1_session_post",
         "requestBody": {
           "content": {
