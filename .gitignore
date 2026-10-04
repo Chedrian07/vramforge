@@ -1,0 +1,65 @@
+GIT_RULES.md
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- Claude Code local state ---
+.claude/settings.local.json
+.claude/worktrees/
+
+# --- Secrets / environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Node / Next.js ---
+node_modules/
+.pnpm-store/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+playwright-report/
+test-results/
+blob-report/
+
+# --- Runtime data (never commit) ---
+var/
+data/
+artifacts/
+uploads/
+.cache/
+hf_cache/
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+*.parquet
+!tests/fixtures/**/*.parquet
+*.arrow
+!tests/fixtures/**/*.arrow
+*.log
