@@ -148,6 +148,11 @@ class ScheduleBuilder:
             if t.order >= start and (checks or t.id not in self.budget_checks)
         ]
 
+    def after(self, tp_id: str) -> list[str]:
+        """Every timepoint strictly after `tp_id`."""
+        start = self.order(tp_id)
+        return [t.id for t in self.timepoints if t.order > start]
+
     def step_ids(self) -> list[str]:
         """Timepoints of a steady-state training step (after loading and precompute)."""
         skip = {Phase.MODEL_LOAD_AND_QUANTIZE, Phase.REFERENCE_PRECOMPUTE}
@@ -196,6 +201,14 @@ def renamed(
     if category is not None:
         updates["category"] = category
     return [s.model_copy(update={**updates, "name": f"{prefix}.{s.name}"}) for s in specs]
+
+
+def resolution_value(cfg: ResolvedConfig, field_name: str, default: object = None) -> object:
+    """Resolved value of a knob recorded only in `cfg.resolutions` (e.g. reward placement)."""
+    for r in cfg.resolutions:
+        if r.field == field_name:
+            return r.resolved
+    return default
 
 
 def residual_dtype(cfg: ResolvedConfig) -> str:
@@ -609,6 +622,7 @@ __all__ = [
     "ref",
     "renamed",
     "residual_dtype",
+    "resolution_value",
     "scaled",
     "spec",
     "unknown",

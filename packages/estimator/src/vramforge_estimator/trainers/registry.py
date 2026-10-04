@@ -5,12 +5,14 @@ from __future__ import annotations
 from vramforge_estimator.schemas import Objective
 
 from .base import TrainerAdapter
+from .dpo import DpoTrainer
 from .sft import SftTrainer
 
 TRAINER_PREFIX = "trl-1.14.1"
 
 _TRAINERS: dict[Objective, TrainerAdapter] = {
     Objective.SFT: SftTrainer(),
+    Objective.DPO: DpoTrainer(),
 }
 
 
