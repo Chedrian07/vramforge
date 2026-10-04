@@ -335,16 +335,18 @@ def saved_bytes(roots: list[Any], exclude: set[int]) -> int:
     return sum(storages.values())
 
 
-# mode -> (make_cfg kwargs, PEFT autocast_adapter_dtype, CPU bf16 autocast, LoRA target spec)
+# mode -> (make_cfg kwargs, PEFT autocast_adapter_dtype, LoRA target spec). The measured forward
+# runs under CPU bf16 autocast exactly when the resolved mixed precision autocasts.
 ALL = "all-linear"
 FROZEN = ["model.layers.0.mlp.down_proj"]  # only layer 0 adapted: measured layers 1, 2 are frozen
-MODES: dict[str, tuple[dict[str, Any], bool | None, bool, str | list[str]]] = {
-    "full_autocast": ({"strategy": Strategy.FULL}, None, True, ALL),
-    "full_plain": ({"strategy": Strategy.FULL, "compute": "float32"}, None, False, ALL),
-    "frozen_autocast": ({"strategy": Strategy.LORA}, True, True, FROZEN),
-    "lora_bf16_autocast": ({"strategy": Strategy.LORA, "adapter": "bfloat16"}, False, True, ALL),
-    "lora_fp32_autocast": ({"strategy": Strategy.LORA}, True, True, ALL),
-    "lora_fp32_plain": ({"strategy": Strategy.LORA, "compute": "float32"}, True, False, ALL),
+NO_AMP = {"mixed_precision": "none"}
+MODES: dict[str, tuple[dict[str, Any], bool | None, str | list[str]]] = {
+    "full_autocast": ({"strategy": Strategy.FULL}, None, ALL),
+    "full_plain": ({"strategy": Strategy.FULL, **NO_AMP}, None, ALL),
+    "frozen_autocast": ({"strategy": Strategy.LORA}, True, FROZEN),
+    "lora_bf16_autocast": ({"strategy": Strategy.LORA, "adapter": "bfloat16"}, False, ALL),
+    "lora_fp32_autocast": ({"strategy": Strategy.LORA}, True, ALL),
+    "lora_fp32_plain": ({"strategy": Strategy.LORA, **NO_AMP}, True, ALL),
 }
 
 
@@ -392,12 +394,13 @@ def _expected_layer(
 def test_qwen35_layer_saved_bytes_match_torch(
     ib: ModuleType, mode: str, batch: int, seq: int
 ) -> None:
-    cfg_kwargs, autocast_adapter, autocast, spec = MODES[mode]
+    cfg_kwargs, autocast_adapter, spec = MODES[mode]
     model = causal_q35(["linear_attention", "linear_attention", "full_attention"])
     inv = inventory(ib, model, "Qwen3_5ForCausalLM")
     adapter = get_adapter("qwen3_5_hybrid")
     targets = [m.name for m in adapter.lora_target_modules(inv, spec, [])]
     cfg = make_cfg(targets=targets, r=8, **cfg_kwargs)
+    autocast = cfg.mixed_precision != "none"
     top = model
     if cfg.strategy is Strategy.LORA:
         top = peft.get_peft_model(
@@ -414,13 +417,14 @@ def test_qwen35_layer_saved_bytes_match_torch(
 @pytest.mark.parametrize("kind", ["llama", "qwen3"])
 @pytest.mark.parametrize("mode", list(MODES))
 def test_dense_layer_saved_bytes_match_torch(ib: ModuleType, kind: str, mode: str) -> None:
-    cfg_kwargs, autocast_adapter, autocast, spec = MODES[mode]
+    cfg_kwargs, autocast_adapter, spec = MODES[mode]
     model = dense(kind)
     model.config._attn_implementation = "sdpa"
     inv = inventory(ib, model, f"{kind}ForCausalLM")
     adapter = get_adapter("dense_decoder")
     targets = [m.name for m in adapter.lora_target_modules(inv, spec, [])]
     cfg = make_cfg(targets=targets, r=8, **cfg_kwargs)
+    autocast = cfg.mixed_precision != "none"
     top = model
     if cfg.strategy is Strategy.LORA:
         top = peft.get_peft_model(

@@ -222,6 +222,71 @@ def test_no_grad_forward_honours_reported_padding(mimo: ModelInventory, auto: li
     assert mask not in ref(False)
 
 
+LIN_MODULES = {
+    "gate_proj": (H, 12288),
+    "up_proj": (H, 12288),
+    "down_proj": (12288, H),
+    "in_proj_qkv": (H, 8192),
+    "in_proj_z": (H, H),
+    "in_proj_a": (H, 32),
+    "in_proj_b": (H, 32),
+    "out_proj": (H, H),
+}
+
+
+def _lora_group(autocast: bool) -> int:
+    """LoRA terms of 24 MiMo linear-attention layers with fp32 adapters (r=16, B=1, T=4096)."""
+    terms = act.q35_linear_attention_layer(
+        1,
+        4096,
+        act.Dims(4096, 12288, 16, 4, 256, 16, 32, 128, 128, 4),
+        _x(LIN_MODULES),
+        act.ActMode(2, autocast, adapter_bytes=4),
+        "torch",
+    )
+    return 24 * sum(t.nbytes for t in terms if t.group == "lora")
+
+
+def test_mixed_precision_flag_drives_autocast(mimo: ModelInventory, auto: list[str]) -> None:
+    lora = {"strategy": Strategy.LORA, "targets": auto, "gc": False}
+    key = "policy.act.linear_attention.lora"
+    amp = step(mimo, make_cfg(**lora))  # resolved mixed_precision "bf16" (TRL default)
+    assert amp[key].bytes_low == _lora_group(autocast=True)
+    # the compute dtype no longer implies autocast: only ResolvedConfig.mixed_precision does
+    same = step(mimo, make_cfg(**lora, compute="float32"))
+    assert {n: (a.bytes_low, a.bytes_high) for n, a in same.items()} == {
+        n: (a.bytes_low, a.bytes_high) for n, a in amp.items()
+    }
+    plain = step(mimo, make_cfg(**lora, mixed_precision="none"))
+    assert plain[key].bytes_low == _lora_group(autocast=False)  # fp32 input copies per module
+    assert plain[key].bytes_low != amp[key].bytes_low
+
+
+@pytest.mark.parametrize(("load", "mixed"), [("float16", "bf16"), ("bfloat16", "fp16")])
+def test_autocast_to_another_dtype_is_unknown(
+    mimo: ModelInventory, auto: list[str], load: str, mixed: str
+) -> None:
+    led = step(mimo, make_cfg(targets=auto, gc=False, load=load, mixed_precision=mixed))
+    for name in ("policy.act.linear_attention", "policy.act.full_attention"):
+        layers = led[name]
+        assert layers.bytes_low is None and layers.evidence is Evidence.UNKNOWN
+        assert f"mixed precision {mixed}" in (layers.note or "")
+    assert led["policy.act.final_norm"].bytes_low is None
+    assert led["policy.act.layer_transient.backward"].bytes_high is None
+    assert led["policy.act.final_hidden"].bytes_low == 4096 * H * 2  # load dtype, still known
+
+
+def test_autocast_to_the_load_dtype_or_none_is_computed(
+    mimo: ModelInventory, auto: list[str]
+) -> None:
+    key = "policy.act.linear_attention.linear_attention"
+    bf16 = step(mimo, make_cfg(targets=auto, gc=False))[key].bytes_low
+    fp16 = step(mimo, make_cfg(targets=auto, gc=False, load="float16", mixed_precision="fp16"))
+    assert fp16[key].bytes_low == bf16  # 2-byte formulas: same bytes as bf16/bf16
+    no_amp = step(mimo, make_cfg(targets=auto, gc=False, load="float16", mixed_precision="none"))
+    assert no_amp[key].bytes_low is not None and no_amp[key].bytes_low < bf16  # no bf16 casts
+
+
 def test_gc_keeps_the_bool_mask_through_backward(mimo: ModelInventory, auto: list[str]) -> None:
     led = step(mimo, make_cfg(objective=Objective.DPO, targets=auto), batch=2)
     assert led["policy.act.attn_mask.full_attention"].live_at == ALL

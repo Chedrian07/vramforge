@@ -10,6 +10,7 @@ from arch_helpers import by_name, make_cfg
 from vramforge_estimator.architectures import GenerationTimepoints, get_adapter
 from vramforge_estimator.schemas import (
     AllocationCategory,
+    AllocationSpec,
     Evidence,
     ModelInventory,
     Objective,
@@ -109,6 +110,70 @@ def test_rollout_cache_dtypes(
     conv = led["policy.gen.linear_state.conv"]
     assert conv.dtype == conv_dtype
     assert led["policy.gen.linear_state.recurrent"].dtype == "float32"
+
+
+def _with_conv_state(cfg: ResolvedConfig, dtype: str | None) -> ResolvedConfig:
+    dtypes = cfg.effective_dtypes.model_copy(update={"conv_state": dtype})
+    return cfg.model_copy(update={"effective_dtypes": dtypes})
+
+
+def test_rollout_conv_state_uses_the_resolved_dtype(mimo: ModelInventory, auto: list[str]) -> None:
+    base = make_cfg(objective=Objective.GRPO, targets=auto)  # QLoRA, bf16 load: rule = bf16
+
+    def conv(cfg: ResolvedConfig) -> AllocationSpec:
+        return gen(mimo, cfg, 1, 100, 1)["policy.gen.linear_state.conv"]
+
+    rule = conv(base)
+    assert (rule.dtype, rule.bytes_low) == ("bfloat16", 24 * 8192 * 4 * 2)
+    same = conv(_with_conv_state(base, "bfloat16"))
+    assert (same.dtype, same.bytes_low, same.note) == (rule.dtype, rule.bytes_low, rule.note)
+    fp32 = conv(_with_conv_state(base, "float32"))
+    assert (fp32.dtype, fp32.bytes_low) == ("float32", 2 * rule.bytes_low)
+    assert "해석된 conv_state dtype float32" in (fp32.note or "")
+    unreadable = conv(_with_conv_state(base, "int3"))  # kept on the structural rule, noted
+    assert unreadable.dtype == "bfloat16" and "int3" in (unreadable.note or "")
+
+
+@pytest.mark.parametrize(
+    ("strategy", "load", "mixed", "conv_dtype", "kv_dtype", "prefill_unknown"),
+    [
+        # no autocast: everything in the load dtype (fp32 load: 16-bit formulas do not apply)
+        (Strategy.FULL, "float32", "none", "float32", "float32", "load dtype float32"),
+        (Strategy.FULL, "float32", "fp16", "float16", "float32", "load dtype float32"),  # case A
+        # fp16 autocast over a bf16 load: bf16 cos/sin x fp16 K promotes K/V to fp32
+        (Strategy.FULL, "bfloat16", "fp16", "float16", "float32", "mixed precision fp16"),
+        (Strategy.LORA, "bfloat16", "fp16", "bfloat16", "bfloat16", None),  # PEFT: no autocast
+    ],
+)
+def test_rollout_dtypes_follow_mixed_precision(
+    mimo: ModelInventory,
+    auto: list[str],
+    strategy: Strategy,
+    load: str,
+    mixed: str,
+    conv_dtype: str,
+    kv_dtype: str,
+    prefill_unknown: str | None,
+) -> None:
+    targets = auto if strategy is not Strategy.FULL else None
+    cfg = make_cfg(
+        objective=Objective.GRPO,
+        strategy=strategy,
+        load=load,
+        targets=targets,
+        mixed_precision=mixed,
+    )
+    led = gen(mimo, cfg, 1, 100, 2)
+    assert led["policy.gen.linear_state.conv"].dtype == conv_dtype
+    kv = led["policy.gen.kv_cache.full_attention.decode"]
+    kv_bytes = 4 if kv_dtype == "float32" else 2
+    assert kv.dtype == kv_dtype and kv.bytes_low == 8 * 2 * 4 * 256 * kv_bytes * 101
+    assert ("INFERRED" in (kv.note or "")) is (kv_dtype != load)  # promotion not measured
+    prefill = led["policy.gen.prefill.nograd.layer_working_set"]
+    if prefill_unknown is None:
+        assert prefill.bytes_low is not None
+    else:
+        assert prefill.bytes_low is None and prefill_unknown in (prefill.note or "")
 
 
 def test_recurrent_state_stays_fp32_whatever_the_resolver_says(

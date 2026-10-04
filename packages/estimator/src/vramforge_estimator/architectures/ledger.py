@@ -37,6 +37,8 @@ from .weights import BNB_BLOCKSIZE, quantized_modules
 
 DOC = "methodology-architectures.md"
 SUPPORTED_ACT_DTYPES = frozenset({"bfloat16", "float16"})
+# accelerate native AMP: ResolvedConfig.mixed_precision -> autocast dtype ("none": no autocast).
+AMP_DTYPES = {"bf16": "bfloat16", "fp16": "float16"}
 
 # Transient factors (peak - retained) / S_max, docs/research/architecture-memory.md §4.4:
 # low = smallest CPU/real-dims measurement, high = the research default (or a larger measurement).
@@ -115,10 +117,38 @@ def spec(
     )
 
 
+def amp_dtype(cfg: ResolvedConfig) -> str | None:
+    """Autocast dtype of the run: TRL bf16/fp16 mixed precision = accelerate native AMP, which wraps
+    the model forward in `torch.autocast` (research §2.4). Read from
+    `ResolvedConfig.mixed_precision`; None = no autocast ("none", e.g. fp32 training)."""
+    return AMP_DTYPES.get(cfg.mixed_precision)
+
+
 def autocast_on(cfg: ResolvedConfig) -> bool:
-    """TRL bf16/fp16 mixed precision = accelerate native AMP autocast (research §2.4). The resolved
-    config has no explicit flag; a 16-bit compute dtype is taken as mixed precision."""
-    return canonical_dtype(cfg.effective_dtypes.compute) in SUPPORTED_ACT_DTYPES
+    return amp_dtype(cfg) is not None
+
+
+def dtype_issue(cfg: ResolvedConfig, autocast: bool | None = None) -> str | None:
+    """Why the verified saved-set formulas do not apply to the precision setup (None = they do).
+
+    They are measured for 16-bit loads, without autocast or with autocast to the load dtype. A
+    different autocast dtype casts every Linear/conv input and weight (copies saved per module,
+    as measured for fp32 weights, AM §4.3), which is not modeled."""
+    load = canonical_dtype(cfg.load_dtype)
+    if load not in SUPPORTED_ACT_DTYPES:
+        return (
+            f"load dtype {load}: 검증된 saved-tensor 식은 16-bit(bf16/fp16) 로드 전용입니다 "
+            "(architecture-memory.md §5)."
+        )
+    amp = amp_dtype(cfg)
+    on = amp is not None if autocast is None else autocast
+    if on and amp is not None and amp != load:
+        return (
+            f"mixed precision {cfg.mixed_precision}: autocast dtype {amp}가 load dtype {load}와 "
+            "달라 Linear마다 입력·weight cast 사본이 저장되는 경로는 검증되지 않았습니다 "
+            "(architecture-memory.md §4.3)."
+        )
+    return None
 
 
 def mode_class(trainability: Trainability, mode: act.ActMode) -> str:
@@ -253,10 +283,11 @@ def layer_train(structure: ModelStructure, layer: Layer, tr: Trainability) -> ac
 def act_mode(
     cfg: ResolvedConfig, *, use_cache: bool = False, autocast: bool | None = None
 ) -> act.ActMode | None:
-    """None when the load dtype is not 16-bit: the verified formulas are bf16-only (§5)."""
-    load = canonical_dtype(cfg.load_dtype)
-    if load not in SUPPORTED_ACT_DTYPES:
+    """None when the verified 16-bit formulas do not apply (`dtype_issue`). `autocast` overrides
+    `ResolvedConfig.mixed_precision` for forwards that bypass accelerate's wrapper."""
+    if dtype_issue(cfg, autocast) is not None:
         return None
+    load = canonical_dtype(cfg.load_dtype)
     lora = cfg.lora
     adapter = canonical_dtype(cfg.effective_dtypes.adapter) if lora else load
     return act.ActMode(
@@ -334,13 +365,12 @@ def s_max(sets: Sequence[LayerSet]) -> tuple[int | None, int | None]:
     return _range(max(s.layer_bytes()) if s.known and s.layer_bytes() else None for s in sets)
 
 
-def unknown_reason(structure: ModelStructure, cfg: ResolvedConfig, paths: Paths) -> str:
-    load = canonical_dtype(cfg.load_dtype)
-    if load not in SUPPORTED_ACT_DTYPES:
-        return (
-            f"load dtype {load}: 검증된 saved-tensor 식은 16-bit(bf16/fp16) 로드 전용입니다 "
-            "(architecture-memory.md §5)."
-        )
+def unknown_reason(
+    structure: ModelStructure, cfg: ResolvedConfig, paths: Paths, autocast: bool | None = None
+) -> str:
+    issue = dtype_issue(cfg, autocast)
+    if issue is not None:
+        return issue
     bad = [lt for lt, p in paths.attention.items() if p is None]
     if bad and attention_dropout(structure) > 0:
         return (
@@ -842,7 +872,7 @@ def _train_cache_states(
     if not n_lin:
         return []
     d = structure.dims
-    conv_b = dtype_bytes(conv_state_dtype(cfg))
+    conv_b = dtype_bytes(forward_dtype(cfg, autocast_on(cfg)))  # accelerate-wrapped forward
     v = (
         n_lin
         * batch
@@ -930,7 +960,8 @@ def no_grad_forward(
             )
         )
     smin, smax = s_max(sets)
-    reason = None if all(s.known for s in sets) else unknown_reason(structure, cfg, paths)
+    known = all(s.known for s in sets)
+    reason = None if known else unknown_reason(structure, cfg, paths, autocast)
     cls = mode_class(tr, mode) if mode else "full"
     out.append(
         _factor(
@@ -990,12 +1021,49 @@ def _dtype_note(resolved: str, used: str, field_name: str) -> str:
     return f" (해석된 {field_name} dtype {resolved} 대신 구조 규칙의 {used}를 사용)"
 
 
-def conv_state_dtype(cfg: ResolvedConfig) -> str:
-    """Conv state follows the forward dtype: autocast (bf16) only for a non-PEFT policy, the load
-    dtype under PEFT (PeftModel.generate bypasses the autocast wrapper) — trl-grpo R3."""
-    if cfg.strategy is Strategy.FULL and autocast_on(cfg):
-        return canonical_dtype(cfg.effective_dtypes.compute)
-    return canonical_dtype(cfg.load_dtype)
+def forward_dtype(cfg: ResolvedConfig, autocast: bool) -> str:
+    """Output dtype of the Linear modules in a forward: the autocast dtype under mixed precision,
+    else the load dtype."""
+    amp = amp_dtype(cfg)
+    return amp if autocast and amp is not None else canonical_dtype(cfg.load_dtype)
+
+
+def rollout_autocast(cfg: ResolvedConfig) -> bool:
+    """generate() of a non-PEFT policy runs the accelerate-wrapped forward (autocast); PEFT does not
+    (PeftModel.generate bypasses the wrapper) — trl-grpo R3."""
+    return cfg.strategy is Strategy.FULL and autocast_on(cfg)
+
+
+def kv_cache_dtype(cfg: ResolvedConfig) -> tuple[str, str]:
+    """(dtype, note) of the rollout K/V cache. K is the RoPE product of the k_proj output (autocast
+    dtype under autocast) with cos/sin in the load dtype, so type promotion brings it back to the
+    load dtype for bf16/bf16 and fp32-load runs, and V follows K through the cache's lazy init
+    (trl-grpo R3, verified). A 16-bit autocast dtype other than a 16-bit load dtype promotes both
+    to float32 (torch type promotion, not measured)."""
+    load = canonical_dtype(cfg.load_dtype)
+    amp = amp_dtype(cfg)
+    if not rollout_autocast(cfg) or amp in (None, load) or load == "float32":
+        return load, ""
+    return "float32", (
+        f" autocast {amp} K × load dtype {load} cos/sin의 type promotion으로 K/V가 float32가 "
+        "됩니다(INFERRED, 미측정)."
+    )
+
+
+def conv_state_dtype(cfg: ResolvedConfig) -> tuple[str, str]:
+    """(dtype, note) of the rollout conv state: the resolved `effective_dtypes.conv_state` when set,
+    else the forward dtype of generate() — autocast only for a non-PEFT policy (trl-grpo R3)."""
+    rule = forward_dtype(cfg, rollout_autocast(cfg))
+    resolved = cfg.effective_dtypes.conv_state
+    if not resolved:
+        return rule, ""
+    try:
+        dtype = canonical_dtype(resolved)
+    except ValueError:
+        return rule, f" (해석된 conv_state dtype {resolved}를 알 수 없어 구조 규칙의 {rule}를 사용)"
+    if dtype != rule:
+        return dtype, f" (해석된 conv_state dtype {dtype}를 사용, 구조 규칙으로는 {rule})"
+    return dtype, ""
 
 
 def generation(
@@ -1011,14 +1079,14 @@ def generation(
     """DynamicCache of `num_sequences` live sequences (research §7, E; trl-grpo R3)."""
     c, plen = num_sequences, prompt_len
     d = structure.dims
-    load = canonical_dtype(cfg.load_dtype)
-    kv_b = dtype_bytes(load)  # K/V follow the load dtype (RoPE promotion, R3)
+    kv_dtype, kv_inferred = kv_cache_dtype(cfg)
+    kv_b = dtype_bytes(kv_dtype)  # the load dtype through RoPE type promotion (R3)
     p = f"{prefix}.gen"
     l_dec = plen + max(new_tokens, 1) - 1  # last token is never fed back: L = P + new - 1
     out: list[AllocationSpec] = []
     per_pos = _ceil(2 * d.kv_heads * d.head_dim * kv_b)  # K+V bytes per layer per position
     dec_positions: dict[str, int] = {}  # attention layer type -> cached positions at decode
-    kv_note = _dtype_note(cfg.effective_dtypes.kv_cache, load, "kv_cache")
+    kv_note = kv_inferred + _dtype_note(cfg.effective_dtypes.kv_cache, kv_dtype, "kv_cache")
     window = d.sliding_window
     for lt in (FULL_ATTENTION, SLIDING_ATTENTION):
         n_layers = structure.count(lt)
@@ -1042,7 +1110,7 @@ def generation(
                     ref="gen-kv",
                     shape="2 × layers × [C,nkv,L,d]",
                     dims={"layers": n_layers, "C": c, "L": pos, "nkv": d.kv_heads, "d": d.head_dim},
-                    dtype=load,
+                    dtype=kv_dtype,
                     count=n_layers,
                     note=f"{lt} layer {n_layers}개만 K/V를 가집니다 (L={pos}).{kv_note}",
                 )
@@ -1050,7 +1118,7 @@ def generation(
         dec_positions[lt] = dec_pos
     n_lin = structure.count(LINEAR_ATTENTION)
     if n_lin:
-        conv_dtype = conv_state_dtype(cfg)
+        conv_dtype, conv_note = conv_state_dtype(cfg)
         conv = n_lin * c * _ceil(d.conv_dim * d.conv_kernel * dtype_bytes(conv_dtype))
         rec = n_lin * c * 4 * d.lin_value_heads * d.lin_key_dim * d.lin_value_dim
         both = [tps.prefill, tps.decode]
@@ -1066,7 +1134,7 @@ def generation(
                 dims={"layers": n_lin, "C": c, "conv_dim": d.conv_dim, "K": d.conv_kernel},
                 dtype=conv_dtype,
                 count=n_lin,
-                note="linear_attention layer의 conv state (forward dtype, L과 무관).",
+                note="linear_attention layer의 conv state (forward dtype, L과 무관)." + conv_note,
             )
         )
         out.append(
@@ -1088,7 +1156,7 @@ def generation(
     if new_tokens >= 2:  # max_new_tokens = 1 ends after the prefill: no decode forward
         padded = padding_possible(cfg, SequenceShape(batch=c, seq_len=plen))
         out.append(_decode_step(structure, cfg, tr, c, dec_positions, kv_b, padded, tps.decode, p))
-    autocast = cfg.strategy is Strategy.FULL and autocast_on(cfg)
+    autocast = rollout_autocast(cfg)
     prefill = no_grad_forward(
         structure,
         cfg,
