@@ -55,16 +55,10 @@ export type Branch = Schemas["Branch"];
 export type DatasetFormat = Schemas["DatasetFormat"];
 export type PreservationCheckName = Schemas["PreservationCheckName"];
 
-export type ExportFormat = "json" | "yaml" | "md" | "trainer-config";
-
-/**
- * Body of POST /analyses/{id}/scenarios/export: the full request of the recomputed scenario and
- * the file format. Mirrors the API contract by hand until the route is in docs/api/openapi.json.
- */
-export interface ScenarioExportRequest {
-  request: AnalysisRequest;
-  format: ExportFormat;
-}
+/** Body of POST /analyses/{id}/scenarios/export: the scenario's full request and the format. */
+export type ScenarioExportRequest = Schemas["ScenarioExportRequest"];
+export type ExportFormat = ScenarioExportRequest["format"];
+export type EventType = Schemas["EventType"];
 
 /** Job states after which no further SSE events arrive (schemas/common.py TERMINAL_JOB_STATUSES). */
 export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set<JobStatus>([

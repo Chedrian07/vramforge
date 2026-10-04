@@ -1,12 +1,12 @@
-// SSE payload contract. FastAPI's OpenAPI output leaves text/event-stream untyped, so this Zod
-// schema mirrors packages/estimator/src/vramforge_estimator/schemas/events.py (`AnalysisEvent`)
-// and validates every received event (docs/research/stack-compat.md W8 option c). The parts that
-// are in the generated contract (JobProgress, ShardProgress, Issue) are checked against it at
-// compile time below; AnalysisEvent and EventType are checked as soon as the OpenAPI document
-// lists them in components (`pnpm gen:api`).
+// SSE payload contract. The types come from the generated OpenAPI schema (AnalysisEvent,
+// EventType, JobProgress; `pnpm gen:api`); every received `data:` payload is still validated at
+// runtime with the Zod mirror below (docs/research/stack-compat.md W8 option c), whose keys and
+// output type are checked against the generated ones at compile time.
 import { z } from "zod";
 
-import type { JobStatus, Schemas, Severity } from "./types";
+import type { EventType, JobStatus, Schemas, Severity } from "./types";
+
+export type { EventType } from "./types";
 
 export const EVENT_TYPES = [
   "progress",
@@ -16,8 +16,7 @@ export const EVENT_TYPES = [
   "completed",
   "failed",
   "cancelled",
-] as const;
-export type EventType = (typeof EVENT_TYPES)[number];
+] as const satisfies readonly EventType[];
 
 /** schemas/events.py TERMINAL_EVENT_TYPES */
 export const TERMINAL_EVENT_TYPES: ReadonlySet<EventType> = new Set<EventType>([
@@ -85,34 +84,35 @@ export const analysisEventSchema = z.object({
   timestamp: z.string(),
 });
 
-export type AnalysisEvent = z.infer<typeof analysisEventSchema>;
+/** The issue of an event: the generated Issue, but `code` stays a plain string so that an error
+ * code newer than this build still shows its Korean message instead of dropping the event. */
 export type EventIssue = z.infer<typeof eventIssueSchema>;
-/** The generated contract type: the validated payload is assignable to it (checked below). */
 export type EventProgress = Schemas["JobProgress"];
+/** The generated AnalysisEvent with the forward-compatible issue. */
+export type AnalysisEvent = Omit<Schemas["AnalysisEvent"], "issue"> & { issue?: EventIssue | null };
 
 // ---------------------------------------------------------------- contract parity (compile time)
 
 type KeyParity<A, B> = [Exclude<keyof A, keyof B>, Exclude<keyof B, keyof A>] extends [never, never]
   ? true
   : { onlyInContract: Exclude<keyof A, keyof B>; onlyInMirror: Exclude<keyof B, keyof A> };
-/** A component of the generated schema, or never while the OpenAPI document lacks it. */
-type Generated<K extends string> = Schemas extends Record<K, infer T> ? T : never;
-type ParityOnceGenerated<T, Mirror> = [T] extends [never] ? true : KeyParity<T, Mirror>;
+type Mirror<T extends z.ZodType> = z.infer<T>;
 
 export const eventContractParity: {
-  progress: KeyParity<Schemas["JobProgress"], z.infer<typeof jobProgressSchema>>;
-  shard: KeyParity<Schemas["ShardProgress"], NonNullable<z.infer<typeof jobProgressSchema>["shard_progress"]>>;
-  // Same keys as Issue; `code` stays a plain string so an unknown new code never drops an event.
+  event: KeyParity<Schemas["AnalysisEvent"], Mirror<typeof analysisEventSchema>>;
+  progress: KeyParity<Schemas["JobProgress"], Mirror<typeof jobProgressSchema>>;
+  shard: KeyParity<Schemas["ShardProgress"], NonNullable<Mirror<typeof jobProgressSchema>["shard_progress"]>>;
   issue: KeyParity<Schemas["Issue"], EventIssue>;
-  event: ParityOnceGenerated<Generated<"AnalysisEvent">, AnalysisEvent>;
-} = { progress: true, shard: true, issue: true, event: true };
+} = { event: true, progress: true, shard: true, issue: true };
 
-// Validated progress is usable wherever the generated JobProgress type is expected.
-const progressAssignable: EventProgress = null as unknown as z.infer<typeof jobProgressSchema>;
+// What the mirror validates is a contract event (and its progress a contract JobProgress).
+const eventAssignable: AnalysisEvent = null as unknown as Mirror<typeof analysisEventSchema>;
+const progressAssignable: EventProgress = null as unknown as Mirror<typeof jobProgressSchema>;
+void eventAssignable;
 void progressAssignable;
 
-// Every event type of the contract is listed in EVENT_TYPES (once EventType is generated).
-const eventTypesComplete: [Exclude<Generated<"EventType">, EventType>] extends [never] ? true : never = true;
+// Every event type of the contract is listed in EVENT_TYPES.
+const eventTypesComplete: [Exclude<EventType, (typeof EVENT_TYPES)[number]>] extends [never] ? true : never = true;
 void eventTypesComplete;
 
 /** Parses one SSE `data:` payload; malformed or unknown-shaped events are dropped. */

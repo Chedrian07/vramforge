@@ -282,8 +282,7 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
       ),
     exportScenario: async (analysisId, body, signal) => {
       await ensureOwner();
-      // Not in the generated paths yet: built next to the scenarios route it belongs to.
-      const url = `${apiPath("/api/v1/analyses/{analysis_id}/scenarios", { analysis_id: analysisId })}/export`;
+      const url = apiPath("/api/v1/analyses/{analysis_id}/scenarios/export", { analysis_id: analysisId });
       const response = await fetchOk("POST", url, { json: body, signal, headers: { Accept: "*/*" } });
       let blob: Blob;
       try {
