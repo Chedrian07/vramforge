@@ -52,11 +52,10 @@ class _Step:
         except NotImplementedError:
             self.issues.append(
                 make_issue(
-                    ErrorCode.INTERNAL_ERROR,
+                    ErrorCode.NOT_IMPLEMENTED,
                     "이 확인 단계는 현재 빌드에서 아직 구현되지 않았습니다.",
                     stage=self.stage,
                     component=component,
-                    reason="not_implemented",
                 )
             )
         except Exception:

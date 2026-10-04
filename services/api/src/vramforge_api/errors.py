@@ -1,5 +1,10 @@
 """Error responses: every failure is an `ErrorResponse { error: Issue }` (docs/architecture.md §6).
 
+That includes what FastAPI/Starlette would otherwise answer in their own formats: unknown routes
+(404), wrong methods (405, `Allow` kept), request validation (422, without echoing the submitted
+values), malformed JSON, `HTTPException`s (their `detail` is never echoed), responses that fail
+their declared model (500) and `NotImplementedError` (501 NOT_IMPLEMENTED).
+
 User messages are Korean and never contain stack traces, tokens or absolute paths; details are
 logged server-side only (with redaction, see `logging_setup`).
 """
@@ -10,7 +15,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -34,6 +39,7 @@ STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.GPU_WORKER_UNAVAILABLE: 503,
     ErrorCode.REANALYSIS_REQUIRED: 409,
     ErrorCode.INTERNAL_ERROR: 500,
+    ErrorCode.NOT_IMPLEMENTED: 501,
     ErrorCode.JOB_TIMEOUT: 504,
 }
 
@@ -141,7 +147,9 @@ async def _validation_handler(_request: Request, exc: Exception) -> JSONResponse
     fields = _validation_fields(exc)
     where = ", ".join(f["loc"] for f in fields[:5])
     message = "요청 형식이 올바르지 않습니다."
-    if where:
+    if any(f["type"] == "json_invalid" for f in fields):
+        message = "요청 본문이 올바른 JSON이 아닙니다."
+    elif where:
         message = f"요청 형식이 올바르지 않습니다: {where}"
     issue = Issue(
         code=ErrorCode.INVALID_REQUEST,
@@ -154,6 +162,7 @@ async def _validation_handler(_request: Request, exc: Exception) -> JSONResponse
 
 
 _HTTP_CODES: dict[int, tuple[ErrorCode, str]] = {
+    400: (ErrorCode.INVALID_REQUEST, "요청 형식이 올바르지 않습니다."),
     401: (ErrorCode.UNAUTHORIZED, "접근 토큰이 필요합니다."),
     403: (ErrorCode.FORBIDDEN, "이 요청을 수행할 권한이 없습니다."),
     404: (ErrorCode.NOT_FOUND, "요청한 항목을 찾을 수 없습니다."),
@@ -178,12 +187,31 @@ async def _http_exception_handler(_request: Request, exc: Exception) -> JSONResp
 async def _not_implemented_handler(request: Request, exc: Exception) -> JSONResponse:
     log.warning("not implemented: %s %s", request.method, request.url.path)
     issue = make_issue(
-        ErrorCode.INTERNAL_ERROR,
+        ErrorCode.NOT_IMPLEMENTED,
         "이 기능은 현재 빌드에서 아직 구현되지 않았습니다.",
         stage=Stage.API,
-        reason="not_implemented",
     )
     return error_response(501, issue)
+
+
+async def _response_validation_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A response that does not match its declared model is a server bug: answer 500 like any
+    other, and log where it failed without the offending values (they may hold user data)."""
+    assert isinstance(exc, ResponseValidationError)
+    where = sorted({".".join(str(p) for p in err.get("loc", ())) for err in exc.errors()[:20]})
+    log.error(
+        "response of %s %s does not match its model at %s",
+        request.method,
+        request.url.path,
+        ", ".join(where),
+    )
+    issue = make_issue(
+        ErrorCode.INTERNAL_ERROR,
+        "내부 오류가 발생했습니다. 잠시 후 다시 시도하세요.",
+        stage=Stage.API,
+        retryable=True,
+    )
+    return error_response(500, issue)
 
 
 async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -202,6 +230,7 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(BodyTooLarge, _body_too_large_handler)
     app.add_exception_handler(EstimatorError, _estimator_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
+    app.add_exception_handler(ResponseValidationError, _response_validation_handler)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(NotImplementedError, _not_implemented_handler)
     app.add_exception_handler(Exception, _unhandled_handler)

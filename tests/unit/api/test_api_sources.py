@@ -188,7 +188,7 @@ def test_unimplemented_backend_profiles_is_reported_honestly(
     monkeypatch.setattr(compatibility, "backend_profiles", stub)
     resp = client.get("/api/v1/backend-profiles")
     assert resp.status_code == 501
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert resp.json()["error"]["code"] == "NOT_IMPLEMENTED"
 
 
 def _manifest(kind: str) -> SourceManifest:
@@ -248,7 +248,7 @@ def test_inspect_returns_partial_info_and_issues(client: TestClient, monkeypatch
     assert body["model"]["manifest"]["repo_id"] == "org/model"
     assert body["model"]["summary"] is None
     codes = {i["code"] for i in body["model"]["issues"]}
-    assert codes == {"MODEL_METADATA_UNAVAILABLE", "INTERNAL_ERROR"}
+    assert codes == {"MODEL_METADATA_UNAVAILABLE", "NOT_IMPLEMENTED"}
     assert body["dataset"]["manifest"]["repo_id"] == "org/dataset"
     assert body["dataset"]["columns"][0]["name"] == "question"
 
