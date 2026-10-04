@@ -396,6 +396,7 @@ C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
 | transient 계수 | CPU 측정, CUDA allocator 미포함 | assumption 범위 |
 | device-side dtype 변환 | INFERRED | load transient high |
 | dropout mask dtype(CUDA bool) | INFERRED | analytic + note |
+| decode step 임시값(`gen.decode.step_transient`) | repeat_kv 규칙 VERIFIED(AM §3.1), torch recurrent step CPU 측정, CUDA SDPA kernel 작업 공간 미측정 | assumption 범위 |
 | vision tower 미실행 | VERIFIED (텍스트 전용 데이터) | 가중치만, `receives_grad=False` |
 
 ## 10. 다른 모듈과의 계약 메모
@@ -403,3 +404,6 @@ C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
 - `TrainableGroup.kind`가 `lora`/`modules_to_save`면 새 저장소(가중치 allocation 필요), `full`/`bias`면 base 가중치(gradient·optimizer만). `receives_grad=False` 그룹은 gradient·state를 만들지 않는다.
 - `effective_dtypes.adapter`(LoRA dtype)는 resolver가 정한 값을 쓴다. generation cache dtype은 위 구조 규칙을 쓴다.
 - trainer adapter는 `act.final_hidden` alias group, `SequenceShape.batch`(DPO는 2 × pairs), 생성 timepoint를 넘긴다.
+- trainer config의 `LoraConfig.target_modules`는 `architectures.trainable.peft_target_spec(request target)` 값이어야 adapter가 센 모듈과 같다(`all-linear`·정규식 1개를 리스트로 감싸면 PEFT가 아무것도 찾지 못한다, §5).
+- `quantization.skip_module_patterns`는 그대로 `llm_int8_skip_modules`가 된다는 전제로 계산한다(비어 있으면 transformers 기본 skip, §3.1).
+- `DecoderAdapter.loading_budget_bytes()`(= `S_load`)는 단일 GPU·bnb 4-bit·`device_map="auto"`의 로딩 조건 `free × 0.81 ≥ S_load`에 쓰는 값이다(§4). 적합 판정은 memory 모듈 몫이다.
