@@ -8,6 +8,12 @@ objective (`dataset_mapping`). It raises `EstimatorError` only when there is not
 choose to analyze (no loadable layout, or the config that would be analyzed is unsupported); every
 other problem is an issue of the returned inspection.
 
+The requested config/split are the request fields, or, when a field is empty, the
+`/viewer/<config>/<split>` path of a dataset viewer URL (`requested_selection`). A viewer value is
+a user choice like a field: it is never auto-selected, a missing one is DATASET_CONFIG_REQUIRED /
+DATASET_SPLIT_REQUIRED, and the applied choice is recorded as a manifest note. A URL value that
+contradicts a field is rejected while the reference is normalized (CONFLICTING_OPTIONS).
+
 `open_rows` returns a `DatasetRowStream` over every record of one split. Failure signal and stop
 contract (see `dataset_stream`): undecodable records arrive as `FailedSourceRow` (a `SourceRow`
 with an empty `row`, `error_code`, `reason`, Korean `message` and its line/element position;
@@ -22,7 +28,7 @@ the package stays cheap and works without the `analysis` extra.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import (
@@ -36,6 +42,7 @@ from vramforge_estimator.schemas import (
     Stage,
 )
 from vramforge_estimator.sources import ResolvedSource, SourceAccess
+from vramforge_estimator.sources.references import normalize_dataset_reference
 
 from .base import RowStream
 
@@ -45,7 +52,29 @@ if TYPE_CHECKING:
     from .dataset_stream import DatasetRowStream
     from .readers import ReaderLimits
 
-__all__ = ["DatasetInspectionDetails", "inspect_dataset", "inspect_dataset_details", "open_rows"]
+__all__ = [
+    "DatasetInspectionDetails",
+    "RequestedSelection",
+    "SelectionOrigin",
+    "inspect_dataset",
+    "inspect_dataset_details",
+    "open_rows",
+    "requested_selection",
+]
+
+# Where a selected config/split came from: a request field, the dataset viewer URL path, or the
+# inspector's unambiguous choice (the only config, the "train" split).
+SelectionOrigin = Literal["request", "viewer_url", "auto"]
+
+
+@dataclass(frozen=True)
+class RequestedSelection:
+    """The config/split a request asks for (see `requested_selection`); None = not asked."""
+
+    config: str | None = None
+    split: str | None = None
+    config_origin: SelectionOrigin | None = None  # "request" or "viewer_url" when `config` is set
+    split_origin: SelectionOrigin | None = None
 
 
 @dataclass
@@ -56,6 +85,21 @@ class DatasetInspectionDetails:
     layout: DatasetLayout | None = None
     preview: Preview | None = None
     file_formats: dict[str, str] = field(default_factory=dict)
+    # How `inspection.selected_config` / `selected_split` were chosen (None = not selected).
+    config_origin: SelectionOrigin | None = None
+    split_origin: SelectionOrigin | None = None
+
+
+def requested_selection(ref: DatasetSourceRef) -> RequestedSelection:
+    """Request fields first; an empty field takes the viewer URL path value (`/viewer/<c>/<s>`).
+
+    Pure (no I/O). Raises `EstimatorError` for references the resolver rejects as well, e.g.
+    CONFLICTING_OPTIONS when the URL path and a field name different configs or splits.
+    """
+    normalized = normalize_dataset_reference(ref)
+    config, config_origin = _origin(_clean(ref.config), normalized.config_hint)
+    split, split_origin = _origin(_clean(ref.split), normalized.split_hint)
+    return RequestedSelection(config, split, config_origin, split_origin)
 
 
 def inspect_dataset(
@@ -90,15 +134,20 @@ def inspect_dataset_details(
     from .readers import ReaderLimits
 
     limits = limits or ReaderLimits()
+    wanted = requested_selection(ref)
     files = SourceFiles(source, access, limits)
     layout = resolve_layout(files)  # EstimatorError: no loadable layout at all
     issues: list[Issue] = []
     configs = [config.name for config in layout.configs]
-    config, config_issue = _select_config(layout, ref.config)
+    config, config_issue = _select_config(layout, wanted.config, wanted.config_origin)
     if config_issue is not None:
         issues.append(config_issue)
+    config_origin: SelectionOrigin | None = None
+    if config is not None:
+        config_origin = wanted.config_origin or "auto"
     splits: list[DatasetSplitInfo] = []
     selected_split: str | None = None
+    split_origin: SelectionOrigin | None = None
     auto_selected = False
     preview = None
     if config is not None and config.unsupported is not None:
@@ -114,10 +163,14 @@ def inspect_dataset_details(
             )
             for split in config.splits
         ]
-        selected_split, auto_selected, split_issue = _select_split(config, ref.split)
+        selected_split, auto_selected, split_issue = _select_split(
+            config, wanted.split, wanted.split_origin
+        )
         if split_issue is not None:
             issues.append(split_issue)
-        eval_issue = _check_eval_split(config, ref.eval_split, selected_split)
+        if selected_split is not None:
+            split_origin = "auto" if auto_selected else wanted.split_origin
+        eval_issue = _check_eval_split(config, _clean(ref.eval_split), selected_split)
         if eval_issue is not None:
             issues.append(eval_issue)
         # Columns come from the selected split; while the split is still undecided the first
@@ -134,14 +187,19 @@ def inspect_dataset_details(
         mapping = analyze_mapping(columns, objective, ref.mapping)
         issues.extend(mapping.issues)
     file_formats = dict(preview.file_formats) if preview is not None else {}
-    notes = [*layout.notes, *_format_notes(file_formats)]
+    selected_config = config.name if config is not None else None
+    notes = [
+        *layout.notes,
+        *_viewer_notes(selected_config, config_origin, selected_split, split_origin),
+        *_format_notes(file_formats),
+    ]
     manifest = source.manifest
     if notes:
         manifest = manifest.model_copy(update={"notes": [*manifest.notes, *notes]})
     inspection = DatasetInspection(
         manifest=manifest,
         configs=configs,
-        selected_config=config.name if config is not None else None,
+        selected_config=selected_config,
         splits=splits,
         selected_split=selected_split,
         split_auto_selected=auto_selected,
@@ -152,7 +210,14 @@ def inspect_dataset_details(
         mapping_ambiguous=mapping.ambiguous if mapping is not None else False,
         issues=issues,
     )
-    return DatasetInspectionDetails(inspection, layout, preview, file_formats)
+    return DatasetInspectionDetails(
+        inspection,
+        layout,
+        preview,
+        file_formats,
+        config_origin=config_origin,
+        split_origin=split_origin,
+    )
 
 
 def open_rows(
@@ -209,14 +274,58 @@ def open_dataset_stream(
 # ---------------------------------------------------------------- selection
 
 
+def _clean(value: str | None) -> str | None:
+    """A blank field is no choice (like the reference normalizer's optional fields)."""
+    if value is None:
+        return None
+    return value.strip() or None
+
+
+def _origin(explicit: str | None, hint: str | None) -> tuple[str | None, SelectionOrigin | None]:
+    if explicit is not None:
+        return explicit, "request"
+    if hint is not None:
+        return hint, "viewer_url"
+    return None, None
+
+
+def _viewer_notes(
+    config: str | None,
+    config_origin: SelectionOrigin | None,
+    split: str | None,
+    split_origin: SelectionOrigin | None,
+) -> list[str]:
+    """Record a selection taken from the viewer URL path (applied choices only)."""
+    choices = (("config", config, config_origin), ("split", split, split_origin))
+    chosen = [
+        f"{kind} '{name}'"
+        for kind, name, origin in choices
+        if name is not None and origin == "viewer_url"
+    ]
+    if not chosen:
+        return []
+    return [f"데이터셋 viewer 주소에 지정된 {', '.join(chosen)}을(를) 분석 대상으로 선택했습니다."]
+
+
 def _select_config(
-    layout: DatasetLayout, requested: str | None
+    layout: DatasetLayout, requested: str | None, origin: SelectionOrigin | None = None
 ) -> tuple[ConfigLayout | None, Issue | None]:
     names = [config.name for config in layout.configs]
     if requested is not None:
         config = layout.config(requested)
         if config is not None:
             return config, None
+        if origin == "viewer_url":
+            return None, _required(
+                ErrorCode.DATASET_CONFIG_REQUIRED,
+                f"viewer 주소의 설정 '{requested}'이(가) 데이터셋에 없습니다. "
+                "설정을 선택해 주세요.",
+                field="dataset.config",
+                options=names,
+                suggested=layout.default_config,
+                requested=requested,
+                requested_from="viewer_url",
+            )
         return None, _required(
             ErrorCode.DATASET_CONFIG_REQUIRED,
             f"요청한 설정 '{requested}'이(가) 없습니다. 설정을 선택해 주세요.",
@@ -240,12 +349,26 @@ def _config_required(layout: DatasetLayout, requested: str | None) -> Issue:
 
 
 def _select_split(
-    config: ConfigLayout, requested: str | None
+    config: ConfigLayout, requested: str | None, origin: SelectionOrigin | None = None
 ) -> tuple[str | None, bool, Issue | None]:
     names = [split.name for split in config.splits]
     if requested is not None:
         if requested in names:
             return requested, False, None
+        if origin == "viewer_url":
+            return (
+                None,
+                False,
+                _required(
+                    ErrorCode.DATASET_SPLIT_REQUIRED,
+                    f"viewer 주소의 split '{requested}'이(가) 설정 '{config.name}'에 없습니다. "
+                    "분석할 split을 선택해 주세요.",
+                    field="dataset.split",
+                    options=names,
+                    requested=requested,
+                    requested_from="viewer_url",
+                ),
+            )
         return (
             None,
             False,

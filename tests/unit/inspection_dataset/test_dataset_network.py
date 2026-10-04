@@ -98,6 +98,22 @@ def test_example_dataset_inspection(
     assert result.issues == []
 
 
+def test_example_dataset_viewer_url_selects_default_train(
+    source: ResolvedSource, access: SourceAccess
+) -> None:
+    viewer = DatasetSourceRef(
+        reference=f"https://huggingface.co/datasets/{REPO}/viewer/default/train?row=0",
+        revision=REVISION,
+    )
+    details = inspect_dataset_details(source, viewer, access, Objective.DPO)
+    result = details.inspection
+    assert (result.selected_config, result.selected_split) == ("default", "train")
+    assert not result.split_auto_selected
+    assert (details.config_origin, details.split_origin) == ("viewer_url", "viewer_url")
+    assert result.suggested_mapping == EXPECTED_MAPPING
+    assert result.issues == []
+
+
 def test_example_dataset_is_detected_as_json_lines(
     source: ResolvedSource, access: SourceAccess
 ) -> None:
