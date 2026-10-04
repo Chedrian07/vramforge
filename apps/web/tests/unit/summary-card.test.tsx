@@ -150,6 +150,16 @@ describe("SummaryCard", () => {
     expect(screen.getByText("reward footprint 미포함")).toBeInTheDocument();
   });
 
+  it("marks the per-budget fit of a conditional GRPO result as conditional", () => {
+    const withGpu: AnalysisResult = {
+      ...grpoResult,
+      requested_config: { ...grpoResult.requested_config, hardware: dpoResult.requested_config.hardware },
+    };
+    renderCard({ run: terminalRun({ ...completedGrpoStatus, result: withGpu }), view: view(withGpu) });
+    expect(within(screen.getByRole("table", { name: /completion budget별/ })).getByRole("columnheader", { name: "GPU 적합" })).toBeInTheDocument();
+    expect(screen.getByText(/budget별 GPU 적합 여부는 위 표에 있습니다\. 범위에서 제외한 구성 요소\(reward 등\)가 빠진 조건부 판정입니다\./)).toBeInTheDocument();
+  });
+
   it("renders 산정 불가 with the reason when the peak is unknown", () => {
     renderCard({ run: terminalRun(unknownPeakStatus), view: view(unknownPeakStatus.result!) });
     expect(screen.getAllByText("산정 불가").length).toBeGreaterThan(0);

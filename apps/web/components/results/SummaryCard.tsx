@@ -334,7 +334,15 @@ function GaugeArea({
     return <p className="text-[13px] text-muted">하드웨어를 선택하지 않아 용량만 표시합니다. 적합 판정은 하지 않습니다.</p>;
   }
   if (summary.kind === "budgets") {
-    return <p className="text-[13px] text-muted">budget별 GPU 적합 여부는 위 표에 있습니다.</p>;
+    // The per-budget badges carry no message; say here what the engine's message says for a
+    // conditional result (e.g. GRPO without a reward): the verdict leaves the excluded parts out.
+    const conditional = result.status?.training_readiness === "conditional";
+    return (
+      <p className="text-[13px] text-muted">
+        budget별 GPU 적합 여부는 위 표에 있습니다.
+        {conditional ? " 범위에서 제외한 구성 요소(reward 등)가 빠진 조건부 판정입니다." : ""}
+      </p>
+    );
   }
   if (!summary.fit) return null;
   return <UsageGauge fit={summary.fit} stale={stale} />;
