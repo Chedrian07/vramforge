@@ -118,12 +118,14 @@ def iter_parquet_file(
             raise ShardBroken("parquet_unreadable") from exc
         if schema.features is None:
             # datasets Parquet._split_generators: features from the split's first file schema.
-            features = options.get("features") or Features.from_arrow_schema(parquet.schema_arrow)
-            if columns is not None:
-                features = Features(
-                    {name: ftype for name, ftype in features.items() if name in columns}
-                )
-            schema.features = features
+            schema.features = options.get("features") or Features.from_arrow_schema(
+                parquet.schema_arrow
+            )
+        if columns is not None and set(columns) != set(schema.features):
+            # also applied to README features, like datasets
+            schema.features = Features(
+                {name: ftype for name, ftype in schema.features.items() if name in columns}
+            )
         target = schema.features.arrow_schema
         metadata = parquet.metadata
         for group in range(parquet.num_row_groups):

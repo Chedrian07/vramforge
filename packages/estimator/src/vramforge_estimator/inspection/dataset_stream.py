@@ -108,7 +108,7 @@ class DatasetRowStream:
         if self._config.unsupported is not None:
             self.issues.append(self._config.unsupported)
             return
-        schema = SchemaState()
+        schema = SchemaState.declared(self._config.features)
         failed_sample: list[dict[str, object]] = []
         stopped = False
         for data_file in self._split.files:

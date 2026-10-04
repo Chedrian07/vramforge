@@ -329,3 +329,33 @@ def test_type_conflict_stops_the_stream_with_its_position(tmp_path: Path) -> Non
     assert issue.code == ErrorCode.SCAN_PARTIAL
     assert (issue.details["reason"], issue.details["line"]) == ("schema_mismatch", 5)
     assert issue.details["shard_id"] == path.name
+
+
+README_FEATURES = (
+    "---\ndataset_info:\n  features:\n  - name: id\n    dtype: string\n"
+    "  - name: prompt\n    dtype: string\n  - name: extra\n    dtype: string\n"
+    "  splits:\n  - name: train\n    num_examples: 2\n---\n"
+)
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".csv", ".parquet"])
+def test_readme_features_cast_rows_like_load_dataset(
+    tmp_path: Path, suffix: str, datasets_rows: Oracle
+) -> None:
+    # datasets builds the builder with the README info: `id` becomes a string, `extra` is added.
+    root = tmp_path / "ds"
+    root.mkdir()
+    rows = [{"id": 1, "prompt": "첫째"}, {"id": 2, "prompt": "second"}]
+    path = root / f"train{suffix}"
+    if suffix == ".jsonl":
+        write_jsonl(path, rows)
+    elif suffix == ".csv":
+        path.write_text("id,prompt\n1,첫째\n2,second\n", encoding="utf-8")
+    else:
+        pq.write_table(pa.Table.from_pylist(rows), path)
+    (root / "README.md").write_text(README_FEATURES, encoding="utf-8")
+    stream = stream_for(local_source(root))
+    got = [r.row for r in stream]
+    assert got == datasets_rows(root)["train"]
+    assert got[0] == {"id": "1", "prompt": "첫째", "extra": None}
+    assert stream.complete

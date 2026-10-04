@@ -41,7 +41,7 @@ from .dataset_files import DataFile, SourceFiles, SourceKind
 from .readers import SUPPORTED_MODULES
 
 if TYPE_CHECKING:
-    from datasets import DownloadConfig
+    from datasets import DownloadConfig, Features
     from huggingface_hub import DatasetCardData
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,9 @@ class ConfigLayout:
     options: Mapping[str, Any] = field(default_factory=dict)  # builder params that shape reading
     splits: tuple[SplitLayout, ...] = ()
     unsupported: Issue | None = None
+    # README `dataset_info` features: datasets builds the builder with this info, so every table
+    # of every split is cast to them (`_cast_table`, ArrowWriter) instead of an inferred schema.
+    features: Features | None = None
 
     def split(self, name: str) -> SplitLayout | None:
         return next((split for split in self.splits if split.name == name), None)
@@ -347,7 +350,12 @@ def _config_layout(
     elif options.get("newlines_in_values") is not None or options.get("filters") is not None:
         unsupported = _unsupported("builder_option_not_supported")
     return ConfigLayout(
-        name=name, module=module, options=options, splits=tuple(splits), unsupported=unsupported
+        name=name,
+        module=module,
+        options=options,
+        splits=tuple(splits),
+        unsupported=unsupported,
+        features=getattr(info, "features", None),
     )
 
 

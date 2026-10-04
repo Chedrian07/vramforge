@@ -143,6 +143,14 @@ class SchemaState:
     json_field_paths: list[list[Any]] = field(default_factory=list)
     started: bool = False  # the first batch of the split was processed
 
+    @classmethod
+    def declared(cls, features: Features | None) -> SchemaState:
+        """A state locked before any row is read (README `dataset_info` features), with the
+        Json field paths datasets derives from them; None leaves the schema to be inferred."""
+        state = cls(features=features)
+        state.json_field_paths = state.decode_paths()
+        return state
+
     def lock(self, table: pa.Table) -> pa.Table:
         from datasets import Features
         from datasets.table import table_cast
