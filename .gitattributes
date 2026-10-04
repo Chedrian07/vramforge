@@ -1,0 +1,12 @@
+# Normalize line endings so Windows checkouts (core.autocrlf) keep scripts and images working.
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile* text eol=lf
+*.Dockerfile text eol=lf
+Caddyfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.parquet binary
+*.arrow binary
+*.png binary
