@@ -1,9 +1,9 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Segmented, SwitchField } from "@/components/ui/controls";
+import { CopyButton, Segmented, SwitchField } from "@/components/ui/controls";
 import { Badge } from "@/components/ui/primitives";
 import { Bytes, BytesRange, IssueList } from "@/components/ui/values";
 
@@ -65,5 +65,51 @@ describe("ui primitives", () => {
     expect(screen.getByText("경고 0")).toBeInTheDocument();
     expect(screen.queryByText("경고 3")).not.toBeInTheDocument();
     expect(screen.getByText(/외 2건/)).toBeInTheDocument();
+  });
+});
+
+describe("copy button", () => {
+  const original = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+  const originalExec = Object.getOwnPropertyDescriptor(document, "execCommand");
+  afterEach(() => {
+    if (original) Object.defineProperty(window.navigator, "clipboard", original);
+    if (originalExec) Object.defineProperty(document, "execCommand", originalExec);
+    else Reflect.deleteProperty(document, "execCommand");
+  });
+
+  function withoutClipboardApi() {
+    // Plain-HTTP LAN deployments are not secure contexts: no navigator.clipboard.
+    Object.defineProperty(window.navigator, "clipboard", { value: undefined, configurable: true });
+  }
+
+  it("copies with the Clipboard API", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<CopyButton value="2367e865d009c13ac81713a2878291d33ab28177" />);
+    await user.click(screen.getByRole("button", { name: /복사: 2367e865/ }));
+    expect(await screen.findByText("복사됨")).toBeInTheDocument();
+    await expect(navigator.clipboard.readText()).resolves.toBe("2367e865d009c13ac81713a2878291d33ab28177");
+  });
+
+  it("falls back to a selection copy without the Clipboard API", async () => {
+    const user = userEvent.setup();
+    withoutClipboardApi();
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
+    renderWithProviders(<CopyButton value="local:models/" />);
+    await user.click(screen.getByRole("button", { name: /복사: local:models\// }));
+    expect(await screen.findByText("복사됨")).toBeInTheDocument();
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(document.querySelector("textarea")).toBeNull(); // the temporary field is gone
+  });
+
+  it("offers the value selected for a manual copy when the browser cannot copy", async () => {
+    const user = userEvent.setup();
+    withoutClipboardApi();
+    renderWithProviders(<CopyButton value="local:models/" />);
+    await user.click(screen.getByRole("button", { name: /복사: local:models\// }));
+    const field = await screen.findByRole("textbox", { name: /직접 복사할 값/ });
+    expect(field).toHaveValue("local:models/");
+    expect(field).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("자동 복사 불가");
   });
 });
