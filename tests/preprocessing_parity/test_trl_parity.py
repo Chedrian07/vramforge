@@ -36,6 +36,7 @@ from trl import (  # noqa: E402
 from vramforge_estimator.batching import plan_batches  # noqa: E402
 from vramforge_estimator.inspection import TokenizerHandle  # noqa: E402
 from vramforge_estimator.preprocessing import TokenizedRecord, get_adapter  # noqa: E402
+from vramforge_estimator.preprocessing.trl_common import token_digest  # noqa: E402
 from vramforge_estimator.preprocessing.trl_sft import TrlSftAdapter  # noqa: E402
 from vramforge_estimator.scan import LengthTable  # noqa: E402
 from vramforge_estimator.schemas import (  # noqa: E402
@@ -249,6 +250,7 @@ def assert_sft_matches(trainer: SFTTrainer, ours: list[TokenizedRecord]) -> None
         ids = trainer.train_dataset[i]["input_ids"]
         labels = trainer.train_dataset[i]["labels"]
         assert rec.sequence_tokens == len(ids)
+        assert rec.extras["token_digest"] == token_digest({"input_ids": ids})
         assert rec.loss_token_count == sum(1 for t in labels[1:] if t != -100)
         if rec.completion_tokens is not None:  # prompt-completion: completion_only_loss
             assert rec.completion_tokens == sum(1 for t in labels if t != -100)
@@ -360,6 +362,12 @@ def assert_dpo_matches(trainer: DPOTrainer, ours: list[TokenizedRecord]) -> None
         assert rec.rejected_completion_tokens == len(got["rejected_ids"])
         assert rec.chosen_total_tokens == p + len(got["chosen_ids"])
         assert rec.rejected_total_tokens == p + len(got["rejected_ids"])
+        assert rec.extras["token_digest"] == token_digest(
+            {
+                "chosen_input_ids": got["prompt_ids"] + got["chosen_ids"],
+                "rejected_input_ids": got["prompt_ids"] + got["rejected_ids"],
+            }
+        )
 
 
 @pytest.mark.parametrize("policy", [OMIT, KEEP])
@@ -387,6 +395,15 @@ def test_dpo_explicit_prompt_and_collator_shape(tiny_dir, mimo, tmp_path, policy
     worst = plan.worst_case
     assert tuple(batch["input_ids"].shape) == (worst.sequences_per_forward, worst.padded_length)
     assert worst.token_slots == batch["input_ids"].numel()  # 2B x max over both branches
+    # the digest is of exactly the rows the model receives (padding stripped by the mask)
+    rows = [
+        ids[mask.bool()].tolist()
+        for ids, mask in zip(batch["input_ids"], batch["attention_mask"], strict=True)
+    ]
+    n = len(RAW)
+    for i, rec in enumerate(ours):
+        pair = {"chosen_input_ids": rows[i], "rejected_input_ids": rows[n + i]}
+        assert rec.extras["token_digest"] == token_digest(pair)
 
 
 def test_dpo_implicit_prompt_message_lists(tiny_dir, mimo, tmp_path) -> None:
@@ -504,6 +521,8 @@ def test_grpo_prompt_tokenization(tiny_dir, mimo, tmp_path, policy, template_kwa
     )
     ours = [adapter.process(r, f"train:{i}") for i, r in enumerate(RAW)]
     assert [r.prompt_tokens for r in ours] == [len(ids) for ids in trl_ids]
+    digests = [token_digest({"prompt_ids": list(ids)}) for ids in trl_ids]
+    assert [r.extras["token_digest"] for r in ours] == digests
 
 
 def test_grpo_plain_prompts(tiny_dir, plain, tmp_path) -> None:
@@ -513,6 +532,8 @@ def test_grpo_plain_prompts(tiny_dir, plain, tmp_path) -> None:
     adapter = get_adapter(Objective.GRPO, handle(plain), ColumnMapping(prompt="p"))
     ours = [adapter.process({"p": p}, f"train:{i}") for i, p in enumerate(prompts)]
     assert [r.prompt_tokens for r in ours] == [len(ids) for ids in trl_ids]
+    digests = [token_digest({"prompt_ids": list(ids)}) for ids in trl_ids]
+    assert [r.extras["token_digest"] for r in ours] == digests
 
 
 def grpo_resolved(
