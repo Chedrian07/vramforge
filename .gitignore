@@ -63,3 +63,7 @@ hf_cache/
 *.arrow
 !tests/fixtures/**/*.arrow
 *.log
+
+# --- Read-only local model/dataset mount (contents never committed) ---
+local-sources/*
+!local-sources/README.md
