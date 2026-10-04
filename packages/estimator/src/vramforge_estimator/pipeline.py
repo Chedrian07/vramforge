@@ -452,6 +452,7 @@ class _Run:
     _seen: set[tuple[str, str, str]] = field(default_factory=set)
 
     scan_issues: list[Issue] = field(default_factory=list)
+    context_exceeded_budgets: list[int] = field(default_factory=list)
 
     # -- issue bookkeeping ---------------------------------------------------------
     @staticmethod
@@ -949,7 +950,10 @@ class _Run:
         scan_result = self.result.dataset_scan
         assert scan_result is not None
         facts = self.inventory.facts if self.inventory is not None else None
-        budgets = _completion_budgets(self.request)
+        # GRPO: a scenario's context is prompt + its completion budget (plan §8.3). The result-level
+        # check (and so the audit and readiness) uses the smallest offered budget; candidates the
+        # user did not choose that exceed the context only withhold their own scenario's fit.
+        budgets = self.grpo_budgets()
         context = self.call(
             "scan.validate_context",
             scan.validate_context,
@@ -957,12 +961,12 @@ class _Run:
             model_declared_max=facts.max_position_embeddings if facts else None,
             tokenizer=self.tokenizer_manifest,
             backend_verified_max=None,
-            extra_tokens=max(budgets) if budgets else 0,
+            extra_tokens=budgets[0] if budgets else 0,
         )
         self.result.context_validation = context
         if len(budgets) > 1:
-            exceeded = []
-            for budget in budgets[:-1]:
+            exceeded = [budgets[0]] if context.status == "exceeded" else []
+            for budget in budgets[1:]:
                 per_budget, _ = self.attempt(
                     "scan.validate_context",
                     scan.validate_context,
@@ -974,15 +978,16 @@ class _Run:
                 )
                 if per_budget is not None and per_budget.status == "exceeded":
                     exceeded.append(budget)
-            if context.status == "exceeded":
-                exceeded.append(budgets[-1])
+            self.context_exceeded_budgets = exceeded
             if exceeded:
-                # Per-budget detail; the audit reports the largest budget's context check.
+                every = len(exceeded) == len(budgets)
                 self.note(
                     make_issue(
                         ErrorCode.CONTEXT_EXCEEDED,
-                        "일부 completion budget에서 가장 긴 prompt와 생성 길이의 합이 모델의 "
-                        "context 상한을 넘습니다. 자동으로 자르거나 제외하지 않습니다.",
+                        f"생성 예산 {', '.join(f'{b:,}' for b in exceeded)} tokens에서는 가장 긴 "
+                        "prompt와 생성 길이의 합이 모델의 context 상한을 넘습니다. 해당 시나리오는 "
+                        "적합 판정을 보류하며 자동으로 자르거나 제외하지 않습니다.",
+                        severity=Severity.ERROR if every else Severity.WARNING,
                         stage=Stage.VALIDATING_DATA,
                         budgets=exceeded,
                     )
@@ -1005,6 +1010,13 @@ class _Run:
                     coverage=scan_result.coverage.value,
                 )
             )
+
+    def grpo_budgets(self) -> list[int]:
+        """Completion budgets of the GRPO scenarios, ascending ([] for other objectives)."""
+        grpo = self.resolved.grpo if self.resolved is not None else None
+        if grpo is not None:
+            return sorted(set(grpo.completion_budgets))
+        return _completion_budgets(self.request)
 
     def audit(self, plan: BatchPlan | None) -> None:
         scan_result = self.result.dataset_scan
@@ -1076,6 +1088,7 @@ class _Run:
             readiness=readiness,
         )
         estimate = self.guard_unverified_fits(estimate)
+        estimate = self.guard_context_fits(estimate)
         self.result.memory = estimate
         self.result.hardware_fit = _summary_fit(estimate)
         self.collect_estimate_notes(estimate)
@@ -1120,6 +1133,32 @@ class _Run:
                 reason="lengths_unverified",
             )
         )
+        return estimate.model_copy(update={"scenarios": scenarios})
+
+    def guard_context_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
+        """A GRPO budget whose prompt + completion exceeds the context gets no positive fit."""
+        if not self.context_exceeded_budgets:
+            return estimate
+        message = (
+            "이 생성 예산에서는 가장 긴 prompt와 생성 길이의 합이 context 상한을 넘어 적합 판정을 "
+            "보류합니다."
+        )
+        scenarios = []
+        for scenario in estimate.scenarios:
+            fit = scenario.hardware_fit
+            budget = scenario.params.get("completion_budget")
+            if budget in self.context_exceeded_budgets and fit.status in (
+                HardwareFit.EXPECTED_FIT,
+                HardwareFit.LOW_MARGIN,
+            ):
+                fit = fit.model_copy(
+                    update={
+                        "status": HardwareFit.UNKNOWN,
+                        "reason": "unsupported",
+                        "message": message,
+                    }
+                )
+            scenarios.append(scenario.model_copy(update={"hardware_fit": fit}))
         return estimate.model_copy(update={"scenarios": scenarios})
 
     def collect_estimate_notes(self, estimate: MemoryEstimate) -> None:

@@ -254,12 +254,14 @@ def render_report(result: AnalysisResult) -> str:
     if context is not None:
         observed = context.max_observed_length
         limit = context.effective_limit
-        # GRPO checks the longest prompt plus a completion budget, which is not an observed length.
-        checked = (
-            "검사한 최대 길이(가장 긴 prompt + 가장 큰 completion budget)"
-            if req.training.objective is Objective.GRPO
-            else "관측 최대 길이"
-        )
+        # GRPO checks the longest prompt plus a completion budget (the chosen one, else the
+        # smallest candidate; larger candidates are reported per scenario), not an observed length.
+        if req.training.objective is not Objective.GRPO:
+            checked = "관측 최대 길이"
+        elif req.grpo.completion_budget is not None:
+            checked = "검사한 최대 길이(가장 긴 prompt + completion budget)"
+        else:
+            checked = "검사한 최대 길이(가장 긴 prompt + 가장 작은 completion budget 후보)"
         lines.append(
             f"- context: {checked} {f'{observed:,}' if observed is not None else '-'} 토큰, "
             f"상한 {f'{limit:,}' if limit is not None else '미상'} "

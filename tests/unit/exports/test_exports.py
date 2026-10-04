@@ -348,7 +348,7 @@ def test_report_keeps_unknown_excluded_and_conditional_apart(
     text = export_report_md(ready).decode()
     evaluation = next(line for line in text.splitlines() if line.startswith("| EVALUATION"))
     assert "제외" in evaluation and "미상" not in evaluation  # excluded, not unknown
-    assert "가장 긴 prompt + 가장 큰 completion budget" in text  # GRPO length is not observed
+    assert "검사한 최대 길이(가장 긴 prompt + completion budget)" in text  # not an observed length
     assert "조건부 결과입니다" not in text
     from vramforge_estimator.schemas import ExcludedComponent
 

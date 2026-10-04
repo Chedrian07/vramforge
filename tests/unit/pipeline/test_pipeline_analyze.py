@@ -351,14 +351,67 @@ def test_stale_cache_entries_are_ignored(
 def test_context_exceeded_for_some_grpo_budgets(
     ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """plan §8.3: a GRPO scenario's context is prompt + its budget. Unchosen candidate budgets
+    that exceed the context withhold only their own fit; they do not make the data "violated"
+    or the whole setup unsupported."""
+    from pipeline_fakes import FakeModules as Modules
+
+    from vramforge_estimator.schemas import PreservationAudit
+
     def by_budget(scan, **kwargs):
         return context_validation("exceeded" if kwargs["extra_tokens"] > 3000 else "ok")
 
-    FakeModules(validate_context=by_budget).install(monkeypatch)
+    def audit(scan, *, context, batch_plan, **kwargs):  # the real audit fails on exceeded
+        if context.status == "exceeded":
+            return PreservationAudit(status=DataPreservation.VIOLATED)
+        status = DataPreservation.PENDING if batch_plan is None else DataPreservation.VERIFIED
+        return PreservationAudit(status=status)
+
+    scenarios = [
+        scenario(f"budget_{b}", fit=HardwareFit.EXPECTED_FIT).model_copy(
+            update={"params": {"completion_budget": b}}
+        )
+        for b in (1024, 2048, 4096, 8192)
+    ]
+    Modules(
+        validate_context=by_budget,
+        audit_preservation=audit,
+        estimate_memory=lambda *a, **k: memory_estimate(scenarios, primary=None),
+    ).install(monkeypatch)
+    request = example_request(**{"hardware": {"mode": "custom", "device_total_bytes": 80 * GiB}})
+    result = analyze(request, ctx)
+    (exceeded,) = [w for w in result.warnings if w.code is ErrorCode.CONTEXT_EXCEEDED]
+    assert exceeded.details["budgets"] == [4096, 8192]
+    assert result.context_validation.status == "ok"  # the smallest offered budget fits
+    assert result.status.data_preservation is DataPreservation.VERIFIED
+    assert result.status.training_readiness is TrainingReadiness.READY
+    fits = {s.scenario_id: s.hardware_fit.status for s in result.memory.scenarios}
+    assert fits == {
+        "budget_1024": HardwareFit.EXPECTED_FIT,
+        "budget_2048": HardwareFit.EXPECTED_FIT,
+        "budget_4096": HardwareFit.UNKNOWN,
+        "budget_8192": HardwareFit.UNKNOWN,
+    }
+    assert result.status.hardware_fit is HardwareFit.UNKNOWN  # worst over the scenarios
+
+    # an explicitly chosen budget that exceeds the context is a real violation
+    explicit = analyze(example_request(**{"grpo.completion_budget": 4096}), ctx)
+    assert explicit.context_validation.status == "exceeded"
+    assert explicit.status.data_preservation is DataPreservation.VIOLATED
+    assert explicit.status.training_readiness is TrainingReadiness.UNSUPPORTED
+
+
+def test_context_exceeded_for_every_grpo_budget_is_an_error(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules(validate_context=lambda scan, **k: context_validation("exceeded")).install(
+        monkeypatch
+    )
     result = analyze(example_request(), ctx)
-    exceeded = [e for e in result.errors if e.code is ErrorCode.CONTEXT_EXCEEDED]
-    assert exceeded and exceeded[0].details["budgets"] == [4096, 8192]
-    assert result.context_validation.status == "exceeded"  # the largest budget
+    (exceeded,) = [e for e in result.errors if e.code is ErrorCode.CONTEXT_EXCEEDED]
+    assert exceeded.details["budgets"] == [1024, 2048, 4096, 8192]
+    assert result.context_validation.status == "exceeded"
+    assert result.status.training_readiness is TrainingReadiness.UNSUPPORTED
 
 
 def test_hardware_fit_uses_primary_or_worst_scenario(
