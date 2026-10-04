@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 
 import { Providers } from "./providers";
 import "./globals.css";
@@ -22,7 +23,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="ko" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
+        <Script id="vf-theme-init" strategy="beforeInteractive">
+          {THEME_INIT}
+        </Script>
       </head>
       <body>
         <Providers>{children}</Providers>
