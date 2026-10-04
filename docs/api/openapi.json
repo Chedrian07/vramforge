@@ -1,0 +1,7163 @@
+{
+  "components": {
+    "schemas": {
+      "AllocationCategory": {
+        "enum": [
+          "weights_base",
+          "weights_adapter",
+          "weights_other_models",
+          "gradients",
+          "optimizer_states",
+          "master_weights",
+          "saved_activations",
+          "recompute_working_set",
+          "logits_and_loss",
+          "generation_cache",
+          "recurrent_state",
+          "rollout_buffers",
+          "load_transient",
+          "workspace",
+          "communication_buffers",
+          "allocator_slack",
+          "non_framework"
+        ],
+        "title": "AllocationCategory",
+        "type": "string"
+      },
+      "AllocationSpec": {
+        "additionalProperties": false,
+        "description": "One entry of the shape ledger (plan §9.5).\n\n`bytes_low`/`bytes_high` are TOTAL bytes (already multiplied by `count`). Deterministic\nallocations have low == high. Unknown size => both None and `note` says why; never 0.\n`live_at` lists timepoint ids; \"<PHASE>:*\" means every timepoint of that phase.\nAllocations sharing a `storage_alias_group` are the same storage: at a timepoint the group\ncontributes only its largest member.",
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "category": {
+            "$ref": "#/components/schemas/AllocationCategory"
+          },
+          "count": {
+            "default": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "device": {
+            "default": "cuda:0",
+            "title": "Device",
+            "type": "string"
+          },
+          "dims": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Dims",
+            "type": "object"
+          },
+          "dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dtype"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "formula_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Formula Ref"
+          },
+          "live_at": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Live At",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "recompute_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recompute Group"
+          },
+          "saved_for_backward": {
+            "default": false,
+            "title": "Saved For Backward",
+            "type": "boolean"
+          },
+          "shape_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shape Expression"
+          },
+          "storage_alias_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Alias Group"
+          }
+        },
+        "required": [
+          "name",
+          "category",
+          "bytes_low",
+          "bytes_high",
+          "live_at",
+          "evidence"
+        ],
+        "title": "AllocationSpec",
+        "type": "object"
+      },
+      "AnalysisCreated": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "reused": {
+            "default": false,
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "status",
+          "fingerprint",
+          "created_at"
+        ],
+        "title": "AnalysisCreated",
+        "type": "object"
+      },
+      "AnalysisRamEstimate": {
+        "additionalProperties": false,
+        "description": "RAM used by this analysis service while scanning (plan §10.1).",
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bytes_low",
+          "bytes_high"
+        ],
+        "title": "AnalysisRamEstimate",
+        "type": "object"
+      },
+      "AnalysisRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetSourceRef"
+          },
+          "dpo": {
+            "$ref": "#/components/schemas/DpoConfig"
+          },
+          "grpo": {
+            "$ref": "#/components/schemas/GrpoConfig"
+          },
+          "hardware": {
+            "$ref": "#/components/schemas/HardwareConfig"
+          },
+          "margin_policy": {
+            "$ref": "#/components/schemas/MarginPolicy"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelSourceRef"
+          },
+          "profiling": {
+            "$ref": "#/components/schemas/ProfilingConfig"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ScopeConfig"
+          },
+          "training": {
+            "$ref": "#/components/schemas/TrainingConfig"
+          }
+        },
+        "required": [
+          "model",
+          "dataset",
+          "training"
+        ],
+        "title": "AnalysisRequest",
+        "type": "object"
+      },
+      "AnalysisResult": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_fingerprint": {
+            "title": "Analysis Fingerprint",
+            "type": "string"
+          },
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "analysis_ram_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisRamEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assumptions": {
+            "items": {
+              "$ref": "#/components/schemas/Assumption"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "batch_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BatchPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compatibility_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompatibilityReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextValidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset_scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetScanResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependency_lock_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Lock Digest"
+          },
+          "disk_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiskEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "estimator_version": {
+            "title": "Estimator Version",
+            "type": "string"
+          },
+          "excluded_components": {
+            "items": {
+              "$ref": "#/components/schemas/ExcludedComponent"
+            },
+            "title": "Excluded Components",
+            "type": "array"
+          },
+          "hardware_fit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareFitResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_ram_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostRamEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measurement_scope": {
+            "$ref": "#/components/schemas/MeasurementScope"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_inventory_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelInventorySummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NeedsInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observed_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Config"
+          },
+          "planning_margin_policy": {
+            "$ref": "#/components/schemas/MarginPolicy"
+          },
+          "preservation_audit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreservationAudit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "requested_config": {
+            "$ref": "#/components/schemas/AnalysisRequest"
+          },
+          "resolved_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_manifests": {
+            "$ref": "#/components/schemas/SourceManifests"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StatusAxes"
+          },
+          "tokenizer_manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unknown_components": {
+            "items": {
+              "$ref": "#/components/schemas/UnknownComponent"
+            },
+            "title": "Unknown Components",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "created_at",
+          "analysis_fingerprint",
+          "estimator_version",
+          "requested_config"
+        ],
+        "title": "AnalysisResult",
+        "type": "object"
+      },
+      "AnalysisStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Issue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "last_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event Id"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "status",
+          "fingerprint",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AnalysisStatus",
+        "type": "object"
+      },
+      "ArchitectureFacts": {
+        "additionalProperties": false,
+        "properties": {
+          "architectures": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Architectures",
+            "type": "array"
+          },
+          "config_dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Dtype"
+          },
+          "config_sha256": {
+            "title": "Config Sha256",
+            "type": "string"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "title": "Extra",
+            "type": "object"
+          },
+          "has_mtp": {
+            "default": false,
+            "title": "Has Mtp",
+            "type": "boolean"
+          },
+          "has_vision": {
+            "default": false,
+            "title": "Has Vision",
+            "type": "boolean"
+          },
+          "head_dim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Dim"
+          },
+          "head_dim_source": {
+            "default": "unknown",
+            "enum": [
+              "explicit",
+              "inferred",
+              "unknown"
+            ],
+            "title": "Head Dim Source",
+            "type": "string"
+          },
+          "hidden_size": {
+            "title": "Hidden Size",
+            "type": "integer"
+          },
+          "intermediate_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intermediate Size"
+          },
+          "layer_type_counts": {
+            "items": {
+              "$ref": "#/components/schemas/LayerTypeCount"
+            },
+            "title": "Layer Type Counts",
+            "type": "array"
+          },
+          "layer_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Layer Types",
+            "type": "array"
+          },
+          "linear_attention": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Linear Attention",
+            "type": "object"
+          },
+          "max_position_embeddings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Position Embeddings"
+          },
+          "model_type": {
+            "title": "Model Type",
+            "type": "string"
+          },
+          "num_attention_heads": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Attention Heads"
+          },
+          "num_hidden_layers": {
+            "title": "Num Hidden Layers",
+            "type": "integer"
+          },
+          "num_key_value_heads": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Key Value Heads"
+          },
+          "rope": {
+            "additionalProperties": true,
+            "title": "Rope",
+            "type": "object"
+          },
+          "sliding_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sliding Window"
+          },
+          "text_model_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Model Type"
+          },
+          "tie_word_embeddings": {
+            "default": false,
+            "title": "Tie Word Embeddings",
+            "type": "boolean"
+          },
+          "vocab_size": {
+            "title": "Vocab Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "architectures",
+          "model_type",
+          "num_hidden_layers",
+          "hidden_size",
+          "vocab_size",
+          "config_sha256"
+        ],
+        "title": "ArchitectureFacts",
+        "type": "object"
+      },
+      "Assumption": {
+        "additionalProperties": false,
+        "description": "A stated assumption that a number depends on (shown in the evidence tab).",
+        "properties": {
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence",
+            "default": "assumption"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "Assumption",
+        "type": "object"
+      },
+      "AttentionBackend": {
+        "enum": [
+          "auto",
+          "sdpa",
+          "eager",
+          "flash_attention_2"
+        ],
+        "title": "AttentionBackend",
+        "type": "string"
+      },
+      "BackendProfileInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "architecture_adapter": {
+            "title": "Architecture Adapter",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "environment_id": {
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "model_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Model Types",
+            "type": "array"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "profile_version": {
+            "title": "Profile Version",
+            "type": "string"
+          },
+          "support": {
+            "items": {
+              "$ref": "#/components/schemas/SupportEntry"
+            },
+            "title": "Support",
+            "type": "array"
+          }
+        },
+        "required": [
+          "profile_id",
+          "profile_version",
+          "architecture_adapter",
+          "description",
+          "environment_id"
+        ],
+        "title": "BackendProfileInfo",
+        "type": "object"
+      },
+      "BackendProfilesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "environments": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentInfo"
+            },
+            "title": "Environments",
+            "type": "array"
+          },
+          "estimator_version": {
+            "title": "Estimator Version",
+            "type": "string"
+          },
+          "evidence_levels": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceLevel"
+            },
+            "title": "Evidence Levels",
+            "type": "array"
+          },
+          "gpu_worker_connected": {
+            "default": false,
+            "title": "Gpu Worker Connected",
+            "type": "boolean"
+          },
+          "hardware_presets": {
+            "items": {
+              "$ref": "#/components/schemas/GpuPreset"
+            },
+            "title": "Hardware Presets",
+            "type": "array"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/BackendProfileInfo"
+            },
+            "title": "Profiles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "estimator_version"
+        ],
+        "title": "BackendProfilesResponse",
+        "type": "object"
+      },
+      "BatchPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "accumulation": {
+            "title": "Accumulation",
+            "type": "integer"
+          },
+          "batch_key": {
+            "title": "Batch Key",
+            "type": "string"
+          },
+          "effective_batch": {
+            "title": "Effective Batch",
+            "type": "integer"
+          },
+          "grpo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GrpoBatchPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "microbatch": {
+            "title": "Microbatch",
+            "type": "integer"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "pad_to_multiple_of": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pad To Multiple Of"
+          },
+          "padding_side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "Padding Side",
+            "type": "string"
+          },
+          "sampler": {
+            "$ref": "#/components/schemas/SamplerPlan"
+          },
+          "sampler_max": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BatchShape"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/BatchShape"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          },
+          "unit": {
+            "enum": [
+              "samples",
+              "pairs",
+              "completions"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "worst_case": {
+            "$ref": "#/components/schemas/BatchShape"
+          }
+        },
+        "required": [
+          "objective",
+          "unit",
+          "microbatch",
+          "accumulation",
+          "effective_batch",
+          "sampler",
+          "worst_case",
+          "batch_key"
+        ],
+        "title": "BatchPlan",
+        "type": "object"
+      },
+      "BatchShape": {
+        "additionalProperties": false,
+        "properties": {
+          "completion_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Length"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "logits_positions": {
+            "title": "Logits Positions",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "padded_length": {
+            "title": "Padded Length",
+            "type": "integer"
+          },
+          "prompt_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Length"
+          },
+          "rows_per_microbatch": {
+            "title": "Rows Per Microbatch",
+            "type": "integer"
+          },
+          "sequences_per_forward": {
+            "title": "Sequences Per Forward",
+            "type": "integer"
+          },
+          "source_row_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Row Ids",
+            "type": "array"
+          },
+          "token_slots": {
+            "title": "Token Slots",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "objective",
+          "rows_per_microbatch",
+          "sequences_per_forward",
+          "padded_length",
+          "token_slots",
+          "logits_positions",
+          "description"
+        ],
+        "title": "BatchShape",
+        "type": "object"
+      },
+      "Body_upload_dataset_api_v1_uploads_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_dataset_api_v1_uploads_post",
+        "type": "object"
+      },
+      "Branch": {
+        "description": "Which token-length series a statistic describes.",
+        "enum": [
+          "prompt",
+          "completion",
+          "sequence",
+          "loss_tokens",
+          "chosen",
+          "rejected",
+          "chosen_sequence",
+          "rejected_sequence",
+          "pair_max"
+        ],
+        "title": "Branch",
+        "type": "string"
+      },
+      "BranchStats": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "$ref": "#/components/schemas/Branch"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/LengthStats"
+          },
+          "top_rows": {
+            "items": {
+              "$ref": "#/components/schemas/RowLength"
+            },
+            "title": "Top Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "branch",
+          "stats"
+        ],
+        "title": "BranchStats",
+        "type": "object"
+      },
+      "BreakdownItem": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "category": {
+            "$ref": "#/components/schemas/AllocationCategory"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "name",
+          "category",
+          "bytes_low",
+          "bytes_high",
+          "evidence"
+        ],
+        "title": "BreakdownItem",
+        "type": "object"
+      },
+      "CapacityRecommendation": {
+        "additionalProperties": false,
+        "properties": {
+          "external_reserved_bytes": {
+            "title": "External Reserved Bytes",
+            "type": "integer"
+          },
+          "planning_margin_bytes": {
+            "title": "Planning Margin Bytes",
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/MarginPolicy"
+          },
+          "recommended_application_capacity_bytes": {
+            "title": "Recommended Application Capacity Bytes",
+            "type": "integer"
+          },
+          "required_total_device_capacity_bytes": {
+            "title": "Required Total Device Capacity Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "planning_margin_bytes",
+          "recommended_application_capacity_bytes",
+          "external_reserved_bytes",
+          "required_total_device_capacity_bytes",
+          "policy"
+        ],
+        "title": "CapacityRecommendation",
+        "type": "object"
+      },
+      "ColumnMapping": {
+        "additionalProperties": false,
+        "description": "Which source columns play which role. Unmapped columns are metadata and never rendered.",
+        "properties": {
+          "chosen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chosen"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion"
+          },
+          "empty_system_policy": {
+            "$ref": "#/components/schemas/EmptySystemPolicy",
+            "default": "omit"
+          },
+          "format": {
+            "$ref": "#/components/schemas/DatasetFormat",
+            "default": "auto"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "rejected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "ColumnMapping",
+        "type": "object"
+      },
+      "CompatibilityReport": {
+        "additionalProperties": false,
+        "properties": {
+          "architecture_adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Adapter"
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "not_effective": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigResolution"
+            },
+            "title": "Not Effective",
+            "type": "array"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/TrainingReadiness"
+          },
+          "support": {
+            "items": {
+              "$ref": "#/components/schemas/SupportEntry"
+            },
+            "title": "Support",
+            "type": "array"
+          },
+          "support_grade": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "readiness"
+        ],
+        "title": "CompatibilityReport",
+        "type": "object"
+      },
+      "ComponentParams": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_serialized": {
+            "title": "Bytes Serialized",
+            "type": "integer"
+          },
+          "component": {
+            "$ref": "#/components/schemas/ModelComponent"
+          },
+          "params": {
+            "title": "Params",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "component",
+          "params",
+          "bytes_serialized"
+        ],
+        "title": "ComponentParams",
+        "type": "object"
+      },
+      "ComputeDtype": {
+        "enum": [
+          "auto",
+          "bfloat16",
+          "float16",
+          "float32"
+        ],
+        "title": "ComputeDtype",
+        "type": "string"
+      },
+      "ConfigResolution": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested": {
+            "title": "Requested"
+          },
+          "resolved": {
+            "title": "Resolved"
+          }
+        },
+        "required": [
+          "field",
+          "reason"
+        ],
+        "title": "ConfigResolution",
+        "type": "object"
+      },
+      "ContextValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "backend_verified_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend Verified Max"
+          },
+          "effective_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Limit"
+          },
+          "exceeded_rows": {
+            "default": 0,
+            "title": "Exceeded Rows",
+            "type": "integer"
+          },
+          "limit_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit Source"
+          },
+          "max_observed_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Observed Length"
+          },
+          "model_declared_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Declared Max"
+          },
+          "status": {
+            "default": "unknown",
+            "enum": [
+              "ok",
+              "exceeded",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tokenizer_limit_is_sentinel": {
+            "default": false,
+            "title": "Tokenizer Limit Is Sentinel",
+            "type": "boolean"
+          },
+          "tokenizer_model_max_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenizer Model Max Length"
+          }
+        },
+        "title": "ContextValidation",
+        "type": "object"
+      },
+      "DataPolicy": {
+        "enum": [
+          "strict_no_truncation"
+        ],
+        "title": "DataPolicy",
+        "type": "string"
+      },
+      "DataPreservation": {
+        "enum": [
+          "pending",
+          "verified",
+          "violated",
+          "unknown"
+        ],
+        "title": "DataPreservation",
+        "type": "string"
+      },
+      "DatasetColumn": {
+        "additionalProperties": false,
+        "properties": {
+          "dtype": {
+            "title": "Dtype",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "dtype",
+          "kind"
+        ],
+        "title": "DatasetColumn",
+        "type": "object"
+      },
+      "DatasetFormat": {
+        "enum": [
+          "auto",
+          "preference",
+          "prompt_completion",
+          "prompt_only",
+          "messages",
+          "text"
+        ],
+        "title": "DatasetFormat",
+        "type": "string"
+      },
+      "DatasetInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetColumn"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "configs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Configs",
+            "type": "array"
+          },
+          "detected_format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mapping_ambiguous": {
+            "default": false,
+            "title": "Mapping Ambiguous",
+            "type": "boolean"
+          },
+          "mapping_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnMapping"
+            },
+            "title": "Mapping Candidates",
+            "type": "array"
+          },
+          "selected_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Config"
+          },
+          "selected_split": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Split"
+          },
+          "split_auto_selected": {
+            "default": false,
+            "title": "Split Auto Selected",
+            "type": "boolean"
+          },
+          "splits": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetSplitInfo"
+            },
+            "title": "Splits",
+            "type": "array"
+          },
+          "suggested_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColumnMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "DatasetInspection",
+        "type": "object"
+      },
+      "DatasetScanResult": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "branches": {
+            "items": {
+              "$ref": "#/components/schemas/BranchStats"
+            },
+            "title": "Branches",
+            "type": "array"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "context_exceeded_rows": {
+            "default": 0,
+            "title": "Context Exceeded Rows",
+            "type": "integer"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/ScanCoverage"
+          },
+          "duplicate_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Rows"
+          },
+          "elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Seconds"
+          },
+          "failed_rows_sample": {
+            "items": {
+              "$ref": "#/components/schemas/FailedRow"
+            },
+            "title": "Failed Rows Sample",
+            "type": "array"
+          },
+          "mapping_applied": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColumnMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "preprocess_key": {
+            "title": "Preprocess Key",
+            "type": "string"
+          },
+          "preprocessing_adapter": {
+            "title": "Preprocessing Adapter",
+            "type": "string"
+          },
+          "preprocessing_adapter_version": {
+            "title": "Preprocessing Adapter Version",
+            "type": "string"
+          },
+          "rows_expected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Expected"
+          },
+          "rows_failed": {
+            "default": 0,
+            "title": "Rows Failed",
+            "type": "integer"
+          },
+          "rows_ok": {
+            "default": 0,
+            "title": "Rows Ok",
+            "type": "integer"
+          },
+          "rows_seen": {
+            "default": 0,
+            "title": "Rows Seen",
+            "type": "integer"
+          },
+          "rows_unprocessed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Unprocessed"
+          },
+          "shards_completed": {
+            "default": 0,
+            "title": "Shards Completed",
+            "type": "integer"
+          },
+          "shards_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shards Total"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split"
+          },
+          "split_auto_selected": {
+            "default": false,
+            "title": "Split Auto Selected",
+            "type": "boolean"
+          },
+          "template_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Fingerprint"
+          },
+          "tokenizer_fingerprint": {
+            "title": "Tokenizer Fingerprint",
+            "type": "string"
+          },
+          "transformation_note": {
+            "title": "Transformation Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "coverage",
+          "objective",
+          "transformation_note",
+          "preprocess_key",
+          "tokenizer_fingerprint",
+          "preprocessing_adapter",
+          "preprocessing_adapter_version"
+        ],
+        "title": "DatasetScanResult",
+        "type": "object"
+      },
+      "DatasetSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "eval_split": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Split"
+          },
+          "mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ColumnMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reference": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "sample_rows": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Rows"
+          },
+          "scan_mode": {
+            "$ref": "#/components/schemas/ScanMode",
+            "default": "full"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SourceType",
+            "default": "huggingface"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "DatasetSourceRef",
+        "type": "object"
+      },
+      "DatasetSplitInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "num_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Bytes"
+          },
+          "num_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Num Rows"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "DatasetSplitInfo",
+        "type": "object"
+      },
+      "DeviceEstimate": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "title": "Device",
+            "type": "string"
+          },
+          "known_floor_bytes": {
+            "title": "Known Floor Bytes",
+            "type": "integer"
+          },
+          "peak_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeakBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "peak_phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "peak_timepoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Timepoint"
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/PhasePeak"
+            },
+            "title": "Phases",
+            "type": "array"
+          },
+          "scenario_high_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario High Bytes"
+          },
+          "scenario_low_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Low Bytes"
+          },
+          "timepoints": {
+            "items": {
+              "$ref": "#/components/schemas/TimepointTotal"
+            },
+            "title": "Timepoints",
+            "type": "array"
+          },
+          "unknown_components": {
+            "items": {
+              "$ref": "#/components/schemas/UnknownComponent"
+            },
+            "title": "Unknown Components",
+            "type": "array"
+          }
+        },
+        "required": [
+          "device",
+          "phases",
+          "timepoints",
+          "known_floor_bytes",
+          "scenario_low_bytes",
+          "scenario_high_bytes"
+        ],
+        "title": "DeviceEstimate",
+        "type": "object"
+      },
+      "DiskEstimate": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Bytes"
+          }
+        },
+        "required": [
+          "total_bytes"
+        ],
+        "title": "DiskEstimate",
+        "type": "object"
+      },
+      "DpoConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "beta": {
+            "default": 0.1,
+            "minimum": 0.0,
+            "title": "Beta",
+            "type": "number"
+          },
+          "loss_type": {
+            "default": "sigmoid",
+            "maxLength": 64,
+            "title": "Loss Type",
+            "type": "string"
+          },
+          "precompute_batch_size": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precompute Batch Size"
+          },
+          "reference_model": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Model"
+          },
+          "reference_strategy": {
+            "$ref": "#/components/schemas/ReferenceStrategy",
+            "default": "auto"
+          },
+          "sync_ref_model": {
+            "default": false,
+            "title": "Sync Ref Model",
+            "type": "boolean"
+          }
+        },
+        "title": "DpoConfig",
+        "type": "object"
+      },
+      "DpoResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "beta": {
+            "title": "Beta",
+            "type": "number"
+          },
+          "loss_type": {
+            "title": "Loss Type",
+            "type": "string"
+          },
+          "precompute_batch_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precompute Batch Size"
+          },
+          "reference_strategy": {
+            "$ref": "#/components/schemas/ReferenceStrategy"
+          },
+          "sync_ref_model": {
+            "default": false,
+            "title": "Sync Ref Model",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reference_strategy",
+          "beta",
+          "loss_type"
+        ],
+        "title": "DpoResolved",
+        "type": "object"
+      },
+      "EffectiveDtypes": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "title": "Adapter",
+            "type": "string"
+          },
+          "compute": {
+            "title": "Compute",
+            "type": "string"
+          },
+          "gradient": {
+            "title": "Gradient",
+            "type": "string"
+          },
+          "kv_cache": {
+            "title": "Kv Cache",
+            "type": "string"
+          },
+          "logits": {
+            "title": "Logits",
+            "type": "string"
+          },
+          "loss": {
+            "title": "Loss",
+            "type": "string"
+          },
+          "master_weights": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Master Weights"
+          },
+          "optimizer_state": {
+            "title": "Optimizer State",
+            "type": "string"
+          },
+          "recurrent_state": {
+            "title": "Recurrent State",
+            "type": "string"
+          },
+          "weights_nonquantized": {
+            "title": "Weights Nonquantized",
+            "type": "string"
+          }
+        },
+        "required": [
+          "weights_nonquantized",
+          "compute",
+          "adapter",
+          "gradient",
+          "optimizer_state",
+          "logits",
+          "loss",
+          "kv_cache",
+          "recurrent_state"
+        ],
+        "title": "EffectiveDtypes",
+        "type": "object"
+      },
+      "EmptySystemPolicy": {
+        "enum": [
+          "omit",
+          "keep"
+        ],
+        "title": "EmptySystemPolicy",
+        "type": "string"
+      },
+      "EnvironmentInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "dependency_lock_digest": {
+            "title": "Dependency Lock Digest",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "environment_id": {
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "packages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Packages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "environment_id",
+          "description",
+          "dependency_lock_digest"
+        ],
+        "title": "EnvironmentInfo",
+        "type": "object"
+      },
+      "ErrorCode": {
+        "enum": [
+          "SOURCE_ACCESS_DENIED",
+          "SOURCE_REVISION_CHANGED",
+          "LOCAL_PATH_NOT_ALLOWED",
+          "MODEL_METADATA_UNAVAILABLE",
+          "TOKENIZER_REQUIRED",
+          "TEMPLATE_REQUIRED",
+          "REMOTE_CODE_REQUIRED",
+          "COLUMN_MAPPING_REQUIRED",
+          "SCAN_PARTIAL",
+          "SCAN_FAILED_ROWS",
+          "DATA_PRESERVATION_VIOLATION",
+          "CONTEXT_EXCEEDED",
+          "GRPO_REWARD_UNSPECIFIED",
+          "GRPO_BUDGET_UNSPECIFIED",
+          "TRAINER_BATCH_CONSTRAINT",
+          "UNSUPPORTED_ARCHITECTURE",
+          "UNSUPPORTED_BACKEND_COMBINATION",
+          "REQUESTED_OPTION_NOT_EFFECTIVE",
+          "UNKNOWN_MEMORY_COMPONENT",
+          "CALIBRATION_OUT_OF_DOMAIN",
+          "PROFILE_OOM",
+          "PROFILE_SCOPE_INCOMPLETE",
+          "SOURCE_NOT_FOUND",
+          "SOURCE_URL_NOT_ALLOWED",
+          "UNSUPPORTED_MODEL_FORMAT",
+          "TEMPLATE_CONTENT_LOSS",
+          "DATASET_CONFIG_REQUIRED",
+          "DATASET_SPLIT_REQUIRED",
+          "DATASET_FORMAT_UNSUPPORTED",
+          "SCAN_QUOTA_EXCEEDED",
+          "SAMPLER_DROPS_ROWS",
+          "UNSUPPORTED_DISTRIBUTED_TOPOLOGY",
+          "CONFLICTING_OPTIONS",
+          "REANALYSIS_REQUIRED",
+          "GPU_WORKER_UNAVAILABLE",
+          "INVALID_REQUEST",
+          "CONCURRENCY_LIMIT",
+          "UPLOAD_TOO_LARGE",
+          "UPLOAD_TYPE_NOT_ALLOWED",
+          "UNAUTHORIZED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "CANCELLED",
+          "JOB_TIMEOUT",
+          "INTERNAL_ERROR"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Issue"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "EstimateItem": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Evidence"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "name",
+          "bytes_low",
+          "bytes_high",
+          "evidence"
+        ],
+        "title": "EstimateItem",
+        "type": "object"
+      },
+      "Evidence": {
+        "description": "Evidence attached to a single number (allocation, assumption).",
+        "enum": [
+          "analytic",
+          "calibrated",
+          "measured",
+          "assumption",
+          "unknown"
+        ],
+        "title": "Evidence",
+        "type": "string"
+      },
+      "EvidenceLevel": {
+        "description": "Support grade of an estimate (plan §11.4).",
+        "enum": [
+          "metadata_only",
+          "analytic",
+          "calibrated",
+          "measured"
+        ],
+        "title": "EvidenceLevel",
+        "type": "string"
+      },
+      "ExcludedComponent": {
+        "additionalProperties": false,
+        "description": "Something deliberately outside the computed scope (result becomes conditional).",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "ExcludedComponent",
+        "type": "object"
+      },
+      "FailedRow": {
+        "additionalProperties": false,
+        "properties": {
+          "error_code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "row_id": {
+            "title": "Row Id",
+            "type": "string"
+          },
+          "shard_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shard Id"
+          }
+        },
+        "required": [
+          "row_id",
+          "error_code",
+          "message"
+        ],
+        "title": "FailedRow",
+        "type": "object"
+      },
+      "FileEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "blob_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blob Id"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "FileEntry",
+        "type": "object"
+      },
+      "GpuPreset": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "total_bytes"
+        ],
+        "title": "GpuPreset",
+        "type": "object"
+      },
+      "GrpoBatchPlan": {
+        "additionalProperties": false,
+        "description": "Plan §8.3 symbols: U, G, C, B_update, K.",
+        "properties": {
+          "accumulation": {
+            "title": "Accumulation",
+            "type": "integer"
+          },
+          "completion_budgets": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Completion Budgets",
+            "type": "array"
+          },
+          "generation_batch_size": {
+            "title": "Generation Batch Size",
+            "type": "integer"
+          },
+          "live_sequences": {
+            "title": "Live Sequences",
+            "type": "integer"
+          },
+          "max_prompt_length": {
+            "title": "Max Prompt Length",
+            "type": "integer"
+          },
+          "num_generations": {
+            "title": "Num Generations",
+            "type": "integer"
+          },
+          "num_iterations": {
+            "title": "Num Iterations",
+            "type": "integer"
+          },
+          "steps_per_generation": {
+            "title": "Steps Per Generation",
+            "type": "integer"
+          },
+          "unique_prompts_per_generation": {
+            "title": "Unique Prompts Per Generation",
+            "type": "integer"
+          },
+          "update_microbatch": {
+            "title": "Update Microbatch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unique_prompts_per_generation",
+          "num_generations",
+          "live_sequences",
+          "update_microbatch",
+          "accumulation",
+          "generation_batch_size",
+          "steps_per_generation",
+          "num_iterations",
+          "completion_budgets",
+          "max_prompt_length"
+        ],
+        "title": "GrpoBatchPlan",
+        "type": "object"
+      },
+      "GrpoConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "beta": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Beta",
+            "type": "number"
+          },
+          "completion_budget": {
+            "anyOf": [
+              {
+                "maximum": 1048576.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Budget"
+          },
+          "completion_budget_candidates": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Completion Budget Candidates",
+            "type": "array"
+          },
+          "generation_batch_size": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 4,
+            "title": "Generation Batch Size"
+          },
+          "max_live_sequences": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Live Sequences"
+          },
+          "num_generations": {
+            "default": 4,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Num Generations",
+            "type": "integer"
+          },
+          "num_iterations": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Num Iterations",
+            "type": "integer"
+          },
+          "reward": {
+            "$ref": "#/components/schemas/RewardConfig"
+          },
+          "rollout_backend": {
+            "$ref": "#/components/schemas/RolloutBackend",
+            "default": "transformers_shared_policy"
+          },
+          "steps_per_generation": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps Per Generation"
+          }
+        },
+        "title": "GrpoConfig",
+        "type": "object"
+      },
+      "GrpoResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "accumulation": {
+            "title": "Accumulation",
+            "type": "integer"
+          },
+          "beta": {
+            "title": "Beta",
+            "type": "number"
+          },
+          "budget_explicit": {
+            "title": "Budget Explicit",
+            "type": "boolean"
+          },
+          "completion_budgets": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Completion Budgets",
+            "type": "array"
+          },
+          "generation_batch_size": {
+            "title": "Generation Batch Size",
+            "type": "integer"
+          },
+          "live_sequences": {
+            "title": "Live Sequences",
+            "type": "integer"
+          },
+          "num_generations": {
+            "title": "Num Generations",
+            "type": "integer"
+          },
+          "num_iterations": {
+            "title": "Num Iterations",
+            "type": "integer"
+          },
+          "reference_needed": {
+            "title": "Reference Needed",
+            "type": "boolean"
+          },
+          "reward_kind": {
+            "$ref": "#/components/schemas/RewardKind"
+          },
+          "reward_model_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reward Model Reference"
+          },
+          "rollout_backend": {
+            "$ref": "#/components/schemas/RolloutBackend"
+          },
+          "steps_per_generation": {
+            "title": "Steps Per Generation",
+            "type": "integer"
+          },
+          "update_microbatch": {
+            "title": "Update Microbatch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "num_generations",
+          "generation_batch_size",
+          "steps_per_generation",
+          "num_iterations",
+          "completion_budgets",
+          "budget_explicit",
+          "beta",
+          "reference_needed",
+          "reward_kind",
+          "rollout_backend",
+          "live_sequences",
+          "update_microbatch",
+          "accumulation"
+        ],
+        "title": "GrpoResolved",
+        "type": "object"
+      },
+      "HardwareConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "device_total_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Total Bytes"
+          },
+          "external_reserved_bytes": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "External Reserved Bytes",
+            "type": "integer"
+          },
+          "gpu_preset": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Preset"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/HardwareMode",
+            "default": "capacity_only"
+          },
+          "num_gpus": {
+            "default": 1,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Num Gpus",
+            "type": "integer"
+          },
+          "usable_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usable Bytes"
+          }
+        },
+        "title": "HardwareConfig",
+        "type": "object"
+      },
+      "HardwareFit": {
+        "enum": [
+          "not_evaluated",
+          "expected_fit",
+          "low_margin",
+          "exceeds",
+          "unknown"
+        ],
+        "title": "HardwareFit",
+        "type": "string"
+      },
+      "HardwareFitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity Bytes"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "not_evaluated",
+              "floor_exceeds_capacity",
+              "high_exceeds_capacity",
+              "margin_insufficient",
+              "fits_with_margin",
+              "unknown_components",
+              "unsupported"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HardwareFit"
+          },
+          "utilization_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utilization Ratio"
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "message"
+        ],
+        "title": "HardwareFitResult",
+        "type": "object"
+      },
+      "HardwareMode": {
+        "enum": [
+          "capacity_only",
+          "gpu_preset",
+          "custom"
+        ],
+        "title": "HardwareMode",
+        "type": "string"
+      },
+      "HealthResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Components",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "HistogramBin": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "hi": {
+            "title": "Hi",
+            "type": "integer"
+          },
+          "lo": {
+            "title": "Lo",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lo",
+          "hi",
+          "count"
+        ],
+        "title": "HistogramBin",
+        "type": "object"
+      },
+      "HostRamEstimate": {
+        "additionalProperties": false,
+        "description": "Training-node RAM (plan §10.1).",
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EstimateItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bytes_low",
+          "bytes_high"
+        ],
+        "title": "HostRamEstimate",
+        "type": "object"
+      },
+      "InspectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetSourceRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelSourceRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "objective": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Objective"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "InspectRequest",
+        "type": "object"
+      },
+      "InspectResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "InspectResponse",
+        "type": "object"
+      },
+      "Issue": {
+        "additionalProperties": false,
+        "description": "An error, warning or notice attached to a result or an API error response.\n\n`user_message` is Korean, safe to show (no stack traces, tokens, absolute paths).\n`details` holds structured, non-sensitive values (e.g. row ids, field names).",
+        "properties": {
+          "affected_component": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Affected Component"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Stage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "technical_detail_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical Detail Ref"
+          },
+          "user_message": {
+            "title": "User Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "user_message"
+        ],
+        "title": "Issue",
+        "type": "object"
+      },
+      "JobProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "message_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Code"
+          },
+          "processed_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processed Rows"
+          },
+          "shard_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "total_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rows"
+          }
+        },
+        "required": [
+          "stage"
+        ],
+        "title": "JobProgress",
+        "type": "object"
+      },
+      "JobStatus": {
+        "enum": [
+          "QUEUED",
+          "RESOLVING",
+          "INSPECTING",
+          "NEEDS_INPUT",
+          "TOKENIZING",
+          "VALIDATING_DATA",
+          "PLANNING_BATCHES",
+          "ESTIMATING",
+          "COMPLETED",
+          "CANCEL_REQUESTED",
+          "CANCELLED",
+          "FAILED",
+          "PARTIAL"
+        ],
+        "title": "JobStatus",
+        "type": "string"
+      },
+      "LayerTypeCount": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "layer_type": {
+            "title": "Layer Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layer_type",
+          "count"
+        ],
+        "title": "LayerTypeCount",
+        "type": "object"
+      },
+      "LengthStats": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "histogram": {
+            "items": {
+              "$ref": "#/components/schemas/HistogramBin"
+            },
+            "title": "Histogram",
+            "type": "array"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "max_row_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Row Id"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "p50": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p90": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          },
+          "p99": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P99"
+          },
+          "quantiles_exact": {
+            "default": true,
+            "title": "Quantiles Exact",
+            "type": "boolean"
+          },
+          "total_tokens": {
+            "default": 0,
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "LengthStats",
+        "type": "object"
+      },
+      "LoadingScope": {
+        "enum": [
+          "auto_verified",
+          "full_checkpoint",
+          "text_only"
+        ],
+        "title": "LoadingScope",
+        "type": "string"
+      },
+      "LocalRoot": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "reference_prefix": {
+            "title": "Reference Prefix",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reference_prefix"
+        ],
+        "title": "LocalRoot",
+        "type": "object"
+      },
+      "LocalRootsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "roots": {
+            "items": {
+              "$ref": "#/components/schemas/LocalRoot"
+            },
+            "title": "Roots",
+            "type": "array"
+          }
+        },
+        "title": "LocalRootsResponse",
+        "type": "object"
+      },
+      "LoraBias": {
+        "enum": [
+          "none",
+          "all",
+          "lora_only"
+        ],
+        "title": "LoraBias",
+        "type": "string"
+      },
+      "LoraConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "alpha": {
+            "default": 32,
+            "exclusiveMinimum": 0.0,
+            "title": "Alpha",
+            "type": "number"
+          },
+          "bias": {
+            "$ref": "#/components/schemas/LoraBias",
+            "default": "none"
+          },
+          "dropout": {
+            "default": 0.0,
+            "exclusiveMaximum": 1.0,
+            "minimum": 0.0,
+            "title": "Dropout",
+            "type": "number"
+          },
+          "exclude_modules": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclude Modules",
+            "type": "array"
+          },
+          "modules_to_save": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Modules To Save",
+            "type": "array"
+          },
+          "r": {
+            "default": 16,
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "R",
+            "type": "integer"
+          },
+          "rank_pattern": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Rank Pattern",
+            "type": "object"
+          },
+          "target_modules": {
+            "anyOf": [
+              {
+                "enum": [
+                  "auto_verified",
+                  "all-linear"
+                ],
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "default": "auto_verified",
+            "title": "Target Modules"
+          },
+          "use_dora": {
+            "default": false,
+            "title": "Use Dora",
+            "type": "boolean"
+          },
+          "use_rslora": {
+            "default": false,
+            "title": "Use Rslora",
+            "type": "boolean"
+          }
+        },
+        "title": "LoraConfig",
+        "type": "object"
+      },
+      "LoraResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "alpha": {
+            "title": "Alpha",
+            "type": "number"
+          },
+          "bias": {
+            "default": "none",
+            "title": "Bias",
+            "type": "string"
+          },
+          "dropout": {
+            "title": "Dropout",
+            "type": "number"
+          },
+          "exclude_modules": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclude Modules",
+            "type": "array"
+          },
+          "modules_to_save": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Modules To Save",
+            "type": "array"
+          },
+          "r": {
+            "title": "R",
+            "type": "integer"
+          },
+          "rank_pattern": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Rank Pattern",
+            "type": "object"
+          },
+          "target_module_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Target Module Patterns",
+            "type": "array"
+          },
+          "target_modules": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Target Modules",
+            "type": "array"
+          },
+          "use_dora": {
+            "default": false,
+            "title": "Use Dora",
+            "type": "boolean"
+          },
+          "use_rslora": {
+            "default": false,
+            "title": "Use Rslora",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "r",
+          "alpha",
+          "dropout",
+          "target_module_patterns",
+          "target_modules"
+        ],
+        "title": "LoraResolved",
+        "type": "object"
+      },
+      "LossKernel": {
+        "enum": [
+          "auto",
+          "standard",
+          "chunked",
+          "liger"
+        ],
+        "title": "LossKernel",
+        "type": "string"
+      },
+      "MarginPolicy": {
+        "additionalProperties": false,
+        "description": "planning_margin = max(min_bytes, scenario_high × fraction) (plan §10.2).",
+        "properties": {
+          "fraction": {
+            "default": 0.15,
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Fraction",
+            "type": "number"
+          },
+          "min_bytes": {
+            "default": 2147483648,
+            "minimum": 0.0,
+            "title": "Min Bytes",
+            "type": "integer"
+          }
+        },
+        "title": "MarginPolicy",
+        "type": "object"
+      },
+      "MeasurementScope": {
+        "additionalProperties": false,
+        "properties": {
+          "measured": {
+            "default": false,
+            "title": "Measured",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "phases_excluded": {
+            "items": {
+              "$ref": "#/components/schemas/Phase"
+            },
+            "title": "Phases Excluded",
+            "type": "array"
+          },
+          "phases_included": {
+            "items": {
+              "$ref": "#/components/schemas/Phase"
+            },
+            "title": "Phases Included",
+            "type": "array"
+          }
+        },
+        "title": "MeasurementScope",
+        "type": "object"
+      },
+      "MemoryEstimate": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "items": {
+              "$ref": "#/components/schemas/Assumption"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "evidence_level": {
+            "$ref": "#/components/schemas/EvidenceLevel"
+          },
+          "primary_scenario_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Scenario Id"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioEstimate"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          }
+        },
+        "required": [
+          "evidence_level",
+          "scenarios"
+        ],
+        "title": "MemoryEstimate",
+        "type": "object"
+      },
+      "ModelComponent": {
+        "enum": [
+          "text",
+          "vision",
+          "audio",
+          "projector",
+          "mtp",
+          "other"
+        ],
+        "title": "ModelComponent",
+        "type": "string"
+      },
+      "ModelInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "architecture_adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Adapter"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelInventorySummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "support": {
+            "items": {
+              "$ref": "#/components/schemas/SupportEntry"
+            },
+            "title": "Support",
+            "type": "array"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ModelInspection",
+        "type": "object"
+      },
+      "ModelInventorySummary": {
+        "additionalProperties": false,
+        "description": "The part of the inventory embedded in results and API responses.",
+        "properties": {
+          "by_component": {
+            "items": {
+              "$ref": "#/components/schemas/ComponentParams"
+            },
+            "title": "By Component",
+            "type": "array"
+          },
+          "bytes_serialized_total": {
+            "title": "Bytes Serialized Total",
+            "type": "integer"
+          },
+          "facts": {
+            "$ref": "#/components/schemas/ArchitectureFacts"
+          },
+          "inventory_hash": {
+            "title": "Inventory Hash",
+            "type": "string"
+          },
+          "linear_module_count": {
+            "title": "Linear Module Count",
+            "type": "integer"
+          },
+          "params_total": {
+            "title": "Params Total",
+            "type": "integer"
+          },
+          "quantized_checkpoint_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantized Checkpoint Format"
+          },
+          "tensor_count": {
+            "title": "Tensor Count",
+            "type": "integer"
+          },
+          "tied_groups": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Tied Groups",
+            "type": "array"
+          }
+        },
+        "required": [
+          "facts",
+          "tensor_count",
+          "linear_module_count",
+          "params_total",
+          "bytes_serialized_total",
+          "by_component",
+          "inventory_hash"
+        ],
+        "title": "ModelInventorySummary",
+        "type": "object"
+      },
+      "ModelSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "loading_scope": {
+            "$ref": "#/components/schemas/LoadingScope",
+            "default": "auto_verified"
+          },
+          "reference": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SourceType",
+            "default": "huggingface"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "ModelSourceRef",
+        "type": "object"
+      },
+      "NeedsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/NeedsInputChoice"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "mapping_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnMapping"
+            },
+            "title": "Mapping Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "choices"
+        ],
+        "title": "NeedsInput",
+        "type": "object"
+      },
+      "NeedsInputChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "suggested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested"
+          }
+        },
+        "required": [
+          "field",
+          "reason"
+        ],
+        "title": "NeedsInputChoice",
+        "type": "object"
+      },
+      "Objective": {
+        "enum": [
+          "sft",
+          "dpo",
+          "grpo"
+        ],
+        "title": "Objective",
+        "type": "string"
+      },
+      "OffloadConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "activations": {
+            "default": false,
+            "title": "Activations",
+            "type": "boolean"
+          },
+          "optimizer": {
+            "default": false,
+            "title": "Optimizer",
+            "type": "boolean"
+          },
+          "parameters": {
+            "default": false,
+            "title": "Parameters",
+            "type": "boolean"
+          }
+        },
+        "title": "OffloadConfig",
+        "type": "object"
+      },
+      "OptimizerName": {
+        "enum": [
+          "adamw_torch",
+          "adamw_torch_fused",
+          "adamw_8bit",
+          "paged_adamw_8bit"
+        ],
+        "title": "OptimizerName",
+        "type": "string"
+      },
+      "OptimizerResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "block_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Size"
+          },
+          "eight_bit": {
+            "default": false,
+            "title": "Eight Bit",
+            "type": "boolean"
+          },
+          "fused": {
+            "default": false,
+            "title": "Fused",
+            "type": "boolean"
+          },
+          "min_8bit_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min 8Bit Size"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "paged": {
+            "default": false,
+            "title": "Paged",
+            "type": "boolean"
+          },
+          "state_dtype": {
+            "title": "State Dtype",
+            "type": "string"
+          },
+          "states_per_param": {
+            "title": "States Per Param",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "states_per_param",
+          "state_dtype"
+        ],
+        "title": "OptimizerResolved",
+        "type": "object"
+      },
+      "PeakBreakdown": {
+        "additionalProperties": false,
+        "properties": {
+          "by_category_high": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Category High",
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "timepoint": {
+            "title": "Timepoint",
+            "type": "string"
+          },
+          "total_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total High"
+          },
+          "total_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Low"
+          }
+        },
+        "required": [
+          "timepoint",
+          "phase",
+          "items",
+          "total_low",
+          "total_high"
+        ],
+        "title": "PeakBreakdown",
+        "type": "object"
+      },
+      "Phase": {
+        "enum": [
+          "MODEL_LOAD_AND_QUANTIZE",
+          "REFERENCE_PRECOMPUTE",
+          "ROLLOUT_PREFILL_AND_DECODE",
+          "REWARD",
+          "POLICY_FORWARD_BACKWARD",
+          "OPTIMIZER_STEP",
+          "WEIGHT_SYNC",
+          "EVALUATION",
+          "CHECKPOINT_SAVE_OR_CONSOLIDATE"
+        ],
+        "title": "Phase",
+        "type": "string"
+      },
+      "PhasePeak": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "excluded_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Reason"
+          },
+          "included": {
+            "title": "Included",
+            "type": "boolean"
+          },
+          "known_floor_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Floor Bytes"
+          },
+          "peak_timepoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Timepoint"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "unknown_components": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Components",
+            "type": "array"
+          }
+        },
+        "required": [
+          "phase",
+          "included"
+        ],
+        "title": "PhasePeak",
+        "type": "object"
+      },
+      "Precision": {
+        "enum": [
+          "auto",
+          "bf16",
+          "fp16",
+          "fp32"
+        ],
+        "title": "Precision",
+        "type": "string"
+      },
+      "PreservationAudit": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PreservationCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DataPreservation"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PreservationAudit",
+        "type": "object"
+      },
+      "PreservationCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "name": {
+            "$ref": "#/components/schemas/PreservationCheckName"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          }
+        },
+        "required": [
+          "name",
+          "passed",
+          "detail"
+        ],
+        "title": "PreservationCheck",
+        "type": "object"
+      },
+      "PreservationCheckName": {
+        "description": "The eight conditions of plan §7.4.",
+        "enum": [
+          "full_read",
+          "no_length_drop",
+          "no_split_or_concat",
+          "template_content_preserved",
+          "last_batch_included",
+          "packing_safe",
+          "context_within_limit",
+          "eval_scope_consistent"
+        ],
+        "title": "PreservationCheckName",
+        "type": "string"
+      },
+      "ProfilingConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "ProfilingConfig",
+        "type": "object"
+      },
+      "QuantFormat": {
+        "enum": [
+          "nf4",
+          "fp4"
+        ],
+        "title": "QuantFormat",
+        "type": "string"
+      },
+      "QuantizationConfig": {
+        "additionalProperties": false,
+        "description": "`enabled` is the UI's \"Load in 4-bit\" switch (bitsandbytes 4-bit).",
+        "properties": {
+          "compute_dtype": {
+            "$ref": "#/components/schemas/ComputeDtype",
+            "default": "auto"
+          },
+          "double_quant": {
+            "default": true,
+            "title": "Double Quant",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "format": {
+            "$ref": "#/components/schemas/QuantFormat",
+            "default": "nf4"
+          }
+        },
+        "title": "QuantizationConfig",
+        "type": "object"
+      },
+      "QuantizationResolved": {
+        "additionalProperties": false,
+        "properties": {
+          "blocksize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocksize"
+          },
+          "compute_dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compute Dtype"
+          },
+          "double_quant": {
+            "default": false,
+            "title": "Double Quant",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bnb_nf4",
+                  "bnb_fp4"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method"
+          },
+          "nested_blocksize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nested Blocksize"
+          },
+          "quant_storage_dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quant Storage Dtype"
+          },
+          "skip_module_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skip Module Patterns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "QuantizationResolved",
+        "type": "object"
+      },
+      "ReferenceStrategy": {
+        "enum": [
+          "auto",
+          "frozen_base_switch",
+          "standalone_model",
+          "precomputed_log_probs"
+        ],
+        "title": "ReferenceStrategy",
+        "type": "string"
+      },
+      "ResolvedConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "accumulation": {
+            "title": "Accumulation",
+            "type": "integer"
+          },
+          "architecture_adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Adapter"
+          },
+          "attention_path_by_layer_type": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Attention Path By Layer Type",
+            "type": "object"
+          },
+          "checkpointing_granularity": {
+            "enum": [
+              "none",
+              "per_decoder_layer"
+            ],
+            "title": "Checkpointing Granularity",
+            "type": "string"
+          },
+          "dependency_lock_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Lock Digest"
+          },
+          "dpo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DpoResolved"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_dtypes": {
+            "$ref": "#/components/schemas/EffectiveDtypes"
+          },
+          "empty_system_policy": {
+            "$ref": "#/components/schemas/EmptySystemPolicy",
+            "default": "omit"
+          },
+          "environment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Id"
+          },
+          "gradient_checkpointing": {
+            "title": "Gradient Checkpointing",
+            "type": "boolean"
+          },
+          "grpo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GrpoResolved"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loading_scope": {
+            "enum": [
+              "full_checkpoint",
+              "text_only"
+            ],
+            "title": "Loading Scope",
+            "type": "string"
+          },
+          "lora": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoraResolved"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loss_path": {
+            "title": "Loss Path",
+            "type": "string"
+          },
+          "microbatch": {
+            "title": "Microbatch",
+            "type": "integer"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "optimizer": {
+            "$ref": "#/components/schemas/OptimizerResolved"
+          },
+          "pad_to_multiple_of": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pad To Multiple Of"
+          },
+          "preprocessing_adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preprocessing Adapter"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "quantization": {
+            "$ref": "#/components/schemas/QuantizationResolved"
+          },
+          "resolutions": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigResolution"
+            },
+            "title": "Resolutions",
+            "type": "array"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/Strategy"
+          },
+          "template_kwargs": {
+            "additionalProperties": true,
+            "title": "Template Kwargs",
+            "type": "object"
+          },
+          "trainable_full_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Trainable Full Patterns",
+            "type": "array"
+          },
+          "trainer_adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trainer Adapter"
+          },
+          "upcast_to_fp32_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Upcast To Fp32 Patterns",
+            "type": "array"
+          },
+          "use_cache_during_training": {
+            "default": false,
+            "title": "Use Cache During Training",
+            "type": "boolean"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceAssumptions"
+          }
+        },
+        "required": [
+          "objective",
+          "strategy",
+          "loading_scope",
+          "effective_dtypes",
+          "quantization",
+          "optimizer",
+          "microbatch",
+          "accumulation",
+          "gradient_checkpointing",
+          "checkpointing_granularity",
+          "loss_path",
+          "workspace"
+        ],
+        "title": "ResolvedConfig",
+        "type": "object"
+      },
+      "RewardConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RewardKind",
+            "default": "unspecified"
+          },
+          "model_reference": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Reference"
+          },
+          "on_training_gpu": {
+            "default": true,
+            "title": "On Training Gpu",
+            "type": "boolean"
+          }
+        },
+        "title": "RewardConfig",
+        "type": "object"
+      },
+      "RewardKind": {
+        "enum": [
+          "unspecified",
+          "cpu_rule",
+          "remote",
+          "local_model"
+        ],
+        "title": "RewardKind",
+        "type": "string"
+      },
+      "RolloutBackend": {
+        "enum": [
+          "transformers_shared_policy",
+          "vllm_colocate",
+          "vllm_server"
+        ],
+        "title": "RolloutBackend",
+        "type": "string"
+      },
+      "RowLength": {
+        "additionalProperties": false,
+        "properties": {
+          "length": {
+            "title": "Length",
+            "type": "integer"
+          },
+          "row_id": {
+            "title": "Row Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "row_id",
+          "length"
+        ],
+        "title": "RowLength",
+        "type": "object"
+      },
+      "SamplerPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "covers_all_rows": {
+            "title": "Covers All Rows",
+            "type": "boolean"
+          },
+          "drop_last": {
+            "default": false,
+            "title": "Drop Last",
+            "type": "boolean"
+          },
+          "dropped_rows": {
+            "default": 0,
+            "title": "Dropped Rows",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "required": [
+          "kind",
+          "covers_all_rows"
+        ],
+        "title": "SamplerPlan",
+        "type": "object"
+      },
+      "ScanCoverage": {
+        "enum": [
+          "not_started",
+          "partial",
+          "complete",
+          "failed"
+        ],
+        "title": "ScanCoverage",
+        "type": "string"
+      },
+      "ScanMode": {
+        "enum": [
+          "full",
+          "sample"
+        ],
+        "title": "ScanMode",
+        "type": "string"
+      },
+      "ScenarioEstimate": {
+        "additionalProperties": false,
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/AllocationSpec"
+            },
+            "title": "Allocations",
+            "type": "array"
+          },
+          "batch_shape": {
+            "$ref": "#/components/schemas/BatchShape"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceEstimate"
+            },
+            "title": "Devices",
+            "type": "array"
+          },
+          "excluded_components": {
+            "items": {
+              "$ref": "#/components/schemas/ExcludedComponent"
+            },
+            "title": "Excluded Components",
+            "type": "array"
+          },
+          "hardware_fit": {
+            "$ref": "#/components/schemas/HardwareFitResult"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "recommendation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapacityRecommendation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "string"
+          },
+          "timepoints": {
+            "items": {
+              "$ref": "#/components/schemas/Timepoint"
+            },
+            "title": "Timepoints",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario_id",
+          "label",
+          "batch_shape",
+          "devices",
+          "hardware_fit"
+        ],
+        "title": "ScenarioEstimate",
+        "type": "object"
+      },
+      "ScenarioRequest": {
+        "additionalProperties": false,
+        "description": "The full current form state; the server decides what can be recomputed.",
+        "properties": {
+          "client_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Fingerprint"
+          },
+          "request": {
+            "$ref": "#/components/schemas/AnalysisRequest"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "ScenarioRequest",
+        "type": "object"
+      },
+      "ScenarioResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "client_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Fingerprint"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "reanalysis_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reanalysis Reasons",
+            "type": "array"
+          },
+          "requires_reanalysis": {
+            "title": "Requires Reanalysis",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "fingerprint",
+          "requires_reanalysis"
+        ],
+        "title": "ScenarioResponse",
+        "type": "object"
+      },
+      "ScopeConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "include_checkpoint_save": {
+            "default": false,
+            "title": "Include Checkpoint Save",
+            "type": "boolean"
+          },
+          "include_evaluation": {
+            "default": false,
+            "title": "Include Evaluation",
+            "type": "boolean"
+          }
+        },
+        "title": "ScopeConfig",
+        "type": "object"
+      },
+      "Severity": {
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ],
+        "title": "Severity",
+        "type": "string"
+      },
+      "ShardProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "completed"
+        ],
+        "title": "ShardProgress",
+        "type": "object"
+      },
+      "SourceManifest": {
+        "additionalProperties": false,
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gated"
+          },
+          "kind": {
+            "enum": [
+              "model",
+              "dataset"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "private": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Private"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          },
+          "repo_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Id"
+          },
+          "requested_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Revision"
+          },
+          "resolved_revision": {
+            "title": "Resolved Revision",
+            "type": "string"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SourceType"
+          }
+        },
+        "required": [
+          "kind",
+          "source_type",
+          "reference",
+          "resolved_revision",
+          "fingerprint"
+        ],
+        "title": "SourceManifest",
+        "type": "object"
+      },
+      "SourceManifests": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "SourceManifests",
+        "type": "object"
+      },
+      "SourceType": {
+        "enum": [
+          "huggingface",
+          "local",
+          "upload"
+        ],
+        "title": "SourceType",
+        "type": "string"
+      },
+      "Stage": {
+        "enum": [
+          "request",
+          "resolving",
+          "inspecting",
+          "tokenizing",
+          "validating_data",
+          "planning_batches",
+          "estimating",
+          "export",
+          "api"
+        ],
+        "title": "Stage",
+        "type": "string"
+      },
+      "StatusAxes": {
+        "additionalProperties": false,
+        "description": "Independent status axes (plan §12.1) — never collapsed into a single success badge.",
+        "properties": {
+          "data_preservation": {
+            "$ref": "#/components/schemas/DataPreservation",
+            "default": "pending"
+          },
+          "estimate_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hardware_fit": {
+            "$ref": "#/components/schemas/HardwareFit",
+            "default": "not_evaluated"
+          },
+          "scan_coverage": {
+            "$ref": "#/components/schemas/ScanCoverage",
+            "default": "not_started"
+          },
+          "training_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrainingReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "StatusAxes",
+        "type": "object"
+      },
+      "Strategy": {
+        "enum": [
+          "full",
+          "lora",
+          "qlora"
+        ],
+        "title": "Strategy",
+        "type": "string"
+      },
+      "SupportEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "grade": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/TrainingReadiness"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/Strategy"
+          }
+        },
+        "required": [
+          "objective",
+          "strategy",
+          "grade",
+          "readiness"
+        ],
+        "title": "SupportEntry",
+        "type": "object"
+      },
+      "TemplateOptions": {
+        "additionalProperties": false,
+        "description": "Chat-template kwargs. `None` keeps the template's own default.",
+        "properties": {
+          "enable_thinking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enable Thinking"
+          }
+        },
+        "title": "TemplateOptions",
+        "type": "object"
+      },
+      "Timepoint": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          }
+        },
+        "required": [
+          "id",
+          "phase",
+          "name",
+          "description",
+          "order"
+        ],
+        "title": "Timepoint",
+        "type": "object"
+      },
+      "TimepointTotal": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes High"
+          },
+          "bytes_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Low"
+          },
+          "known_floor_bytes": {
+            "title": "Known Floor Bytes",
+            "type": "integer"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "timepoint": {
+            "title": "Timepoint",
+            "type": "string"
+          },
+          "unknown": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timepoint",
+          "phase",
+          "bytes_low",
+          "bytes_high",
+          "known_floor_bytes"
+        ],
+        "title": "TimepointTotal",
+        "type": "object"
+      },
+      "TokenizerManifest": {
+        "additionalProperties": false,
+        "properties": {
+          "adds_bos_by_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adds Bos By Default"
+          },
+          "adds_eos_by_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adds Eos By Default"
+          },
+          "bos_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bos Token"
+          },
+          "chat_template_present": {
+            "title": "Chat Template Present",
+            "type": "boolean"
+          },
+          "chat_template_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Template Sha256"
+          },
+          "chat_template_source": {
+            "default": "none",
+            "enum": [
+              "chat_template.jinja",
+              "tokenizer_config.json",
+              "processor",
+              "none"
+            ],
+            "title": "Chat Template Source",
+            "type": "string"
+          },
+          "config_vocab_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Vocab Size"
+          },
+          "eos_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eos Token"
+          },
+          "files_sha256": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Files Sha256",
+            "type": "object"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "has_generation_markers": {
+            "default": false,
+            "title": "Has Generation Markers",
+            "type": "boolean"
+          },
+          "model_max_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Max Length"
+          },
+          "model_max_length_is_sentinel": {
+            "default": false,
+            "title": "Model Max Length Is Sentinel",
+            "type": "boolean"
+          },
+          "pad_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pad Token"
+          },
+          "template_kwargs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Template Kwargs",
+            "type": "array"
+          },
+          "tokenizer_class": {
+            "title": "Tokenizer Class",
+            "type": "string"
+          },
+          "vocab_size": {
+            "title": "Vocab Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokenizer_class",
+          "vocab_size",
+          "chat_template_present",
+          "fingerprint"
+        ],
+        "title": "TokenizerManifest",
+        "type": "object"
+      },
+      "TrainingConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "attention_backend": {
+            "$ref": "#/components/schemas/AttentionBackend",
+            "default": "auto"
+          },
+          "backend_profile": {
+            "default": "auto",
+            "maxLength": 256,
+            "title": "Backend Profile",
+            "type": "string"
+          },
+          "compile": {
+            "default": false,
+            "title": "Compile",
+            "type": "boolean"
+          },
+          "data_policy": {
+            "$ref": "#/components/schemas/DataPolicy",
+            "default": "strict_no_truncation"
+          },
+          "gradient_accumulation_steps": {
+            "anyOf": [
+              {
+                "maximum": 65536.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gradient Accumulation Steps"
+          },
+          "gradient_checkpointing": {
+            "default": true,
+            "title": "Gradient Checkpointing",
+            "type": "boolean"
+          },
+          "lora": {
+            "$ref": "#/components/schemas/LoraConfig"
+          },
+          "loss_kernel": {
+            "$ref": "#/components/schemas/LossKernel",
+            "default": "auto"
+          },
+          "microbatch_per_device": {
+            "anyOf": [
+              {
+                "maximum": 4096.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Microbatch Per Device"
+          },
+          "num_devices": {
+            "default": 1,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Num Devices",
+            "type": "integer"
+          },
+          "objective": {
+            "$ref": "#/components/schemas/Objective"
+          },
+          "offload": {
+            "$ref": "#/components/schemas/OffloadConfig"
+          },
+          "optimizer": {
+            "$ref": "#/components/schemas/OptimizerName",
+            "default": "adamw_torch"
+          },
+          "packing": {
+            "default": false,
+            "title": "Packing",
+            "type": "boolean"
+          },
+          "pad_to_multiple_of": {
+            "anyOf": [
+              {
+                "maximum": 4096.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pad To Multiple Of"
+          },
+          "precision": {
+            "$ref": "#/components/schemas/Precision",
+            "default": "auto"
+          },
+          "quantization": {
+            "$ref": "#/components/schemas/QuantizationConfig"
+          },
+          "seed": {
+            "default": 42,
+            "title": "Seed",
+            "type": "integer"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/Strategy"
+          },
+          "template": {
+            "$ref": "#/components/schemas/TemplateOptions"
+          }
+        },
+        "required": [
+          "objective",
+          "strategy"
+        ],
+        "title": "TrainingConfig",
+        "type": "object"
+      },
+      "TrainingReadiness": {
+        "enum": [
+          "ready",
+          "conditional",
+          "unsupported"
+        ],
+        "title": "TrainingReadiness",
+        "type": "string"
+      },
+      "UnknownComponent": {
+        "additionalProperties": false,
+        "description": "Something inside the scope whose size cannot be estimated (never filled with 0).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "UnknownComponent",
+        "type": "object"
+      },
+      "UploadResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "reference",
+          "filename",
+          "size_bytes",
+          "sha256",
+          "expires_at"
+        ],
+        "title": "UploadResponse",
+        "type": "object"
+      },
+      "WorkspaceAssumptions": {
+        "additionalProperties": false,
+        "description": "Low/high bytes for components without a shape formula (versioned in the profile).",
+        "properties": {
+          "allocator_slack_fraction": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Allocator Slack Fraction",
+            "type": "array"
+          },
+          "cuda_context_bytes": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Cuda Context Bytes",
+            "type": "array"
+          },
+          "library_workspace_bytes": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Library Workspace Bytes",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cuda_context_bytes",
+          "library_workspace_bytes",
+          "allocator_slack_fraction"
+        ],
+        "title": "WorkspaceAssumptions",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Fine-tuning VRAM calculator: full-dataset analysis and peak memory estimates.",
+    "title": "VRAMForge API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/analyses": {
+      "post": {
+        "description": "Validate, enqueue a full-dataset analysis and return its id (202).",
+        "operationId": "create_analysis_api_v1_analyses_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Create Analysis",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}": {
+      "delete": {
+        "operationId": "delete_analysis_api_v1_analyses__analysis_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Delete Analysis",
+        "tags": [
+          "analyses"
+        ]
+      },
+      "get": {
+        "operationId": "get_analysis_api_v1_analyses__analysis_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Get Analysis",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/cancel": {
+      "post": {
+        "operationId": "cancel_analysis_api_v1_analyses__analysis_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Cancel Analysis",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/events": {
+      "get": {
+        "description": "Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.",
+        "operationId": "analysis_events_api_v1_analyses__analysis_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "SSE stream"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Analysis Events",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/export": {
+      "get": {
+        "operationId": "export_analysis_api_v1_analyses__analysis_id__export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "yaml",
+                "md",
+                "trainer-config"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/yaml": {},
+              "text/markdown": {}
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Export Analysis",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/profile": {
+      "post": {
+        "description": "Opt-in GPU validation (M5). Not available in this release: always GPU_WORKER_UNAVAILABLE.",
+        "operationId": "start_gpu_profile_api_v1_analyses__analysis_id__profile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "GPU worker not connected"
+          }
+        },
+        "summary": "Start Gpu Profile",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/analyses/{analysis_id}/scenarios": {
+      "post": {
+        "description": "Recompute batch plan and memory from cached artifacts, or report re-analysis is needed.",
+        "operationId": "scenarios_api_v1_analyses__analysis_id__scenarios_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "analysis_id",
+            "required": true,
+            "schema": {
+              "title": "Analysis Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenarioRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Scenarios",
+        "tags": [
+          "analyses"
+        ]
+      }
+    },
+    "/api/v1/backend-profiles": {
+      "get": {
+        "description": "Supported objective × strategy combinations, environments and GPU presets.",
+        "operationId": "backend_profiles_api_v1_backend_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackendProfilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Backend Profiles",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/local-roots": {
+      "get": {
+        "description": "Read-only server-side roots usable as `local:<name>/<path>` references.",
+        "operationId": "local_roots_api_v1_local_roots_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalRootsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Local Roots",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/api/v1/sources/inspect": {
+      "post": {
+        "description": "Metadata-only inspection of a model and/or dataset (no weights, no full scan).",
+        "operationId": "inspect_sources_api_v1_sources_inspect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Inspect Sources",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/api/v1/uploads": {
+      "post": {
+        "description": "Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.",
+        "operationId": "upload_dataset_api_v1_uploads_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_dataset_api_v1_uploads_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Upload Dataset",
+        "tags": [
+          "sources"
+        ]
+      }
+    }
+  }
+}
