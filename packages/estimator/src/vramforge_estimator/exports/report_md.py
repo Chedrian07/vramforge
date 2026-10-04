@@ -279,13 +279,13 @@ def render_report(result: AnalysisResult) -> str:
     if memory is not None and memory.scenarios:
         rows = []
         for scenario in memory.scenarios:
-            device = scenario.devices[0] if scenario.devices else None
+            first = scenario.devices[0] if scenario.devices else None
             rec = scenario.recommendation
             rows.append(
                 [
                     esc(scenario.label),
-                    fmt_range(device.scenario_low_bytes, device.scenario_high_bytes)
-                    if device
+                    fmt_range(first.scenario_low_bytes, first.scenario_high_bytes)
+                    if first
                     else "-",
                     fmt_bytes(rec.recommended_application_capacity_bytes) if rec else "미상",
                     esc(scenario.hardware_fit.message),

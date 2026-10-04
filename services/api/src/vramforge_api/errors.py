@@ -64,10 +64,15 @@ def api_error(
     retryable: bool = False,
     **details: object,
 ) -> ApiError:
-    return ApiError(
-        status_code,
-        make_issue(code, message, stage=stage, retryable=retryable, **details),
+    issue = Issue(
+        code=code,
+        severity=Severity.ERROR,
+        stage=stage,
+        retryable=retryable,
+        user_message=message,
+        details=dict(details),
     )
+    return ApiError(status_code, issue)
 
 
 def not_found() -> ApiError:
