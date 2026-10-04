@@ -183,10 +183,10 @@ def test_auto_map_with_native_class_is_fine(model_dir: ModelDir) -> None:
 
 def test_unknown_dtype(model_dir: ModelDir, st_writer: Any) -> None:
     target, access = model_dir(tensors=None)
-    header = {"w.weight": {"dtype": "F8_E8M0", "shape": [4], "data_offsets": [0, 4]}}
+    header = {"w.weight": {"dtype": "Q3", "shape": [4], "data_offsets": [0, 4]}}
     st_writer.write_header(target / "model.safetensors", header)
     _fails(
-        ErrorCode.UNSUPPORTED_MODEL_FORMAT, target, access, reason="unknown_dtype", dtype="F8_E8M0"
+        ErrorCode.UNSUPPORTED_MODEL_FORMAT, target, access, reason="unknown_dtype", dtype="Q3"
     )
 
 
@@ -353,7 +353,7 @@ def test_hf_header_with_unknown_dtype(mimo_hub: tuple[Any, SourceAccess, Any]) -
     shard = "model-00001-of-00004.safetensors"
     header, size, sha = repo.shards[shard]
     broken = json.loads(json.dumps(header))
-    broken["lm_head.weight"]["dtype"] = "U32"
+    broken["lm_head.weight"]["dtype"] = "Q3"
     repo.shards[shard] = (broken, size, sha)
     with pytest.raises(EstimatorError) as exc:
         inspect_model(source, access)

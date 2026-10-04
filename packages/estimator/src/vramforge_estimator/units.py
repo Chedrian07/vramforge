@@ -27,10 +27,18 @@ DTYPE_BYTES: dict[str, float] = {
     "int16": 2,
     "int8": 1,
     "uint8": 1,
+    "uint16": 2,
+    "uint32": 4,
+    "uint64": 8,
+    "float8_e8m0fnu": 1,
+    "complex64": 8,
     "bool": 1,
     # Packed 4-bit payload: two elements per byte. Metadata is accounted separately.
     "nf4": 0.5,
     "fp4": 0.5,
+    "float4_e2m1": 0.5,
+    "float6_e2m3": 0.75,
+    "float6_e3m2": 0.75,
 }
 
 # safetensors header dtype codes -> canonical names.
@@ -46,6 +54,14 @@ SAFETENSORS_DTYPES: dict[str, str] = {
     "I16": "int16",
     "I8": "int8",
     "U8": "uint8",
+    "U16": "uint16",
+    "U32": "uint32",
+    "U64": "uint64",
+    "F8_E8M0": "float8_e8m0fnu",
+    "F4": "float4_e2m1",
+    "F6_E2M3": "float6_e2m3",
+    "F6_E3M2": "float6_e3m2",
+    "C64": "complex64",
     "BOOL": "bool",
 }
 

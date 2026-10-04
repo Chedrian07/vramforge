@@ -17,7 +17,7 @@ from vramforge_estimator.schemas import SourceManifest
 class SourceAccess:
     """Credentials, roots and limits available to resolvers (server-side only, never serialized)."""
 
-    hf_token: str | None = None
+    hf_token: str | None = field(default=None, repr=False)  # never in repr/logs (plan §18)
     # name -> absolute container path of a read-only root, referenced as "local:<name>/<rel>".
     local_roots: dict[str, Path] = field(default_factory=dict)
     uploads_dir: Path | None = None

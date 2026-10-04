@@ -45,8 +45,8 @@ def test_valid_header_with_metadata_and_scalar() -> None:
         ({"w": {"dtype": "F32", "shape": [1], "data_offsets": [0]}}, "invalid_offsets"),
         ({"w": _entry("F32", [1], 4, 8)}, "non_contiguous_offsets"),  # hole at the start
         ({"w": _entry("F32", [1], 0, 4), "v": _entry("F32", [1], 2, 6)}, "non_contiguous_offsets"),
-        ({"w": _entry("F8_E8M0", [1], 0, 1)}, "unknown_dtype"),
-        ({"w": _entry("C64", [1], 0, 8)}, "unknown_dtype"),
+        ({"w": _entry("Q3", [1], 0, 1)}, "unknown_dtype"),
+        ({"w": _entry("Z9", [1], 0, 8)}, "unknown_dtype"),
         ({"w": [1, 2]}, "invalid_entry"),
         ({"__metadata__": {"a": 1}}, "invalid_metadata"),
     ],
