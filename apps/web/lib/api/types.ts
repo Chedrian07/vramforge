@@ -72,3 +72,17 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set<JobStatus>(
 export function isTerminalStatus(status: JobStatus | null | undefined): boolean {
   return status != null && TERMINAL_JOB_STATUSES.has(status);
 }
+
+/** The ordered stages a running job moves through (schemas/common.py PIPELINE_STAGES). */
+export const PIPELINE_STAGES: readonly JobStatus[] = ["RESOLVING", "INSPECTING", "TOKENIZING", "VALIDATING_DATA", "PLANNING_BATCHES", "ESTIMATING"];
+
+/**
+ * The later of two pipeline stages; anything else (QUEUED, a terminal status) never replaces a
+ * stage already reached. A terminal job's progress names the terminal status itself, so this is
+ * what tells where the job stopped.
+ */
+export function furthestStage(reached: JobStatus | null, next: JobStatus | null | undefined): JobStatus | null {
+  const at = next == null ? -1 : PIPELINE_STAGES.indexOf(next);
+  if (at < 0) return reached;
+  return reached != null && PIPELINE_STAGES.indexOf(reached) > at ? reached : (next ?? null);
+}

@@ -25,7 +25,15 @@ function stepIndexOf(status: JobStatus | null | undefined): number {
   return PROGRESS_STEPS.findIndex((step) => step.statuses.includes(status));
 }
 
-export function stepStates(run: Pick<RunState, "jobStatus" | "progress" | "phase">): StepState[] {
+/** Issue.stage ("tokenizing") as the job status of that stage ("TOKENIZING"). */
+function issueStageStatus(stage: string | null | undefined): JobStatus | null {
+  const status = stage?.toUpperCase() as JobStatus | undefined;
+  return status != null && stepIndexOf(status) >= 0 ? status : null;
+}
+
+export function stepStates(
+  run: Pick<RunState, "jobStatus" | "progress" | "phase"> & Partial<Pick<RunState, "reachedStage" | "status" | "endIssue">>,
+): StepState[] {
   const n = PROGRESS_STEPS.length;
   const status = run.jobStatus;
   if (!status || run.phase === "idle") return Array<StepState>(n).fill("pending");
@@ -33,8 +41,12 @@ export function stepStates(run: Pick<RunState, "jobStatus" | "progress" | "phase
   const running = stepIndexOf(status);
   if (running >= 0) return PROGRESS_STEPS.map((_, i) => (i < running ? "done" : i === running ? "current" : "pending"));
   if (status === "QUEUED") return Array<StepState>(n).fill("pending");
-  // CANCEL_REQUESTED, NEEDS_INPUT, FAILED, PARTIAL, CANCELLED: where did it stop?
+  // CANCEL_REQUESTED, NEEDS_INPUT, FAILED, PARTIAL, CANCELLED: where did it stop? The API's
+  // terminal progress names the end status itself (stage CANCELLED), so fall back to the stage of
+  // the issue that ended the job, then to the furthest stage this page saw.
   let at = stepIndexOf(run.progress?.stage);
+  if (at < 0) at = stepIndexOf(issueStageStatus((run.status?.error ?? run.endIssue)?.stage));
+  if (at < 0) at = stepIndexOf(run.reachedStage);
   if (status === "NEEDS_INPUT" && at < 0) at = 0;
   if (at < 0) return Array<StepState>(n).fill("pending");
   const atState: StepState = status === "CANCEL_REQUESTED" ? "current" : "stopped";

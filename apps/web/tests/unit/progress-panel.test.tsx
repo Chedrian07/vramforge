@@ -9,6 +9,7 @@ import type { FormValues } from "@/lib/form/values";
 import { INITIAL_RUN_STATE, type RunState } from "@/lib/hooks/useAnalysisRun";
 
 import { cancelledStatus, completedGrpoStatus, failedStatus, needsInputStatus, partialStatus } from "../fixtures/analysis-states";
+import { issue } from "../fixtures/common";
 import { FormHarness } from "../utils/form-harness";
 import { renderWithProviders } from "../utils/render";
 
@@ -77,6 +78,34 @@ describe("progress panel", () => {
     expect(screen.getByText(/부분 결과입니다/)).toBeInTheDocument();
     expect(screen.getByText(/처리 시간 한도로 2,310/)).toBeInTheDocument();
     expect(stepStates({ jobStatus: "PARTIAL", progress: partialStatus.progress!, phase: "terminal" })).toEqual(["done", "stopped", "pending", "pending"]);
+  });
+
+  it("shows where a job stopped when the API's terminal progress names only the end status", () => {
+    // What the API stores at the end (store.finish): stage = the terminal status, no row counts.
+    const cancelled = {
+      ...cancelledStatus,
+      progress: { stage: "CANCELLED" as const, message: "사용자 요청으로 취소되었습니다." },
+      error: issue("CANCELLED", "warning", "사용자 요청으로 작업이 취소되었습니다.", { stage: "tokenizing" }),
+    };
+    renderPanel(terminal(cancelled));
+    const steps = within(screen.getByRole("list", { name: "분석 단계" })).getAllByRole("listitem");
+    expect(steps.map((s) => s.textContent)).toEqual(["✓구조 확인완료", "!데이터 토큰화중단", "3배치 분석대기", "4메모리 산정대기"]);
+
+    // An issue without a pipeline stage (worker stopped): the furthest stage seen on this page.
+    const stopped = { ...cancelled, error: { ...cancelled.error, stage: "api" as const } };
+    expect(stepStates({ ...terminal(stopped), jobStatus: "FAILED", phase: "terminal", progress: stopped.progress, reachedStage: "PLANNING_BATCHES" })).toEqual([
+      "done",
+      "done",
+      "stopped",
+      "pending",
+    ]);
+    // A cancel request keeps the stage it interrupts current.
+    expect(stepStates({ jobStatus: "CANCEL_REQUESTED", phase: "running", progress: { stage: "CANCEL_REQUESTED" }, reachedStage: "TOKENIZING" })).toEqual([
+      "done",
+      "current",
+      "pending",
+      "pending",
+    ]);
   });
 
   it("shows the ending event's status and issue while the final status is missing", () => {

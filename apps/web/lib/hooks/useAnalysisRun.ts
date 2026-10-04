@@ -7,6 +7,7 @@ import { useApiEnvironment } from "@/lib/api/context";
 import type { AnalysisEvent, EventIssue } from "@/lib/api/events";
 import { openAnalysisStream, type ConnectionState } from "@/lib/api/stream";
 import {
+  furthestStage,
   isTerminalStatus,
   type AnalysisRequest,
   type AnalysisStatus,
@@ -24,6 +25,8 @@ export interface RunState {
   /** Latest known job status: from events while running, from GET /analyses/{id} at the end. */
   jobStatus: JobStatus | null;
   progress: JobProgress | null;
+  /** The furthest pipeline stage this page saw (a terminal progress names only the end status). */
+  reachedStage: JobStatus | null;
   partial: Record<string, number | string | null> | null;
   liveIssues: EventIssue[];
   /** The issue of the event that ended the stream; shown until (or unless) the final GET answers. */
@@ -40,6 +43,7 @@ export const INITIAL_RUN_STATE: RunState = {
   analysisId: null,
   jobStatus: null,
   progress: null,
+  reachedStage: null,
   partial: null,
   liveIssues: [],
   endIssue: null,
@@ -90,6 +94,7 @@ function reducer(state: RunState, action: Action): RunState {
         ...state,
         jobStatus: e.status,
         progress: e.progress ?? state.progress,
+        reachedStage: furthestStage(furthestStage(state.reachedStage, e.status), e.progress?.stage),
         partial: e.partial ?? state.partial,
         liveIssues: e.type === "warning" && e.issue ? [...state.liveIssues, e.issue] : state.liveIssues,
         endIssue: ended ? (e.issue ?? null) : state.endIssue,
@@ -109,6 +114,7 @@ function reducer(state: RunState, action: Action): RunState {
         status: s,
         jobStatus: s.status,
         progress: s.progress ?? state.progress,
+        reachedStage: furthestStage(furthestStage(state.reachedStage, s.status), s.progress?.stage),
         phase: terminal ? "terminal" : "running",
         cancelling: terminal ? false : state.cancelling || s.status === "CANCEL_REQUESTED",
         error: null,

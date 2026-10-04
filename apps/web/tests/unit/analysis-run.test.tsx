@@ -232,6 +232,24 @@ describe("useAnalysisRun", () => {
     expect(result.current.state.status?.status).toBe("PARTIAL");
   });
 
+  it("remembers the furthest pipeline stage past a terminal progress that names only the end", async () => {
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => ({ ...partialStatus, analysis_id: ID, status: "CANCELLED", progress: { stage: "CANCELLED" }, error: null }));
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const es = FakeEventSource.latest();
+    act(() => {
+      es.emit("progress", makeEvent({ event_id: 1, analysis_id: ID, type: "progress", status: "INSPECTING", progress: { stage: "INSPECTING" } }));
+      es.emit("progress", makeEvent({ event_id: 2, analysis_id: ID, type: "progress", status: "TOKENIZING", progress: { stage: "TOKENIZING", processed_rows: 900 } }));
+      es.emit("progress", makeEvent({ event_id: 3, analysis_id: ID, type: "progress", status: "CANCEL_REQUESTED", progress: { stage: "CANCEL_REQUESTED" } }));
+    });
+    expect(result.current.state.reachedStage).toBe("TOKENIZING");
+    act(() => es.emit("cancelled", makeEvent({ event_id: 4, analysis_id: ID, type: "cancelled", status: "CANCELLED", progress: { stage: "CANCELLED" } })));
+    await waitFor(() => expect(result.current.state.phase).toBe("terminal"));
+    expect(result.current.state.progress?.stage).toBe("CANCELLED");
+    expect(result.current.state.reachedStage).toBe("TOKENIZING");
+  });
+
   it("keeps the ending event's status and issue when the final GET fails", async () => {
     const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
     const getAnalysis = vi.fn<ApiClient["getAnalysis"]>(async () => {
