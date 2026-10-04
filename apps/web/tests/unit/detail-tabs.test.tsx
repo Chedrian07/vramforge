@@ -49,6 +49,17 @@ describe("detail tabs", () => {
     expect(screen.getByRole("region", { name: "context 검증" })).toHaveTextContent("초과 row3개 이상");
   });
 
+  it("explains that the GRPO context check adds the smallest completion budget", async () => {
+    const user = userEvent.setup();
+    // What the pipeline reports for the plan §21 example: longest prompt 268 + budget 1,024.
+    renderTabs({ ...grpoResult, context_validation: { ...grpoResult.context_validation!, max_observed_length: 1_292 } });
+    await user.click(screen.getByRole("tab", { name: "데이터 길이" }));
+    const context = screen.getByRole("region", { name: "context 검증" });
+    expect(context).toHaveTextContent("prompt + 생성 예산1,292");
+    expect(context).not.toHaveTextContent("관측 최대");
+    expect(context).toHaveTextContent("GRPO는 가장 긴 prompt에 생성 예산 1,024 token을 더한 길이로 검사합니다.");
+  });
+
   it("says the exceeded-row count is unknown when no context limit is known", async () => {
     const user = userEvent.setup();
     renderTabs({ ...sftResult, context_validation: { ...sftResult.context_validation!, status: "unknown", effective_limit: null, exceeded_rows: null } });

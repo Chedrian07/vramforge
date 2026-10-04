@@ -168,6 +168,10 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
   const mapping = scan.mapping_applied;
   const audit = result?.preservation_audit ?? null;
   const context = result?.context_validation ?? null;
+  // GRPO checks the context with the longest prompt plus the smallest completion budget
+  // (pipeline validate()); the larger budgets get their own per-scenario check.
+  const budgets = result?.resolved_config?.grpo?.completion_budgets ?? [];
+  const contextBudget = budgets.length > 0 ? Math.min(...budgets) : null;
   const coverage = scanCoverageDisplay(scan.coverage, { rowsSeen: scan.rows_seen, rowsFailed: scan.rows_failed });
   return (
     <div className="flex flex-col gap-5">
@@ -290,12 +294,18 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
             />
             <Stat label="backend 검증 상한" value={formatCount(context.backend_verified_max) ?? "미검증"} />
             <Stat label="적용 상한" value={formatCount(context.effective_limit) ?? "미확인"} />
-            <Stat label="관측 최대" value={formatCount(context.max_observed_length)} />
+            <Stat label={contextBudget != null ? "prompt + 생성 예산" : "관측 최대"} value={formatCount(context.max_observed_length)} />
             <Stat label="초과 row" value={exceededRowsText(context.exceeded_rows, context.exceeded_rows_exact !== false)} />
           </dl>
           {context.limit_source ? (
             <p className="text-[12px] text-muted">
               상한 근거: <Mono>{context.limit_source}</Mono>
+            </p>
+          ) : null}
+          {contextBudget != null ? (
+            <p className="text-[12px] text-muted">
+              GRPO는 가장 긴 prompt에 생성 예산 {formatCount(contextBudget)} token을 더한 길이로 검사합니다. 더 큰 생성 예산의
+              초과 여부는 시나리오마다 따로 판정하고, 넘으면 경고로 알립니다.
             </p>
           ) : null}
         </section>
