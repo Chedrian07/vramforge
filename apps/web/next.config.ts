@@ -10,6 +10,8 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
+  // `next dev` would otherwise write AGENTS.md / CLAUDE.md into the project on every start.
+  agentRules: false,
   turbopack: {
     resolveAlias: {
       "@vf/dev-mocks": devMocksEnabled ? "./lib/dev-mocks/index.ts" : "./lib/dev-mocks/disabled.ts",
