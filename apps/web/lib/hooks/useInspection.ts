@@ -17,6 +17,16 @@ export interface InspectionState<T> {
 const IDLE = { key: null, status: "idle", data: null, error: null } as const;
 
 /**
+ * Inspection is retried once, and only when the failure may pass: no answer (network), 429 or a
+ * server error. A 4xx answer (not found, access denied, invalid reference) is final; retrying it
+ * would only delay the message.
+ */
+export function shouldRetryInspection(failureCount: number, error: unknown): boolean {
+  if (failureCount >= 1 || !(error instanceof ApiError)) return false;
+  return error.status === 0 || error.status === 429 || error.status >= 500;
+}
+
+/**
  * Metadata inspection triggered only by blur or the 확인 button (plan.md §3.3), never per keystroke.
  * Results are cached per reference; a newer request cancels the older one and late answers for an
  * older reference are ignored.
@@ -40,6 +50,7 @@ function useInspection<T>(kind: "model" | "dataset", pick: (r: Awaited<ReturnTyp
           queryKey: ["inspect", kind, key],
           queryFn: ({ signal }) => api.inspect(body, signal),
           staleTime: 5 * 60_000,
+          retry: shouldRetryInspection,
         });
         if (n !== sequence.current) return null;
         const data = pick(response);

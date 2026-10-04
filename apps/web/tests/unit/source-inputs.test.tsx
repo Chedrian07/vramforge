@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UseFormReturn } from "react-hook-form";
@@ -7,7 +8,7 @@ import { DatasetSection } from "@/components/calculator/DatasetSection";
 import { ModelSection } from "@/components/calculator/ModelSection";
 import { ApiError, type ApiClient } from "@/lib/api/client";
 import type { FormValues } from "@/lib/form/values";
-import { useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
+import { shouldRetryInspection, useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
 
 import { DATASET_REF, MODEL_REF } from "../fixtures/common";
 import { ambiguousDatasetInspection, datasetInspection, modelInspection, uploadResponse } from "../fixtures/sources";
@@ -48,13 +49,16 @@ function DatasetHost() {
   return <DatasetSection inspection={inspection} />;
 }
 
+/** The app's own query defaults (app/providers.tsx): one retry unless a query says otherwise. */
+const appQueryClient = () => new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1, refetchOnWindowFocus: false } } });
+
 function renderSection(node: React.ReactNode, api: Parameters<typeof makeEnvironment>[0], values: Partial<FormValues> = {}) {
   let form: UseFormReturn<FormValues> | null = null;
   const utils = renderWithProviders(
     <FormHarness values={values} onReady={(f) => (form = f)}>
       {node}
     </FormHarness>,
-    { environment: makeEnvironment(api) },
+    { environment: makeEnvironment(api), client: appQueryClient() },
   );
   return { ...utils, form: () => form! };
 }
@@ -115,6 +119,37 @@ describe("model input", () => {
     await user.type(screen.getByLabelText("Model"), "org/missing");
     await user.click(screen.getByRole("button", { name: "모델 확인" }));
     expect(await screen.findByText("모델을 찾을 수 없습니다.")).toBeInTheDocument();
+    // A 4xx answer is final: no silent retry before the message.
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a transient inspection failure once", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => {
+      calls += 1;
+      if (calls === 1) throw new ApiError(503, { code: "INTERNAL_ERROR", severity: "error", retryable: true, user_message: "일시적 오류" });
+      return { model: modelInspection, dataset: null };
+    });
+    renderSection(<ModelHost />, { inspect });
+    await user.type(screen.getByLabelText("Model"), MODEL_REF);
+    await user.click(screen.getByRole("button", { name: "모델 확인" }));
+    expect(await screen.findByText("qwen3_5_hybrid", {}, { timeout: 4_000 })).toBeInTheDocument();
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("일시적 오류")).not.toBeInTheDocument();
+  });
+});
+
+describe("inspection retry policy", () => {
+  const error = (status: number) => new ApiError(status, { code: "INTERNAL_ERROR", severity: "error", user_message: "x" });
+
+  it("retries only unanswered, throttled or server-failed requests, once", () => {
+    expect(shouldRetryInspection(0, error(0))).toBe(true);
+    expect(shouldRetryInspection(0, error(429))).toBe(true);
+    expect(shouldRetryInspection(0, error(502))).toBe(true);
+    expect(shouldRetryInspection(1, error(502))).toBe(false);
+    for (const status of [400, 401, 403, 404, 409, 422]) expect(shouldRetryInspection(0, error(status))).toBe(false);
+    expect(shouldRetryInspection(0, new TypeError("x"))).toBe(false);
   });
 });
 

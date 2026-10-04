@@ -20,9 +20,12 @@ export function makeEnvironment(api: Partial<ApiClient> = {}): ApiEnvironment {
 
 export function renderWithProviders(
   ui: ReactElement,
-  { environment = makeEnvironment(), ...options }: { environment?: ApiEnvironment } & RenderOptions = {},
+  {
+    environment = makeEnvironment(),
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } }),
+    ...options
+  }: { environment?: ApiEnvironment; client?: QueryClient } & RenderOptions = {},
 ) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   const Wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
       <ApiProvider value={environment}>
