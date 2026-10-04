@@ -33,7 +33,7 @@ from vramforge_estimator.schemas import (
 )
 from vramforge_estimator.trainers import TrainingSchedule, get_trainer
 
-from .engine import assess_fit, evaluate, recommend
+from .engine import LoadBudget, assess_fit, evaluate, load_budget_issue, recommend
 
 DEVICE = "cuda:0"
 
@@ -130,6 +130,17 @@ def _issues(schedules: list[TrainingSchedule], extra: list[Issue | None]) -> lis
     return list(seen.values())
 
 
+def load_budget(
+    arch: ArchitectureAdapter, inventory: ModelInventory, cfg: ResolvedConfig
+) -> LoadBudget | None:
+    """`S_load` of the policy load from the architecture adapter; None if it cannot size it (the
+    fit verdict then never claims a load failure)."""
+    s_load = arch.loading_budget_bytes(inventory, cfg)
+    if not isinstance(s_load, int) or s_load <= 0:
+        return None
+    return LoadBudget(s_load=s_load, quantized=cfg.quantization.enabled)
+
+
 def estimate_with(
     arch: ArchitectureAdapter,
     inventory: ModelInventory,
@@ -144,6 +155,7 @@ def estimate_with(
     """`estimate_memory` with an explicit architecture adapter."""
     trainer = get_trainer(cfg.objective)
     level, evidence_note = evidence_level(cfg)
+    budget = load_budget(arch, inventory, cfg)
     scenarios: list[ScenarioEstimate] = []
     schedules: list[TrainingSchedule] = []
     for sid, label, params, shape in scenario_shapes(cfg, plan):
@@ -151,7 +163,7 @@ def estimate_with(
         schedules.append(sched)
         device = evaluate(sched, DEVICE)
         rec = recommend(device, margin_policy, hardware.external_reserved_bytes)
-        fit = assess_fit(device, rec, hardware, readiness, evidence=level)
+        fit = assess_fit(device, rec, hardware, readiness, evidence=level, load_budget=budget)
         scenarios.append(
             ScenarioEstimate(
                 scenario_id=sid,
@@ -177,7 +189,7 @@ def estimate_with(
         scenarios=scenarios,
         primary_scenario_id=None if multi_budget or not scenarios else scenarios[0].scenario_id,
         assumptions=_assumptions(schedules, evidence_note),
-        issues=_issues(schedules, []),
+        issues=_issues(schedules, [load_budget_issue(budget, hardware)]),
     )
 
 
@@ -217,5 +229,6 @@ __all__ = [
     "estimate_memory",
     "estimate_with",
     "evidence_level",
+    "load_budget",
     "scenario_shapes",
 ]

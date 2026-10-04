@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 from pathlib import Path
 
@@ -242,3 +243,64 @@ def test_schedule_issues_become_estimate_issues_once(monkeypatch: pytest.MonkeyP
     assert len(est.scenarios) == 2
     assert est.issues == [issue]  # two scenarios, one issue
     assert not any(a.id.startswith("issue:") for a in est.assumptions)
+
+
+S_LOAD = 7_765_103_072  # MiMo QLoRA bf16 (research §3.5): free >= 8.93 GiB to load
+REQUIRED_FREE = math.ceil(S_LOAD * 100 / 81)  # 9,586,547,003 B
+
+
+def test_four_bit_load_budget_decides_exceeds_with_a_warning_issue() -> None:
+    assert REQUIRED_FREE == 9_586_547_003
+    cfg = make_cfg(inventory=INV)  # QLoRA: bnb 4-bit load
+    arch = FakeArch(load_budget=S_LOAD)
+    short = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=REQUIRED_FREE - 1)
+    est = estimate_with(arch, INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": short})
+    fit = est.scenarios[0].hardware_fit
+    assert (fit.status, fit.reason) == (HardwareFit.EXCEEDS, "load_budget_insufficient")
+    assert 'device_map="auto"' in fit.message and "max_memory" in fit.message
+    assert 'device_map={"": 0}' in fit.message
+    (issue,) = est.issues
+    assert (issue.code, issue.severity) == (ErrorCode.LOAD_BUDGET_EXCEEDED, Severity.WARNING)
+    assert issue.details["s_load_bytes"] == S_LOAD
+    assert issue.details["required_free_bytes"] == REQUIRED_FREE
+    assert issue.details["budget_factor"] == "0.81"
+    # exactly enough: 0.81 x 9,586,547,003 B >= S_LOAD, the load passes the budget check
+    enough = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=REQUIRED_FREE)
+    ok = estimate_with(arch, INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": enough})
+    assert ok.scenarios[0].hardware_fit.reason != "load_budget_insufficient"
+    assert ok.issues == []
+
+
+def test_load_budget_is_decided_even_when_other_parts_are_unknown() -> None:
+    cfg = make_cfg(inventory=INV)
+    arch = FakeArch(load_budget=S_LOAD, unknown_activations=True)
+    short = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=8 * GiB)
+    est = estimate_with(arch, INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": short})
+    assert est.scenarios[0].devices[0].scenario_high_bytes is None
+    assert est.scenarios[0].hardware_fit.reason == "load_budget_insufficient"
+
+
+def test_dense_load_budget_uses_the_offload_factor() -> None:
+    cfg = make_cfg(Objective.SFT, Strategy.LORA, inventory=INV)  # dense load: factor 0.9
+    s_load = 9 * GiB
+    arch = FakeArch(load_budget=s_load)
+    hw = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=10 * GiB - 1)  # 0.9 x < 9 GiB
+    est = estimate_with(arch, INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": hw})
+    fit = est.scenarios[0].hardware_fit
+    assert fit.reason == "load_budget_insufficient" and "CPU로 offload" in fit.message
+    assert est.issues[0].details["budget_factor"] == "0.9"
+    hw_ok = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=10 * GiB)
+    ok = estimate_with(arch, INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": hw_ok})
+    assert ok.issues == [] and ok.scenarios[0].hardware_fit.reason != "load_budget_insufficient"
+
+
+def test_no_load_budget_check_without_capacity_or_s_load() -> None:
+    cfg = make_cfg(inventory=INV)
+    est = estimate_with(FakeArch(load_budget=S_LOAD), INV, cfg, make_plan(cfg, [sft_shape()]), **KW)
+    assert est.issues == []  # capacity_only
+    hw = HardwareConfig(mode=HardwareMode.CUSTOM, usable_bytes=GiB)
+    unsized = estimate_with(
+        FakeArch(), INV, cfg, make_plan(cfg, [sft_shape()]), **{**KW, "hardware": hw}
+    )
+    assert unsized.issues == []  # the adapter did not size S_load: no load-failure claim
+    assert unsized.scenarios[0].hardware_fit.reason != "load_budget_insufficient"

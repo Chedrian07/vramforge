@@ -6,9 +6,15 @@ import pytest
 
 from vramforge_estimator.compatibility.profiles import clear_registry_cache
 from vramforge_estimator.memory import assess_fit, recommend
-from vramforge_estimator.memory.engine import capacity_bytes, planning_margin
+from vramforge_estimator.memory.engine import (
+    LoadBudget,
+    capacity_bytes,
+    load_budget_issue,
+    planning_margin,
+)
 from vramforge_estimator.schemas import (
     DeviceEstimate,
+    ErrorCode,
     HardwareConfig,
     HardwareFit,
     HardwareMode,
@@ -133,3 +139,56 @@ def test_missing_capacity_is_not_evaluated() -> None:
     res = fit(est(10 * GiB), custom(None))
     assert res.status is HardwareFit.NOT_EVALUATED
     assert "용량 정보" in res.message
+
+
+# ---------------------------------------------------------------- device-map load budget
+
+
+def test_load_budget_boundary_is_exact() -> None:
+    # research §3.5 (V9): the bf16 MiMo QLoRA load needs free >= S_load / 0.81 = 8.93 GiB
+    budget = LoadBudget(s_load=7_765_103_072, quantized=True)
+    assert budget.exceeded(9_586_547_002)  # 0.81 x capacity = 7,765,103,071.62 B < S_load
+    assert not budget.exceeded(9_586_547_003)  # 7,765,103,072.43 B >= S_load
+    dense = LoadBudget(s_load=9 * GiB, quantized=False)
+    assert dense.exceeded(10 * GiB - 1) and not dense.exceeded(10 * GiB)
+
+
+def test_load_budget_after_floor_and_before_unknowns() -> None:
+    budget = LoadBudget(s_load=20 * GiB, quantized=True)  # needs 24.69 GiB free
+    hw = custom(24 * GiB)
+    res = assess_fit(est(None, floor=8 * GiB), None, hw, READY, load_budget=budget)
+    assert res.status is HardwareFit.EXCEEDS and res.reason == "load_budget_insufficient"
+    assert "S_load 20.00 GiB" in res.message and "19.44 GiB" in res.message  # 0.81 x 24 GiB
+    floor = assess_fit(est(None, floor=30 * GiB), None, hw, READY, load_budget=budget)
+    assert floor.reason == "floor_exceeds_capacity"
+    unsupported = assess_fit(
+        est(10 * GiB), None, hw, TrainingReadiness.UNSUPPORTED, load_budget=budget
+    )
+    assert unsupported.reason == "unsupported"
+    fits = assess_fit(
+        est(16 * GiB, floor=8 * GiB),
+        recommend(est(16 * GiB), MarginPolicy(), 0),
+        custom(40 * GiB),
+        READY,
+        load_budget=budget,
+    )
+    assert fits.reason == "fits_with_margin"  # 0.81 x 40 GiB = 32.4 GiB >= 20 GiB
+
+
+def test_load_budget_issue_needs_a_capacity() -> None:
+    budget = LoadBudget(s_load=20 * GiB, quantized=True)
+    assert load_budget_issue(budget, HardwareConfig()) is None  # capacity_only
+    assert load_budget_issue(budget, custom(40 * GiB)) is None  # fits the budget
+    assert load_budget_issue(None, custom(GiB)) is None
+    issue = load_budget_issue(budget, custom(24 * GiB))
+    assert issue is not None and issue.code is ErrorCode.LOAD_BUDGET_EXCEEDED
+    assert issue.details["capacity_bytes"] == 24 * GiB
+
+
+def test_a_device_map_check_peak_is_explained() -> None:
+    check = "MODEL_LOAD_AND_QUANTIZE:policy_device_map_check"
+    e = est(26 * GiB, floor=8 * GiB).model_copy(update={"peak_timepoint": check})
+    res = fit(e, custom(24 * GiB))
+    assert res.reason == "high_exceeds_capacity" and "device_map 예산 검사" in res.message
+    plain = fit(est(26 * GiB, floor=8 * GiB), custom(24 * GiB))
+    assert "device_map" not in plain.message

@@ -12,26 +12,32 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
+from vramforge_estimator.errors import make_issue
 from vramforge_estimator.schemas import (
     PHASE_ORDER,
     RESIDENT_CATEGORIES,
     BreakdownItem,
     CapacityRecommendation,
     DeviceEstimate,
+    ErrorCode,
     EvidenceLevel,
     HardwareConfig,
     HardwareFit,
     HardwareFitResult,
     HardwareMode,
+    Issue,
     MarginPolicy,
     PeakBreakdown,
     PhasePeak,
+    Severity,
+    Stage,
     Timepoint,
     TimepointTotal,
     TrainingReadiness,
     UnknownComponent,
 )
 from vramforge_estimator.trainers import TrainingSchedule
+from vramforge_estimator.trainers.common import DEVICE_MAP_BUDGET
 from vramforge_estimator.trainers.ledger import Contribution, alive_by_timepoint, contributions
 from vramforge_estimator.units import to_gib
 
@@ -236,7 +242,81 @@ def capacity_bytes(hardware: HardwareConfig) -> int | None:
 
 
 def _gib(value: int) -> str:
-    return f"{to_gib(value):.1f} GiB"
+    return f"{to_gib(value):.2f} GiB"
+
+
+@dataclass(frozen=True)
+class LoadBudget:
+    """`S_load` of the policy load (architecture adapter `loading_budget_bytes`) and whether
+    bitsandbytes 4-bit loading applies (docs/methodology.md#load-phase).
+
+    TRL loads with `device_map="auto"`; on one GPU without `max_memory` transformers budgets
+    0.9 x free memory and the bnb 4-bit quantizer scales that by 0.90 again, so 4-bit loading
+    needs S_load <= 0.81 x free and fails with ValueError otherwise; a dense model offloads the
+    excess to CPU (docs/research/loading-quantization-peft.md §3.5, §4.5)."""
+
+    s_load: int
+    quantized: bool
+
+    @property
+    def factor(self) -> Fraction:
+        return DEVICE_MAP_BUDGET["quantized" if self.quantized else "dense"]
+
+    def exceeded(self, capacity: int) -> bool:
+        """S_load > factor x capacity (exact). The CUDA context makes free memory smaller than
+        the capacity, so a load that fails here fails for every context size."""
+        return self.s_load > self.factor * capacity
+
+    def message(self, capacity: int) -> str:
+        budget = math.floor(self.factor * capacity)
+        if self.quantized:
+            return (
+                '4-bit(bitsandbytes) 모델을 단일 GPU에 device_map="auto"(TRL 기본)로 로드하면 '
+                "transformers가 가용 메모리의 0.9배, bitsandbytes가 다시 0.9배만 배치 예산으로 "
+                f"씁니다(실효 {float(self.factor):g}배). 로딩 크기 S_load {_gib(self.s_load)}가 "
+                f"가용 용량 {_gib(capacity)}의 {float(self.factor):g}배({_gib(budget)})를 넘어 "
+                "학습 전에 로딩이 ValueError로 실패합니다. model_init_kwargs에 "
+                'device_map={"": 0}을 지정하면 이 예산 검사 없이 GPU 0에 바로 올리고, '
+                "max_memory를 지정하면 transformers의 0.9배가 빠져 bitsandbytes의 0.9배만 "
+                "남습니다."
+            )
+        return (
+            '단일 GPU에 device_map="auto"(TRL 기본)로 로드하면 transformers가 가용 메모리의 '
+            f"{float(self.factor):g}배만 배치 예산으로 씁니다. 로딩 크기 S_load "
+            f"{_gib(self.s_load)}가 가용 용량 {_gib(capacity)}의 {float(self.factor):g}배"
+            f"({_gib(budget)})를 넘어 일부 모듈이 CPU로 offload되며, 모든 가중치가 GPU에 "
+            '상주한다는 이 계산의 가정과 달라집니다. model_init_kwargs에 device_map={"": 0}을 '
+            "지정하면 예산 검사 없이 GPU 0에 올리고, max_memory를 지정하면 0.9배 축소가 빠집니다."
+        )
+
+
+def load_budget_issue(budget: LoadBudget | None, hardware: HardwareConfig) -> Issue | None:
+    """LOAD_BUDGET_EXCEEDED warning when the policy load cannot pass the device-map budget of the
+    selected capacity (None when no capacity is known or the load fits)."""
+    capacity = capacity_bytes(hardware)
+    if budget is None or capacity is None or not budget.exceeded(capacity):
+        return None
+    return make_issue(
+        ErrorCode.LOAD_BUDGET_EXCEEDED,
+        budget.message(capacity),
+        severity=Severity.WARNING,
+        stage=Stage.ESTIMATING,
+        component="model.loading",
+        s_load_bytes=budget.s_load,
+        capacity_bytes=capacity,
+        budget_factor=f"{float(budget.factor):g}",
+        required_free_bytes=math.ceil(budget.s_load / budget.factor),
+    )
+
+
+def _peak_note(estimate: DeviceEstimate) -> str:
+    """The device-map check timepoint holds a budget requirement, not an allocation."""
+    if estimate.peak_timepoint and estimate.peak_timepoint.endswith("_device_map_check"):
+        return (
+            " 피크는 로딩 직전 device_map 예산 검사 시점입니다 (실제 할당이 아니라 로딩에 필요한 "
+            "가용 메모리)."
+        )
+    return ""
 
 
 def assess_fit(
@@ -246,10 +326,11 @@ def assess_fit(
     readiness: TrainingReadiness,
     *,
     evidence: EvidenceLevel = EvidenceLevel.ANALYTIC,
+    load_budget: LoadBudget | None = None,
 ) -> HardwareFitResult:
-    """The outcomes of plan §10.3 (incl. not_evaluated when no hardware is selected) and the
-    metadata-only grade, which allows no full VRAM verdict (plan §11.4;
-    docs/methodology.md#hardware-fit)."""
+    """The outcomes of plan §10.3 (incl. not_evaluated when no hardware is selected), the
+    device-map load budget and the metadata-only grade, which allows no full VRAM verdict
+    (plan §11.4; docs/methodology.md#hardware-fit)."""
     if hardware.mode is HardwareMode.CAPACITY_ONLY:
         return HardwareFitResult(
             status=HardwareFit.NOT_EVALUATED,
@@ -286,6 +367,13 @@ def assess_fit(
             ),
             **base,
         )
+    if load_budget is not None and load_budget.exceeded(capacity):
+        return HardwareFitResult(
+            status=HardwareFit.EXCEEDS,
+            reason="load_budget_insufficient",
+            message=load_budget.message(capacity),
+            **base,
+        )
     if evidence is EvidenceLevel.METADATA_ONLY:
         return HardwareFitResult(
             status=HardwareFit.UNKNOWN,
@@ -309,7 +397,7 @@ def assess_fit(
             reason="high_exceeds_capacity",
             message=(
                 f"예상 피크({_gib(high)})가 가용 용량({_gib(capacity)})을 초과합니다. "
-                "실측 또는 설정 검토가 필요합니다."
+                "실측 또는 설정 검토가 필요합니다." + _peak_note(estimate)
             ),
             **base,
         )
@@ -317,7 +405,8 @@ def assess_fit(
         return HardwareFitResult(
             status=HardwareFit.LOW_MARGIN,
             reason="margin_insufficient",
-            message="예상 피크는 들어가지만 계획용 여유를 확보할 수 없습니다 (여유 부족).",
+            message="예상 피크는 들어가지만 계획용 여유를 확보할 수 없습니다 (여유 부족)."
+            + _peak_note(estimate),
             **base,
         )
     suffix = (
@@ -334,9 +423,11 @@ def assess_fit(
 
 
 __all__ = [
+    "LoadBudget",
     "assess_fit",
     "capacity_bytes",
     "evaluate",
+    "load_budget_issue",
     "planning_margin",
     "recommend",
 ]
