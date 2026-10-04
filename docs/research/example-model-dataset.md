@@ -16,6 +16,7 @@
 | 보조 환경 | `AutoProcessor` 경로 확인용 private venv `/tmp/vf-research/venv-example-data` (공유 venv + Pillow 12.3.0 + torchvision 0.29.1 `--no-deps`) |
 | 저장소 밖 산출물 | `/tmp/vf-research/scratch/example-data/` (스크립트 `q*.py`, `golden_lengths.csv`, `golden_result.json`, `golden_example_stats.json`) |
 | 근거 표기 | `<pkg>==<ver> <site-packages 기준 경로>:<줄 범위> (<심볼>)` 또는 실험 ID(E1–E12). 태그는 VERIFIED(소스 확인 또는 실측), INFERRED(소스 기반 추론, 미실행), UNKNOWN |
+| 검증 | 2026-10-04 `verify-example-model-dataset`가 핵심 주장 21개를 소스 재확인과 독립 실험(V1–V15)으로 다시 검증했다. 수정한 곳과 근거는 문서 끝 "검증 로그" 절에 있다 |
 
 ### 실험 목록
 
@@ -42,9 +43,9 @@
 
 | 사실 | 값 | 근거 | 태그 |
 |---|---|---|---|
-| 로드되는 class | `Qwen3_5Tokenizer` (`TokenizersBackend` 하위, `is_fast=True`). Hub의 `tokenizer_config.json`은 `"tokenizer_class": "Qwen2Tokenizer"`를 적고 있지만, `qwen3_5`가 "Hub tokenizer class가 틀린 model type" 목록에 있어 등록 class로 교체된다 | E1. transformers==5.18.0 `models/auto/tokenization_auto.py:295` (mapping `qwen3_5 → Qwen3_5Tokenizer`), `:378-427` (`MODELS_WITH_INCORRECT_HUB_TOKENIZER_CLASS`, `qwen3_5`는 419행), `:843-870` (교체 로직) | VERIFIED |
-| 실제 토큰화 파이프라인 | class가 `__init__`을 정의하므로 `tokenizer.json`에서는 vocab, merges, post_processor만 가져온다. normalizer(`NFC`)와 pre-tokenizer(`Split(PRETOKENIZE_REGEX)` + `ByteLevel`)는 class 코드가 다시 만든다 | transformers==5.18.0 `tokenization_utils_tokenizers.py:103-197` (`convert_to_native_format`, 조건은 113-119행), `models/qwen3_5/tokenization_qwen3_5.py:25,54-80` | VERIFIED |
-| regex 차이 | class regex는 `[\p{L}\p{M}]+`, `tokenizer.json`의 regex는 `\p{L}+`(`\p{M}` 없음)이다. 따라서 raw `tokenizers.Tokenizer.from_file("tokenizer.json")`은 결합 문자(mark)가 있는 문자열에서 결과가 다르다. 예: `"नमस्ते दुनिया"`는 6 대 10 token, `"สวัสดีครับ"`는 3 대 7 token. 이 데이터셋에서는 13,968개 시퀀스 모두 동일했다 | E3, E7 (`raw_tokenizers_json_id_diff_sequences = 0`) | VERIFIED |
+| 로드되는 class | `Qwen3_5Tokenizer` (`TokenizersBackend` 하위, `is_fast=True`). Hub의 `tokenizer_config.json`은 `"tokenizer_class": "Qwen2Tokenizer"`를 적고 있지만, `qwen3_5`가 "Hub tokenizer class가 틀린 model type" 목록에 있어 등록 class로 교체된다 | E1. transformers==5.18.0 `models/auto/tokenization_auto.py:295` (mapping `qwen3_5 → Qwen3_5Tokenizer`), `:378-429` (`MODELS_WITH_INCORRECT_HUB_TOKENIZER_CLASS`, `qwen3_5`는 419행), `:843-870` (교체 로직) | VERIFIED |
+| 실제 토큰화 파이프라인 | class가 `__init__`을 정의하므로 `tokenizer.json`에서는 vocab, merges, post_processor(그리고 padding/truncation 설정. 이 파일에서는 둘 다 `null`)를 가져온다. added token 33개도 `tokenizer.json`의 `added_tokens`에서 읽는다. normalizer(`NFC`), pre-tokenizer(`Split(PRETOKENIZE_REGEX)` + `ByteLevel`), decoder는 class 코드가 다시 만든다 | transformers==5.18.0 `tokenization_utils_tokenizers.py:103-197` (`convert_to_native_format`, 조건은 113-119행, padding/truncation은 149-158행), `tokenization_utils_base.py:1904-1914` (`added_tokens` 읽기), `models/qwen3_5/tokenization_qwen3_5.py:25,54-80` | VERIFIED (검증 시 "vocab, merges, post_processor만"을 보완) |
+| regex 차이 | class regex는 `[\p{L}\p{M}]+`, `tokenizer.json`의 regex는 `\p{L}+`(`\p{M}` 없음)이다. 따라서 raw `tokenizers.Tokenizer.from_file("tokenizer.json")`은 결합 문자(mark)가 있는 문자열에서 결과가 다르다. 예: `"नमस्ते दुनिया"`는 6 대 10 token, `"สวัสดีครับ"`는 3 대 7 token. 이 데이터셋에서는 13,968개 시퀀스 모두 동일했다(검증 시 content 문자열 13,968개와 렌더링된 대화 문자열 13,968개 모두 차이 0). 참고로 Hub `tokenizer_config.json`에는 `pretokenize_regex` 키가 있고 값이 class regex(`[\p{L}\p{M}]+`)와 같다. transformers 5.18.0에는 이 키를 읽는 코드가 없다(grep 0건). 즉 class 동작은 Hub 설정에 적힌 의도와 일치하고, `tokenizer.json`만 다르다 | E3, E7 (`raw_tokenizers_json_id_diff_sequences = 0`), 검증 V1·V2 | VERIFIED |
 | `len(tokenizer)` 대 config | `len(tok)=248,077` (BPE vocab 248,044 + added token 33개, ID 0–248,076 연속), `tok.vocab_size=248,044` (added token 제외). `config.text_config.vocab_size=248,320`이므로 embedding/`lm_head`에 쓰이지 않는 행이 243개 있다 (248,320 = 64×3,880) | E1, `config.json` | VERIFIED |
 | BOS / EOS / PAD / UNK | `bos_token=None`, `eos_token="<\|im_end\|>"`(248046), `pad_token="<\|endoftext\|>"`(248044), `unk_token=None` | E1, `tokenizer_config.json` | VERIFIED |
 | EOS 불일치 | `config.text_config.eos_token_id=248044`(`<\|endoftext\|>`)이고 tokenizer EOS는 248046(`<\|im_end\|>`)이다. `generation_config.json`의 `eos_token_id=[248046, 248044]` | `config.json`, `generation_config.json`, E11 | VERIFIED |
@@ -70,7 +71,7 @@ E4로 확인했다(VERIFIED). `tokenizer_config.json`에는 `chat_template` 키�
 
 ## 2. `chat_template.jinja` 분석
 
-이 template은 일반 Qwen3/Qwen3.5 template과 구조가 다르다. TRL에 포함된 `chat_templates/qwen3.jinja`, `qwen3_5_think.jinja`, `qwen3_5_nothink.jinja`는 `<|im_end|>\n`을 4–5곳에서 출력하고 `{% generation %}`이 없다. 이 template은 `<|im_end|>\n`이 0곳이고 generation marker가 있다(trl==1.14.1 `chat_templates/` 비교, VERIFIED). 다른 Qwen template으로 대체하면 길이와 mask가 달라진다(plan.md §6.4). 핵심 부분은 다음과 같다 (`chat_template.jinja:60-70`).
+이 template은 일반 Qwen3/Qwen3.5 template과 구조가 다르다. TRL에 포함된 `chat_templates/qwen3.jinja`, `qwen3_5_think.jinja`, `qwen3_5_nothink.jinja`는 `<|im_end|>\n`을 5–6곳에서 출력하고(`qwen3.jinja` 5곳, `qwen3_5_think`/`qwen3_5_nothink` 각 6곳. 검증 시 "4–5곳"을 정정) `{% generation %}`이 없다. 이 template은 `<|im_end|>\n`이 0곳이고 generation marker가 있다(trl==1.14.1 `chat_templates/` 비교, VERIFIED). 다른 Qwen template으로 대체하면 길이와 mask가 달라진다(plan.md §6.4). 핵심 부분은 다음과 같다 (`chat_template.jinja:60-70`).
 
 ```jinja
 {%- macro render_assistant_message(message) -%}
@@ -157,7 +158,7 @@ keep     = "<|im_start|>system\n{system}<|im_end|>" + prompt
 | `lang` 분포 | c++/python/java/javascript 각 424, c#/php/ruby/swift/go/kotlin 각 423, fortran 422 (11종) | E6 | VERIFIED |
 | 중복 | 완전히 같은 row 2쌍: [2213, 2312], [2709, 4326]. 중복 question은 228 그룹(728 row, 초과분 500 row, 고유 question 4,156개, 최대 그룹 40 row: row 97부터 시작하는 kotlin 질문). 중복 chosen 97 그룹(초과 195), 중복 rejected 250 그룹(초과 637) | E6 | VERIFIED |
 | chosen == rejected | 26 row: 227, 284, 706, 788, 854, 909, 1099, 1327, 1363, 1450, 1659, 1909, 2176, 2300, 2431, 2851, 3104, 3376, 3547, 3564, 3740, 3743, 3863, 4204, 4435, 4642. DPO 기준으로 margin이 0인 쌍이다 | E6 | VERIFIED |
-| 모든 응답 끝 | chosen과 rejected 모두 4,656 row가 코드 펜스(백틱 3개)로 끝난다. 생성 도중 잘린 응답은 보이지 않는다 | E7 보조 분석 | VERIFIED |
+| 모든 응답 끝 | chosen과 rejected 모두 4,656 row가 코드 펜스(백틱 3개)로 끝난다(VERIFIED). 이 사실로 보아 생성 도중 잘린 응답은 없어 보인다(INFERRED, 내용 수준 검사는 하지 않음) | E7 보조 분석, 검증 V6 | VERIFIED / INFERRED |
 | Parquet 변환본 | `refs/convert/parquet` → commit `1cc07a693ee6d376fd33f1fa80596537a3e43c74` (2024-02-29 15:24:19 UTC). 파일 `default/train/0000.parquet`, 2,564,627 bytes, SHA256 `eb9b1f8b1541d99e23c8a7c1bb562b3a9de57496c31b7fa57d768f60cdeaf179`, 4,656 row, row group 5개. **row 순서와 값이 JSONL과 완전히 같다** | E6 (`q4_hub.py`, `q4_parquet.py`) | VERIFIED |
 | Parquet 변환본의 원본 revision | commit 메시지에 기록이 없다. main의 마지막 commit `81aeacf…`(15:24:07 UTC) 12초 뒤에 만들어졌으므로 이 revision에서 변환했다고 본다. 내용이 같다는 점은 실측으로 확인했다 | E6 | INFERRED |
 | main 이력 | commit 8개. 고정 revision `81aeacf…`가 2026-10-04 기준 main head다 (마지막 수정 2024-02-29) | E6 | VERIFIED |
@@ -271,12 +272,12 @@ SFTConfig와 DPOConfig에는 `chat_template_kwargs` 필드가 없다. 이 두 Tr
 
 | 검사 | 결과 | 근거 | 태그 |
 |---|---|---|---|
-| VLM processor 경로 (`AutoProcessor` → `Qwen3VLProcessor`, `_is_vlm=True`, `prepare_multimodal_messages`)와 tokenizer 경로 비교 | SFT `input_ids`/`labels`, DPO 3개 ID, GRPO prompt ID 모두 4,656/4,656 row 동일 (`omit`, `keep` 둘 다). SFT `input_ids` 다이제스트도 같다. VLM 경로 GRPO는 `mm_token_type_ids` 필드를 추가로 반환한다 | E8 | VERIFIED |
+| VLM processor 경로 (`AutoProcessor` → `Qwen3VLProcessor`, `_is_vlm=True`, `prepare_multimodal_messages`)와 tokenizer 경로 비교 | SFT `input_ids`/`labels`, DPO 3개 ID, GRPO prompt ID 모두 4,656/4,656 row 동일 (`omit`, `keep` 둘 다). SFT `input_ids` 다이제스트도 같다. VLM 경로 GRPO는 `mm_token_type_ids` 필드를 추가로 반환한다. 검증 V8에서 `processing_class=Qwen3VLProcessor`로 실제 `SFTTrainer`/`DPOTrainer`/`GRPOTrainer`를 만들어 같은 결과(모든 필드 4,656/4,656, 두 정책)를 재현했다. 이 processor는 torchvision이 있어야 로드된다(R2 참고) | E8, 검증 V8·V12 | VERIFIED |
 | 실제 `SFTTrainer` (tiny Qwen3, `processing_class=tok`) | 48/48 row에서 전체 길이와 completion 일치. `completion_only_loss=True`, `chat_template` override 없음(None), collator `DataCollatorForLanguageModeling`, `pad_token_id=248044` | E9 | VERIFIED |
-| SFT loss token 변형 | prompt-completion + `assistant_only_loss=True` → completion과 같음. `messages`(LM) 형식 + `assistant_only_loss=True` → **completion + 3** (`<\|im_start\|>assistant\n` header 포함). `messages` 형식 기본값 → 전체 길이 − 1 (`completion_only_loss=False`, shift 때문에 1 감소). 전체 길이는 형식과 관계없이 같다 | E9 (48/48). trl==1.14.1 `trainer/sft_trainer.py:187` (`labels[..., 1:]`), `:1641-1654` (`build_labels`) | VERIFIED |
+| SFT loss token 변형 | prompt-completion + `assistant_only_loss=True` → completion과 같음. `messages`(LM) 형식 + `assistant_only_loss=True` → **completion + 3** (`<\|im_start\|>assistant\n` header 포함). `messages` 형식 기본값 → 전체 길이 − 1 (`completion_only_loss=False`, shift 때문에 1 감소). 전체 길이는 형식과 관계없이 같다. 검증 V9에서 네 경우 모두 전체 4,656 row로 재현했다 | E9 (48/48), 검증 V9 (4,656/4,656). trl==1.14.1 `trainer/sft_trainer.py:187` (`labels[..., 1:]`, `_chunked_cross_entropy_loss`. `SFTConfig.loss_type` 기본값이 `None → "chunked_nll"`이므로 이것이 기본 경로다, `trainer/sft_config.py:332-334`), `:1641-1654` (`build_labels`). `loss_type="nll"`이면 transformers==5.18.0 `loss/loss_utils.py:61-64` (`ForCausalLMLoss`)가 같은 shift를 한다 | VERIFIED |
 | 실제 `DPOTrainer` | 48/48 row에서 prompt, chosen total, rejected total 일치. 컬럼 `prompt_ids/chosen_ids/rejected_ids` | E9 | VERIFIED |
 | 실제 `GRPOTrainer._tokenize_prompts` | 48/48 row에서 일치. `chat_template` override 없음, `chat_template_kwargs={}`, `max_prompt_length` 필드 없음 | E9 | VERIFIED |
-| collator shape (golden) | SFT rows [2355, 2905] → `input_ids [2, 2272]`. DPO rows [2355, 3169] → `input_ids/attention_mask/completion_mask [4, 2272]`(chosen 2 + rejected 2, 4개 시퀀스의 최대 길이로 padding). DPO row 227(동일 쌍) → `[2, 239]` | E9. trl==1.14.1 `trainer/dpo_trainer.py:145-208` | VERIFIED |
+| collator shape (golden) | SFT rows [2355, 2905] → `input_ids [2, 2272]`. DPO rows [2355, 3169] → `input_ids/attention_mask/completion_mask [4, 2272]`(chosen 2 + rejected 2, 4개 시퀀스의 최대 길이로 padding). DPO row 227(동일 쌍) → `[2, 239]` | E9, 검증 V7(실제 Trainer의 `data_collator`로 재현). trl==1.14.1 `trainer/dpo_trainer.py:145-206` (`DataCollatorForPreference.torch_call`) | VERIFIED |
 
 ### 5.6 TRL 기본 길이 제한에 걸리는 row (무절단 계약 위반 규모)
 
@@ -288,6 +289,13 @@ SFTConfig와 DPOConfig에는 `chat_template_kwargs` 필드가 없다. 이 두 Tr
 | 4096 | 0 | 0 | |
 
 E9에서 기본 `SFTConfig()`(max_length=1024)는 48개 중 6 row를 `keep_start`로 잘랐고 row를 삭제하지는 않았다. 기본 `DPOConfig()`는 collator의 `max_length=1024`로 batch 단계에서 자른다. DPO pair 중 rejected가 chosen보다 긴 경우는 411건, 길이가 같은 경우는 184건(동일 쌍 26건 포함)이다.
+
+검증 V9에서 기본 설정으로 전체 4,656 row를 다시 처리했다. `SFTConfig()`는 `_prepare_dataset` 단계에서 17 row를 1,024 token으로 잘라 모두 11,127 token을 버렸고 row 수는 4,656으로 유지됐다. `DPOConfig()`는 dataset 단계에서는 자르지 않았고(길이가 golden과 같음), 실제 Trainer의 collator(`max_length=1024`)가 28 pair를 잘랐다. (VERIFIED)
+
+**주의 (검증 시 추가).** 정수 `max_length`에서는 잘림뿐 아니라 **길이 기준 row 삭제**도 일어난다. 이 데이터는 prompt 최대가 268 token이라 삭제가 0건이었을 뿐이다.
+- SFT: truncation 뒤 loss 대상 token이 하나도 남지 않은 example을 삭제한다(trl==1.14.1 `trainer/sft_trainer.py:1676-1683`, `dataset.filter(lambda example: any(label != -100 ...))`).
+- DPO: `truncation_mode="keep_start"`이면 `len(prompt_ids) >= max_length`인 example을 삭제한다(trl==1.14.1 `trainer/dpo_trainer.py:1100-1106`).
+- 두 filter 모두 `max_length=None`이면 실행되지 않는다(SFT 1659행, DPO 1103행 조건). (VERIFIED, 소스)
 
 ### 5.7 Per-row CSV (저장소에 커밋하지 않음)
 
@@ -431,7 +439,8 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 | tokenizer 호출만, row마다 | 1.28 s | 1.09 s |
 | tokenizer 호출만, 전체 batch | 0.24 s | 1.03 s |
 
-- VLM processor 경로(E8, 1회 측정)는 SFT 5.6–5.9 s, DPO 7.0–7.3 s, GRPO 0.38 s로 tokenizer 경로보다 1.4–1.8배 느리다.
+- VLM processor 경로(E8, 1회 측정)는 SFT 5.6–5.9 s, DPO 7.0–7.3 s, GRPO 0.38 s로 tokenizer 경로보다 느리다. 검증 V8(Trainer 생성 시간 포함, 같은 프로세스에서 두 경로 비교)에서는 SFT 1.20–1.33배, DPO 1.26–1.43배, GRPO 1.22–1.29배였다. 따라서 배율은 "1.4–1.8배"가 아니라 **약 1.2–1.8배**(측정 방법과 부하에 따라 다름)로 본다.
+- 검증 V10 재측정(같은 M1 Max, 다른 에이전트가 동시에 실행 중이라 load average 9–14, 3회 중앙값): SFT `_prepare_dataset` 4.45–4.89 s(952–1,047 row/s), DPO 5.57–5.60 s(831–836 row/s), Jinja 렌더링 0.10–0.11 s, import 1.5–1.9 s(파일 캐시가 따뜻한 상태), tokenizer 1.24–1.44 s, `load_dataset` 2.0–2.1 s. 위 표와 ±20% 안에서 일치한다. 처리량 값은 부하에 민감하다.
 - 비용 대부분은 Jinja나 BPE가 아니라 TRL의 `datasets.map(batched=False)` row별 오버헤드다. SFT 약 4 s 중 렌더링과 토큰화는 약 1.3 s다.
 - streaming으로 전체를 한 번 순회하는 데 약 2.4 s가 걸렸다. golden 스크립트(E7) 전체의 최대 RSS는 1.13 GB였다. 여러 변형의 token ID 리스트를 모두 메모리에 두었으므로 상한 참고값이다.
 - Docker linux/amd64 호스트의 처리량은 측정하지 않았다(UNKNOWN).
@@ -452,10 +461,10 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 | 항목 | 값 | 근거 | 태그 |
 |---|---|---|---|
 | `text_config.max_position_embeddings` | 262,144 (class 기본값은 32,768이고 checkpoint가 덮어쓴다) | `config.json`, E11. transformers==5.18.0 `models/qwen3_5/configuration_qwen3_5.py:89` | VERIFIED |
-| `rope_parameters` | `rope_type="default"`(YaRN 같은 scaling 없음), `rope_theta=1e7`, `partial_rotary_factor=0.25` → head_dim 256 중 64차원만 회전, `mrope_section=[11,11,10]`(합 32 = 64/2), `mrope_interleaved=true` | E11. `configuration_qwen3_5.py:108-111` | VERIFIED |
-| sliding window | 없음 (`sliding_window=None`) | E11 | VERIFIED |
+| `rope_parameters` | `rope_type="default"`(YaRN 같은 scaling 없음), `rope_theta=1e7`, `partial_rotary_factor=0.25` → head_dim 256 중 64차원만 회전, `mrope_section=[11,11,10]`(합 32 = 64/2), `mrope_interleaved=true`. 이 값들은 checkpoint `config.json`의 `text_config.rope_parameters`에서 온다. class 기본값은 `rope_theta=10000.0`이므로 반드시 checkpoint config를 읽어야 한다 | E11, 검증 V15. `configuration_qwen3_5.py:108-111`은 `mrope_*` key의 rope 검증 제외(108행)와 `partial_rotary_factor` 기본값 0.25(111행)를 정의한다 | VERIFIED |
+| sliding window | 없음. `Qwen3_5TextConfig`에는 `sliding_window` 필드 자체가 없고 `modeling_qwen3_5.py`에도 sliding 관련 코드가 없다(grep 0건). E11의 `None`은 `getattr(cfg, "sliding_window", None)`의 기본값일 뿐이다 | E11, 검증 V15 (`hasattr(text_config, "sliding_window") == False`) | VERIFIED (검증 시 근거 정정) |
 | tokenizer `model_max_length` | 262,144 (§1) | E1 | VERIFIED |
-| 기타 | `mtp_num_hidden_layers=1`, layer 구성 linear 24 / full 8, vision `num_position_embeddings=2304` | E11 | VERIFIED |
+| 기타 | `mtp_num_hidden_layers=1`, layer 구성 linear 24 / full 8, vision `num_position_embeddings=2304`. 단 `mtp_num_hidden_layers`는 `Qwen3_5TextConfig`에 정의된 필드가 아니라 `config.json`에서 넘어온 추가 속성이다. MTP 관련 사실은 O7 참고 | E11, 검증 V15·V11 | VERIFIED |
 | 관측 최대와 비교 | SFT/DPO 최대 2,272(`keep` 2,276)는 상한의 0.87%다. GRPO prompt 최대 268에 budget 1,024/2,048/4,096/8,192를 더하면 1,292/2,316/4,364/8,460이다. 예시 입력에서는 `CONTEXT_EXCEEDED`가 발생하지 않는다 | E7 | VERIFIED |
 | backend가 실제로 지원하는 최대 길이 | 이 조사 범위 밖이다 (attention kernel, linear attention kernel의 길이 제약은 확인하지 않음) | — | UNKNOWN |
 
@@ -471,6 +480,8 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 - `template_fingerprint = sha256(tokenizer.chat_template.encode("utf-8"))`로 둔다. 예시 모델에서는 `59a64ebb…`이고 파일 해시와 같다.
 
 **R2. TRL 기본 processing class.** TRL은 `processing_class=None`이면 세 Trainer 모두 `AutoProcessor`를 사용한다. 학습 환경에 Pillow와 torchvision이 있으면 이 모델은 `Qwen3VLProcessor`(VLM 경로)가 된다. 텍스트 전용 데이터에서는 token ID가 같으므로(E8) 분석기는 tokenizer 경로를 써도 된다. 다만 결과에 `processing_path: tokenizer|processor`와 "VLM 경로와 동일성 검증됨(text-only)"을 기록한다(trl==1.14.1 `trainer/sft_trainer.py:1004`, `trainer/dpo_trainer.py:591`, `trainer/grpo_trainer.py:373`).
+- (검증 시 추가, VERIFIED V12) 이 모델의 `AutoProcessor`는 **torchvision이 반드시 있어야** 로드된다. Pillow와 torchvision이 모두 없으면 `ValueError: Could not load any image processor class`, Pillow만 있으면 `ImportError: Qwen3VLVideoProcessor requires the Torchvision library`가 난다. TRL은 위 세 위치에서 이 예외를 잡지 않으므로 `processing_class=None`인 Trainer 생성이 **실패한다**. tokenizer로 fallback하지 않는다.
+- 따라서 내보내는 실행 설정은 `processing_class=AutoTokenizer.from_pretrained(...)`를 명시하거나(텍스트 전용 데이터, E8/V8로 결과 동일), torchvision 의존성을 명시해야 한다.
 
 **R3. 컬럼 매핑 규칙.**
 - objective별 TRL 형식 컬럼을 만들고 **원본 컬럼을 모두 제거**한다.
@@ -478,7 +489,8 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
   - SFT: `{"prompt", "completion"}` (prompt-completion 형식이 기본)
   - DPO: `{"prompt", "chosen", "rejected"}`
 - 제거해야 하는 이유는 두 가지다.
-  - (a) `is_conversational`이 지원 key 집합에서 `set.pop()`으로 아무 key나 하나 고른다(trl==1.14.1 `data_utils.py:185-191`). 문자열 `chosen`/`rejected`가 list 형식 `prompt`/`completion`과 함께 남아 있으면 `PYTHONHASHSEED`에 따라 형식 판정이 바뀐다. 실측으로 seed 0과 3에서 False, 나머지는 True였다(E12).
+  - (a) `is_conversational`이 지원 key 집합에서 `set.pop()`으로 아무 key나 하나 고른다(trl==1.14.1 `data_utils.py:185-191`). 문자열 `chosen`/`rejected`가 list 형식 `prompt`/`completion`과 함께 남아 있으면 `PYTHONHASHSEED`에 따라 형식 판정이 바뀐다(E12). 어떤 seed가 False가 되는지는 key 삽입 순서에도 달려 있다. 검증 V13(seed 0–15)에서 key 순서 `prompt, completion, chosen, rejected`는 seed 0, 3, 9, 10, 14가 False였고, 원본 컬럼을 남긴 `map` 결과와 같은 순서(`lang, …, chosen, rejected, prompt, completion`)는 seed 0, 9, 10, 12, 14가 False(seed 3은 True)였다. E12의 "seed 0과 3에서 False, 나머지는 True"는 특정 key 순서와 범위에서만 맞다.
+  - (a′) 판정이 False가 되면 SFT `add_eos`가 list에 `.endswith`를 호출해 `AttributeError: 'list' object has no attribute 'endswith'`로 Trainer 생성이 실패한다(trl==1.14.1 `trainer/sft_trainer.py:1519-1536`). 검증 V13에서 원본 컬럼을 남긴 8 row로 seed 0, 9는 실패, seed 1은 성공했다. 같은 코드와 데이터가 실행마다 다르게 동작한다.
   - (b) 원본을 매핑 없이 DPO에 넣으면 `extract_prompt`가 chosen/rejected 코드의 공통 prefix를 prompt로 만든다. 실측에서 question이 prompt에 들어간 row는 0개였고, 추출된 prompt 길이 중앙값은 66자였다(E12, trl==1.14.1 `data_utils.py:557-641`).
 
 **R4. 빈 system 정책.**
@@ -504,6 +516,7 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 **R6. 내보내는 실행 설정에 숨은 길이 제한을 남기지 않는다.**
 - 기본값이 `SFTConfig.max_length=1024`, `DPOConfig.max_length=1024`이다(trl==1.14.1 `trainer/sft_config.py:203`, `trainer/dpo_config.py:194`). 예시에서는 그대로 두면 SFT 17 row, DPO 28 pair가 잘린다(§5.6).
 - `max_length=None`, `packing=False`로 명시한다. `GRPOConfig.max_completion_length`(기본 512)와 `num_generations`(기본 8)도 선택한 budget과 preset 값으로 명시한다(`trainer/grpo_config.py:479,493`).
+- (검증 시 추가) 정수 `max_length`를 쓰면 잘림 외에 **row 삭제**도 생길 수 있다. SFT는 truncation 뒤 loss token이 0개인 example을, DPO는 `len(prompt_ids) >= max_length`인 example을 지운다(§5.6 주의). 정수 상한이 꼭 필요하면 전체 스캔 최대 길이 이상으로 두고, 처리 후 row 수와 길이가 golden과 같은지 확인한다.
 
 **R7. content 손실과 주입 검사.**
 - 다음 세 가지를 row별로 검사한다.
@@ -521,12 +534,12 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 - `context_limit = config.text_config.max_position_embeddings`(262,144)를 쓴다. tokenizer `model_max_length`는 따로 저장한다.
 - `model_max_length ≥ 1e20`(transformers의 `LARGE_INTEGER`/`VERY_LARGE_INTEGER` 계열)이면 sentinel로 보고 상한으로 쓰지 않는다. 이 모델의 262,144는 실제 선언값이다.
 
-**R10. vocab 차원.** logits와 `lm_head` 메모리 계산에는 `config.text_config.vocab_size=248,320`을 쓴다. `len(tokenizer)=248,077`을 쓰면 안 된다. padding token ID는 248044(`<|endoftext|>`)다.
+**R10. vocab 차원.** logits와 `lm_head` 메모리 계산에는 `config.text_config.vocab_size=248,320`을 쓴다. `len(tokenizer)=248,077`을 쓰면 안 된다. padding token ID는 248044(`<|endoftext|>`)다. 검증 V11에서 safetensors header만 읽어 확인했다: `lm_head.weight`와 `model.language_model.embed_tokens.weight`가 모두 BF16 `[248320, 4096]`이고, 전체 tensor 760개, BF16 parameter 9,409,813,744개다(huggingface_hub==1.33.0 `get_safetensors_metadata`, VERIFIED).
 
 **R11. 숫자가 많은 content.** 숫자 1자리가 1 token이므로 문자 수 기반 추정은 outlier를 놓친다. 예시의 최장 row는 숫자열이고 1.03 chars/token이다. 진행률이나 예상 시간 추정에만 문자 수를 쓰고, 길이 결과는 반드시 실제 토큰화로 낸다.
 
 **R12. worker timeout과 진행 이벤트.**
-- 측정값: TRL과 같은 row별 경로는 objective당 약 1,000 row/s(M1 Max), GRPO prompt는 1만 row/s 이상, cold start는 약 7 s(import + tokenizer + dataset).
+- 측정값: TRL과 같은 row별 경로는 objective당 약 1,000 row/s(M1 Max. 검증 V10에서 부하가 있을 때 DPO 약 830 row/s), GRPO prompt는 1만 row/s 이상, cold start는 약 5–7 s(import + tokenizer + dataset. 파일 캐시 상태에 따라 다름).
 - 진행 이벤트는 `max(1 s, 256 row)`마다 보내기를 권장한다.
 - timeout은 `30 s + 10 ms × row × objective 수`를 권장한다. 측정값보다 약 10배 여유를 둔 값이다. 이 권장값은 제품 결정이므로 INFERRED로 둔다. 한 번 측정해 보정한다(O3).
 
@@ -549,8 +562,63 @@ Apple M1 Max, 단일 프로세스, `dataset_num_proc=None`, datasets 캐시 비�
 - **O1.** 제품 기본 빈 system 정책(`omit_if_empty` 대 `keep`). 이 문서는 `omit`을 1차 golden으로 삼았다. 두 정책의 차이는 이 template에서 정확히 +4 token이다. 오케스트레이터 또는 사양에서 결정해야 한다.
 - **O2.** Hub parquet 변환본의 원본 revision은 commit 메타데이터에 없다(timestamp로 추론). 제품이 변환본을 1차 source로 쓸지는 정하지 않았다.
 - **O3.** Docker(linux/amd64, linux/arm64) 안에서의 처리량은 측정하지 않았다(UNKNOWN). R12의 timeout 공식은 실제 compose 환경에서 다시 보정해야 한다.
-- **O4.** 실제 CUDA 학습 환경에 Pillow와 torchvision이 설치되어 있는지(즉 TRL이 VLM processor 경로를 탈지)는 환경마다 다르다. 텍스트 전용 데이터에서 결과가 같다는 것만 확인했다. 이미지가 포함된 데이터셋은 범위 밖이다.
+- **O4.** 실제 CUDA 학습 환경에 Pillow와 torchvision이 설치되어 있는지(즉 TRL이 VLM processor 경로를 탈지)는 환경마다 다르다. 텍스트 전용 데이터에서 결과가 같다는 것만 확인했다. 이미지가 포함된 데이터셋은 범위 밖이다. (검증 시 보완) torchvision이 없으면 `processing_class=None`인 TRL Trainer는 생성 단계에서 실패한다(R2). 따라서 남은 질문은 "어느 경로를 타는가"보다 "내보내는 설정이 `processing_class`를 명시할 것인가"다.
 - **O5.** transformers의 `Qwen3_5Tokenizer.PRETOKENIZE_REGEX`가 이후 버전에서 바뀌면 같은 `tokenizer.json`으로도 token ID가 달라질 수 있다. 버전 고정과 fingerprint(R1)로 대응하지만 다른 transformers 버전과의 호환 범위는 확인하지 않았다.
 - **O6.** GRPO의 실제 생성 길이(thinking 포함)는 데이터로 정할 수 없다. budget 시나리오만 가능하다(plan.md §8.3). 이 모델은 `generation_config`가 `do_sample=true, temperature=0.6, top_p=0.95, top_k=20`이며, 생성 종료 token이 248046과 248044 두 개다(rollout 쪽 조사에서 반영 필요).
-- **O7.** `mtp_num_hidden_layers=1`(multi-token prediction 층)을 Trainer가 로드하거나 학습하는지는 이 조사 범위 밖이다(모델 inventory/메모리 조사 담당).
+- **O7.** `mtp_num_hidden_layers=1`(multi-token prediction 층)을 Trainer가 로드하거나 학습하는지는 이 조사 범위 밖이다(모델 inventory/메모리 조사 담당). (검증 시 일부 해소, VERIFIED) checkpoint header에는 이름에 `mtp`가 들어간 tensor가 0개다(760개 중. 구성은 `lm_head`, `embed_tokens`, text layer 0–31, `norm`, `visual.*`, V11). transformers==5.18.0 `models/qwen3_5/modeling_qwen3_5.py`에는 MTP 모듈이 없고, `Qwen3_5PreTrainedModel`(916행)이 `_keys_to_ignore_on_load_unexpected = [r"^mtp.*"]`(924행)를, `Qwen3_5ForCausalLM`(1673행)이 `[r"^mtp.*", r"^model.visual.*"]`(1679행)를 둔다. 따라서 transformers 경로에서는 MTP 층이 만들어지지도, 로드되지도, 학습되지도 않는다. 다른 backend(예: vLLM rollout)의 MTP 처리는 여전히 미확인이다.
 - **O8.** 중복 row와 chosen==rejected 쌍을 UI에서 어떤 수준의 경고로 보여줄지 정하지 않았다(삭제는 무절단 계약상 금지).
+
+## 검증 로그 (Verification log)
+
+| 항목 | 값 |
+|---|---|
+| 검증자 | `verify-example-model-dataset` (Milestone M0), 2026-10-04 |
+| 방법 | 원 저자의 스크립트를 재사용하지 않고 새로 작성해 실행했다. golden 길이는 unbound method stub 대신 tiny random-init Qwen3(vocab 248,320)로 **실제 `SFTTrainer`/`DPOTrainer`/`GRPOTrainer` 객체**를 만들어 전체 4,656 row로 다시 계산했다. 인용한 줄 번호는 설치된 소스에서 다시 읽었다 |
+| 실행 | `HF_HOME=/tmp/vf-research/hf /tmp/vf-research/.venv/bin/python <script>`. processor 경로(V8, V12)는 private overlay venv `/tmp/vf-research/venv-verify-example-model-dataset`(공유 venv + Pillow 12.3.0 + torchvision 0.29.1, `--no-deps`)와 `/tmp/vf-research/venv-verify-example-model-dataset-pilonly`(Pillow만)를 썼다 |
+| 스크립트 | `/tmp/vf-research/scratch/verify-example-model-dataset/` (저장소 밖) |
+| 결론 | golden 수치(통계, top-10, 초과 row 수, CSV, digest)는 **모두 정확**했다. 수정은 근거 표현, 일반화 범위, 빠진 주의사항에 한정된다 |
+
+| ID | 스크립트 | 내용 |
+|---|---|---|
+| V1 | `v1_tokenizer.py` | tokenizer class, 길이, special token, backend 구성, raw `tokenizer.json` 비교, `tokenizer_config.json` 키 |
+| V2 | `v2_prefix_rawtok.py` | TRL 로그와 별개로 prompt prefix를 직접 검사(`omit`/`keep`), raw `tokenizer.json`과 content 비교 |
+| V3 | (스크립트 없음, `sed`/`grep`) | 문서가 인용한 줄 번호를 설치된 소스에서 다시 확인 |
+| V4 | `v4_hashes.py` | 파일 SHA256, git blob sha1, LFS sha256, 데이터셋 tree/commit/refs |
+| V5 | `v5_template.py` | 렌더링 경우, assistant mask, TRL template 검사 4종, TRL 내장 Qwen template 비교 |
+| V6 | `v6_dataset.py`, `v6_parquet.py` | 데이터셋 사실, 중복, 문자 통계, 불변식, CSV `n_*` 대조, parquet 대조 |
+| V7 | `v7_golden.py`, `v7_compare.py` | 실제 Trainer 객체로 golden 재계산, JSON 블록·CSV·digest 대조, collator shape |
+| V8 | `v8_vlm.py` | `Qwen3VLProcessor`로 실제 Trainer 3종을 만들어 tokenizer 경로와 전체 비교 |
+| V9 | `v9_variants.py` | SFT loss 변형 4종, 기본 `SFTConfig`/`DPOConfig`의 잘림 수(전체 row) |
+| V10 | `v10_timing.py` | 처리량 재측정 |
+| V11 | `v11_header.py` | safetensors header만 읽기(가중치 미다운로드) |
+| V12 | `v12_processor_deps.py` | `AutoProcessor` 의존성(공유 venv, Pillow만, Pillow+torchvision) |
+| V13 | `v13_isconv.py`, `v13_isconv2.py`, `v13_sft_leftover.py`, `v13_extract_prompt.py` | hash seed 의존성, 원본 컬럼이 남았을 때의 영향, `extract_prompt` |
+| V14 | `v14_misc.py` | `add_bos/eos_token`, `skip_special_tokens` decode, `model_max_length` warning, decode 왕복, U+FE0F, streaming |
+| V15 | `v15_config.py` | context 관련 config, class 기본값, `generation_config.json` |
+
+| # | 주장 (위치) | 판정 | 근거 (한 줄) |
+|---|---|---|---|
+| 1 | `AutoTokenizer` → `Qwen3_5Tokenizer`, `len(tok)` 248,077, `vocab_size` 248,044, config vocab 248,320, BOS None, EOS 248046, PAD 248044, config text EOS 248044, `model_max_length` 262,144 (§1) | VERIFIED | V1 출력이 모두 일치. 인용 중 집합 리터럴 범위만 `:378-427`→`:378-429`로 고침(V3) |
+| 2 | normalizer/pre-tokenizer를 class 코드가 다시 만들고 raw `tokenizer.json`과 regex가 다름(힌디어 6 대 10, 태국어 3 대 7), 데이터셋 13,968 시퀀스 동일 (§1) | CORRECTED | V1·V2로 재현. 다만 added token도 `tokenizer.json`에서 읽으므로(`tokenization_utils_base.py:1904-1914`) "vocab, merges, post_processor만"을 고쳤다 |
+| 3 | `tok(text)`는 special token을 붙이지 않음, `apply_chat_template`은 `add_special_tokens=False`(3124-3132), content 안 `<\|im_end\|>`는 248046 (§1) | VERIFIED | V1·V14: `[14556, 1814]`, `add_bos/eos_token=False`, `'a <\|im_end\|> b'`→`[64, 220, 248046, 292]` |
+| 4 | 파일 SHA256과 Hub blob/LFS 대조 (§1.1) | VERIFIED | V4: 7개 파일 SHA256 일치, git blob 6개 일치, `tokenizer.json` LFS sha256 일치, `tok.chat_template` SHA256 = `59a64ebb…` |
+| 5 | template 규칙: `<\|im_end\|>` 뒤 줄바꿈 없음, 빈 system 4 token, assistant turn 형식, generation prompt 3/5 token, 이전 reasoning 유지 (§2) | VERIFIED | V5 렌더링이 모두 일치. 곁가지인 TRL 내장 template의 `<\|im_end\|>\n` 위치 수만 "4–5곳"→"5–6곳"으로 고침 |
+| 6 | `{% generation %}`이 header를 포함한 turn 전체를 감쌈, TRL 검사 4종 True, `get_training_chat_template`→`None` (§2) | VERIFIED | V5: mask가 `<\|im_start\|>`부터 `<\|im_end\|>`까지 1. `chat_template_utils.py:37-42,825,886-952,1105-1107` 재확인 |
+| 7 | 데이터셋이 JSONL, 6,867,898 bytes, SHA256 `ad93a85f…`, 4,656 row, null 0, system 전부 `""`, 완전 중복 2쌍, chosen==rejected 26, 중복 question 초과 500 (§4) | VERIFIED | V4·V6: 모두 일치. lang 분포, 중복 chosen/rejected 그룹, 문자 통계(p99는 반올림 값), streaming 동일성(V14)도 일치 |
+| 8 | Parquet 변환본 `1cc07a69…`가 JSONL과 row 단위로 같음 (§4) | VERIFIED | V6: 2,564,627 bytes, SHA256 `eb9b1f8b…`, row group 5개, 4,656/4,656 동일 |
+| 9 | 변환본의 원본 revision이 `81aeacf…` (§4) | UNVERIFIABLE | convert commit 7개의 메시지가 "Update parquet files"/"initial commit"뿐이고 원본 sha가 없다. 12초 차 timestamp로만 추론되므로 INFERRED 태그를 유지 |
+| 10 | golden 통계 전부 (§5.1–5.3, JSON 블록) | VERIFIED | V7: 실제 Trainer 객체로 다시 계산. JSON 블록 모든 필드 차이 0, top-10 표 6개 일치, CSV 길이 컬럼 11개 4,656 row 차이 0 |
+| 11 | `keep = omit + 4`, nothink GRPO +2, 불변식(`n_q+7`, `n_c+3`, `n_q+n_c+10`), mismatch warning 0, 실패 0 (§5.2, §5.4, §7) | VERIFIED | V6·V7: offset 집합 {4}, {2}, completion {0}. 불변식 4종 4,656/4,656. prefix 위반도 직접 검사해 0(V2) |
+| 12 | VLM processor 경로가 tokenizer 경로와 같고 1.4–1.8배 느림 (§5.5, §6) | CORRECTED | V8: 모든 ID/label이 4,656/4,656 같음(두 정책). 속도 배율은 1.20–1.43배로 측정돼 "약 1.2–1.8배"로 고침 |
+| 13 | 기본 `max_length=1024`(`sft_config.py:203`, `dpo_config.py:194`), SFT 17 row / DPO 28 pair 잘림, GRPO에 `max_prompt_length` 없음, `max_completion_length` 512, `num_generations` 8, collator shape (§5.5–5.6, R6) | CORRECTED | 값은 config 인스턴스화와 V9(전체 row, SFT 11,127 token 손실, 삭제 0)로 확인. 빠져 있던 길이 기준 row 삭제 filter(`sft_trainer.py:1676-1683`, `dpo_trainer.py:1100-1106`)를 추가 |
+| 14 | loss token 변형: prompt-completion=completion, `messages`+`assistant_only_loss`=completion+3, `messages` 기본=total−1, example별 `enable_thinking=False`는 completion −2 (§5.5, R5, R8) | VERIFIED | V9: 네 경우 모두 4,656/4,656 (원문은 48 row). 187행이 기본 `loss_type="chunked_nll"` 경로라는 점을 근거에 덧붙임 |
+| 15 | `is_conversational`의 `set.pop()` 때문에 hash seed에 의존하고, seed 0과 3에서 False (R3) | CORRECTED | V13: 의존성은 사실. False가 되는 seed는 key 순서마다 다르다(실제 `map` 순서에서는 0, 9, 10, 12, 14). False이면 SFT가 `AttributeError`로 실패한다는 점을 추가 |
+| 16 | 원본을 그대로 DPO에 넣으면 `extract_prompt`가 공통 prefix를 prompt로 씀: question 포함 0 row, 중앙값 66자 (R3) | VERIFIED | V13: 0 row, 중앙값 66자 (`data_utils.py:632-641`) |
+| 17 | 처리량과 cold start (§6, R12) | VERIFIED | V10: 표와 ±20% 안에서 일치(부하 있는 상태). cold start는 "약 7 s"에서 캐시 상태를 반영한 "약 5–7 s"로 범위를 넓힘 |
+| 18 | context config: `max_position_embeddings` 262,144, rope `default`, theta 1e7, partial 0.25, mrope `[11,11,10]`, sliding window 없음 (§8) | CORRECTED | V15: 값은 일치. 다만 `sliding_window` 필드는 아예 없다(`hasattr` False). rope 값은 `config.json`에서 오며 class 기본 theta는 1e4라는 점을 명시 |
+| 19 | per-row CSV SHA256 `d9a2e7b7…`, token ID digest 3종, JSON 블록 = fixture (§5.7–5.8) | VERIFIED | V7: CSV SHA256·283,440 bytes·4,657줄 일치. 내 Trainer 결과로 계산한 digest 3종이 일치하고, 블록이 fixture 파일 2개와 같다 |
+| 20 | R10: logits/`lm_head`는 vocab 248,320 기준 | VERIFIED | V11: header 기준 `lm_head`와 `embed_tokens`가 모두 BF16 `[248320, 4096]` |
+| 21 | R2: `processing_class=None`이면 `AutoProcessor`를 쓰고, Pillow+torchvision이 있으면 `Qwen3VLProcessor` (`sft_trainer.py:1004`, `dpo_trainer.py:591`, `grpo_trainer.py:373`) | CORRECTED | V12: 의존성이 없으면 `ValueError`/`ImportError`로 Trainer 생성이 실패하고 tokenizer로 fallback하지 않는다는 점을 R2·O4에 추가 |
+| — | O7 (MTP) | 일부 해소 | V11: checkpoint의 `mtp` tensor 0개. transformers는 `^mtp.*` key를 무시한다(`modeling_qwen3_5.py:924,1679`) |
+
+확인하지 않은 항목: Docker 처리량(O3, 원문도 UNKNOWN), E7 스크립트의 최대 RSS 1.13 GB(구현 영향 없음), E9의 48 row 표본 구성(전체 row 재현으로 대체).
