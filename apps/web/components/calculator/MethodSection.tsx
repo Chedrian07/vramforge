@@ -44,7 +44,7 @@ export function MethodSection() {
         <span id="method-label" className="text-[13px] font-medium text-ink-2">
           Method
         </span>
-        <Segmented labelId="method-label" label="Method" value={objective} onValueChange={(v) => setValue("objective", v, opts)} options={OBJECTIVES} />
+        <Segmented labelId="method-label" label="Method" className="self-start" value={objective} onValueChange={(v) => setValue("objective", v, opts)} options={OBJECTIVES} />
         <p className="text-[12px] leading-snug text-muted">{OBJECTIVE_TRANSFORMATION[objective]}</p>
       </div>
 

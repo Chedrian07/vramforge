@@ -85,7 +85,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
             id={id}
             {...field}
             placeholder="org/dataset · https://huggingface.co/datasets/org/dataset · local:datasets/…"
-            className="min-w-0 flex-1 font-mono text-[14px]"
+            className="min-w-0 basis-full font-mono text-[14px] sm:basis-auto sm:flex-1"
             autoComplete="off"
             spellCheck={false}
             aria-invalid={error ? true : undefined}

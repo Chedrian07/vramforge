@@ -66,10 +66,17 @@ export function IssueList({ issues, empty, limit }: { issues: DisplayIssue[]; em
     <ul className="flex flex-col gap-2">
       {shown.map((issue, index) => (
         <li key={`${issue.code}-${index}`} className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:gap-2">
-          <Badge tone={SEVERITY_TONE[issue.severity]}>{SEVERITY_LABEL[issue.severity]}</Badge>
+          <Badge tone={SEVERITY_TONE[issue.severity]} className="self-start">
+            {SEVERITY_LABEL[issue.severity]}
+          </Badge>
           <div className="min-w-0 flex-1 text-[13px] leading-snug">
-            <span className="text-ink">{issue.user_message}</span>{" "}
-            <Mono className="text-[11px] text-muted">{issue.code}</Mono>
+            <span className="text-ink">{issue.user_message}</span>
+            {issue.code ? (
+              <>
+                {" "}
+                <Mono className="text-[11px] text-muted">{issue.code}</Mono>
+              </>
+            ) : null}
           </div>
         </li>
       ))}

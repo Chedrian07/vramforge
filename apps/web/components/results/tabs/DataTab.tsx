@@ -305,7 +305,7 @@ export function DataTab({ result, partial }: { result: AnalysisResult | null; pa
           <ul className="flex flex-col gap-1.5">
             {(audit.checks ?? []).map((check) => (
               <li key={check.name} className="flex flex-col gap-0.5 text-[13px] sm:flex-row sm:items-start sm:gap-2">
-                <Badge tone={check.passed === true ? "ok" : check.passed === false ? "err" : "neutral"}>
+                <Badge className="self-start" tone={check.passed === true ? "ok" : check.passed === false ? "err" : "neutral"}>
                   {check.passed === true ? "통과" : check.passed === false ? "위반" : "해당 없음"}
                 </Badge>
                 <span className="font-medium text-ink">{PRESERVATION_CHECK_LABEL[check.name]}</span>

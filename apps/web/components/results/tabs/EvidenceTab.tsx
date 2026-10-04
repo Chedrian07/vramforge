@@ -173,7 +173,7 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
           <ul className="flex flex-col gap-1.5">
             {assumptions.map((a) => (
               <li key={a.id} className="flex flex-col gap-0.5 text-[13px] sm:flex-row sm:items-start sm:gap-2">
-                <Badge tone="neutral">{EVIDENCE_LABEL[a.evidence ?? "assumption"]}</Badge>
+                <Badge className="self-start" tone="neutral">{EVIDENCE_LABEL[a.evidence ?? "assumption"]}</Badge>
                 <span className="text-ink">{a.text}</span>
                 {a.source ? <Mono className="text-[11px] text-muted">{a.source}</Mono> : null}
               </li>
@@ -204,7 +204,7 @@ export function EvidenceTab({ result, scenario }: { result: AnalysisResult | nul
         <IssueList
           issues={[
             ...(result.unknown_components ?? []).map((u) => ({ code: "UNKNOWN_MEMORY_COMPONENT", severity: "warning" as const, user_message: `산정 불가: ${u.name}${u.phase ? ` (${u.phase})` : ""} — ${u.reason}` })),
-            ...(result.excluded_components ?? []).map((e) => ({ code: e.code ?? "EXCLUDED", severity: "info" as const, user_message: `제외: ${e.name} — ${e.reason}` })),
+            ...(result.excluded_components ?? []).map((e) => ({ code: e.code ?? "", severity: "info" as const, user_message: `제외: ${e.name} — ${e.reason}` })),
           ]}
           empty="미확정이거나 범위에서 제외한 항목이 없습니다."
         />

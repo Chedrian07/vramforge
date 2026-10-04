@@ -122,7 +122,7 @@ function attentionItems(summary: ResultSummary): DisplayIssue[] {
   const items: DisplayIssue[] = [];
   for (const e of summary.excluded) {
     if (e.code === "GRPO_REWARD_UNSPECIFIED") continue; // shown as its own banner
-    items.push({ code: e.code ?? "EXCLUDED", severity: "info", user_message: `제외: ${e.name} — ${e.reason}` });
+    items.push({ code: e.code ?? "", severity: "info", user_message: `제외: ${e.name} — ${e.reason}` });
   }
   for (const u of summary.unknown) {
     items.push({ code: "UNKNOWN_MEMORY_COMPONENT", severity: "warning", user_message: `산정 불가: ${u.name} — ${u.reason}` });
