@@ -47,6 +47,10 @@ def test_trl_instantiates_the_exported_args(
     obj = Objective(objective)
     args = dict(data["trl"]["args"])
     args["output_dir"] = str(tmp_path / "out")
+    # Test-only: TrainingArguments rejects bf16=True without a GPU unless use_cpu is set (Linux CI
+    # runners have no GPU). The exported config itself never carries use_cpu.
+    assert "use_cpu" not in args
+    args["use_cpu"] = True
     config = _config_class(obj)(**args)
     if obj in (Objective.SFT, Objective.DPO):
         assert config.max_length is None
