@@ -113,6 +113,8 @@ LENGTHS_DIR = "lengths"
 # preprocess_key component when no backend profile was resolved (unsupported combination).
 UNRESOLVED_LOCK = "unresolved"
 HALTED = "pipeline_halted"
+# artifacts.json key: issues of the stages `recompute` does not re-run (dataset inspection, scan).
+DATA_ISSUES_KEY = "data_issues"
 
 _STAGE_FOR_STATUS: dict[JobStatus, Stage] = {
     JobStatus.RESOLVING: Stage.RESOLVING,
@@ -854,8 +856,8 @@ class _Run:
         self.result.dataset_scan = outcome_result.model_copy(
             update={"split_auto_selected": self.request.dataset.split is None}
         )
-        self.write_artifacts_manifest(pkey)
         self.scan_issues = issues
+        self.write_artifacts_manifest(pkey)
         for issue in issues:
             self.note(issue)
         self.publish()
@@ -917,12 +919,19 @@ class _Run:
         lengths = None
         if self.lengths_path is not None and self.lengths_path.resolve().is_relative_to(own):
             lengths = str(self.lengths_path.resolve().relative_to(own))
+        # Dataset-inspection and scan findings: `recompute` does not re-run those stages, so it
+        # re-reports them from here instead of silently dropping them.
+        data_issues = [
+            *(self.ds_inspection.issues if self.ds_inspection is not None else []),
+            *self.scan_issues,
+        ]
         payload = {
             "version": 1,
             "inventory": INVENTORY_FILE if self.inventory is not None else None,
             "lengths": lengths,
             "preprocess_key": pkey,
             "template_content_loss_rows": self.template_loss_rows,
+            DATA_ISSUES_KEY: [i.model_dump(mode="json") for i in data_issues],
         }
         _write_json_atomic(self.ctx.artifact_dir / ARTIFACTS_FILE, json.dumps(payload))
 
@@ -1353,7 +1362,12 @@ def reanalysis_reasons(base: AnalysisResult, request: AnalysisRequest) -> list[s
 
 def _preprocessing_layer_changed(base: ResolvedConfig | None, new: ResolvedConfig) -> str | None:
     if base is None:
-        return None
+        # The stored scan was keyed without a backend profile (UNRESOLVED_LOCK, request template
+        # options), so it is not the tokenization the newly resolved profile would produce.
+        return (
+            "이전 분석에는 적용된 backend profile이 없어 해당 profile 기준으로 "
+            "데이터를 다시 토큰화해야 합니다."
+        )
     if new.preprocessing_adapter != base.preprocessing_adapter:
         return "적용되는 전처리 구현이 바뀌어 전체 데이터를 다시 토큰화해야 합니다."
     if new.dependency_lock_digest != base.dependency_lock_digest:
@@ -1361,6 +1375,17 @@ def _preprocessing_layer_changed(base: ResolvedConfig | None, new: ResolvedConfi
     if dict(new.template_kwargs) != dict(base.template_kwargs):
         return "chat template 인자가 바뀌어 토큰화를 다시 해야 합니다."
     return None
+
+
+def _stored_issues(raw: object) -> list[Issue]:
+    """Issues saved in artifacts.json (entries that no longer validate are skipped)."""
+    issues: list[Issue] = []
+    for item in raw if isinstance(raw, list) else []:
+        try:
+            issues.append(Issue.model_validate(item))
+        except ValueError:
+            log.warning("ignoring a stored issue that does not match the current schema")
+    return issues
 
 
 def recompute(
@@ -1416,6 +1441,8 @@ def _recompute(
     run.tokenizer_manifest = base.tokenizer_manifest
     run.lengths_path = lengths_path
     run.template_loss_rows = int(manifest.get("template_content_loss_rows") or 0)
+    for issue in _stored_issues(manifest.get(DATA_ISSUES_KEY)):
+        run.note(issue, live=False)  # the data did not change: its findings still apply
     try:
         run.stage = Stage.INSPECTING
         run.resolve_compatibility()

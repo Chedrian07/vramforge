@@ -178,3 +178,67 @@ def test_recompute_can_newly_support_a_combination(
     assert response.requires_reanalysis is False
     assert response.result.memory is None
     assert response.result.status.training_readiness is TrainingReadiness.UNSUPPORTED
+
+
+def test_recompute_keeps_dataset_and_scan_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The data did not change, so its inspection and scan findings must still be reported after a
+    recompute (they are not re-run and must not silently disappear)."""
+    from pipeline_fakes import dataset_inspection
+
+    from vramforge_estimator.errors import make_issue
+    from vramforge_estimator.schemas import ErrorCode, Severity, Stage
+
+    failed_rows = make_issue(
+        ErrorCode.SCAN_FAILED_ROWS,
+        "3개 row를 토큰화하지 못했습니다.",
+        severity=Severity.WARNING,
+        stage=Stage.TOKENIZING,
+    )
+    unlisted = make_issue(
+        ErrorCode.DATASET_FORMAT_UNSUPPORTED,
+        "목록에 없는 데이터 파일이 있습니다.",
+        severity=Severity.WARNING,
+        stage=Stage.INSPECTING,
+    )
+    modules = FakeModules(inspect_dataset=lambda *a, **k: dataset_inspection(issues=[unlisted]))
+    plain_scan = modules._full_scan
+
+    def scan_with_finding(stream, adapter, ctx, **kwargs):
+        outcome = plain_scan(stream, adapter, ctx, **kwargs)
+        outcome.issues.append(failed_rows)
+        return outcome
+
+    modules.full_scan = scan_with_finding
+    modules.install(monkeypatch)
+    artifact_dir = tmp_path / "artifacts" / ("c" * 32)
+    artifact_dir.mkdir(parents=True)
+    base = analyze(example_request(), CachingContext(artifact_dir=artifact_dir))
+    assert {failed_rows.user_message, unlisted.user_message} <= {
+        w.user_message for w in base.warnings
+    }
+
+    response = recompute(base, example_request(**{"training.lora.r": 64}), artifact_dir)
+    assert response.requires_reanalysis is False
+    messages = [w.user_message for w in response.result.warnings]
+    assert messages.count(failed_rows.user_message) == 1
+    assert messages.count(unlisted.user_message) == 1
+
+
+def test_recompute_needs_reanalysis_when_the_base_had_no_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scan keyed without a backend profile is not the tokenization a newly resolved profile
+    would run, so it cannot be reused."""
+    unsupported = compat_report(readiness=TrainingReadiness.UNSUPPORTED, grade=None, adapter=None)
+    FakeModules(resolve=lambda req, inv, tok: (None, unsupported)).install(monkeypatch)
+    artifact_dir = tmp_path / "artifacts" / ("d" * 32)
+    artifact_dir.mkdir(parents=True)
+    base = analyze(example_request(), CachingContext(artifact_dir=artifact_dir))
+    assert base.resolved_config is None and base.dataset_scan is not None
+
+    FakeModules().install(monkeypatch)  # the profile now resolves
+    response = recompute(base, example_request(**{"training.lora.r": 8}), artifact_dir)
+    assert response.requires_reanalysis is True
+    assert "backend profile" in response.reanalysis_reasons[0]
