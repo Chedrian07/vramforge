@@ -13,9 +13,10 @@ import pyarrow.parquet as pq
 import pytest
 from dataset_testkit import FIXTURES, file_entries, hf_source, local_source, write_jsonl
 
+import vramforge_estimator.inspection as inspection_api
 from vramforge_estimator.inspection.base import SourceRow
 from vramforge_estimator.inspection.dataset_files import SourceFiles
-from vramforge_estimator.inspection.dataset_layout import resolve_layout
+from vramforge_estimator.inspection.dataset_layout import SplitLayout, resolve_layout
 from vramforge_estimator.inspection.dataset_stream import (
     DatasetRowStream,
     FailedSourceRow,
@@ -187,6 +188,103 @@ def test_malformed_records_are_failed_rows_with_positions() -> None:
     summary = stream.issues[-1]
     assert summary.code == ErrorCode.SCAN_FAILED_ROWS
     assert summary.details["sample"][0]["row_index"] == 2
+    # The public inspection package re-exports the same failure signal.
+    assert inspection_api.FailedSourceRow is FailedSourceRow
+    assert inspection_api.is_failed_row(bad) and not inspection_api.is_failed_row(rows[0])
+
+
+def test_unreadable_records_are_not_an_empty_split(tmp_path: Path) -> None:
+    path = tmp_path / "bad.jsonl"
+    path.write_text("{oops\n[1]\n", encoding="utf-8")
+    stream = stream_for(local_source(path))
+    rows = list(stream)
+    assert [r.row_index for r in rows if is_failed_row(r)] == [0, 1]
+    assert [i.code for i in stream.issues] == [ErrorCode.SCAN_FAILED_ROWS]
+    assert not stream.complete
+
+
+EMPTY_CONTENT = {
+    "empty.jsonl": b"",
+    "blank_lines.jsonl": b"\n\n\n",
+    "empty_array.json": b"[]",
+    "header_only.csv": b"prompt,completion\n",
+}
+
+
+def write_empty(path: Path) -> Path:
+    if path.suffix == ".parquet":
+        pq.write_table(pa.table({"text": pa.array([], pa.string())}), path)
+    else:
+        path.write_bytes(EMPTY_CONTENT[path.name])
+    return path
+
+
+@pytest.mark.parametrize("name", [*EMPTY_CONTENT, "empty.parquet"])
+def test_split_without_records_is_complete_with_empty_dataset(tmp_path: Path, name: str) -> None:
+    # datasets cannot load such a split at all; the scanner turns this issue into a failed scan.
+    stream = stream_for(local_source(write_empty(tmp_path / name)))
+    assert list(stream) == []
+    assert stream.complete  # every shard reached EOF: nothing was left unread
+    assert stream.shards_completed == len(stream.shards) == 1
+    assert [i.code for i in stream.issues] == [ErrorCode.EMPTY_DATASET]
+    issue = stream.issues[0]
+    assert issue.severity.value == "error" and issue.stage is not None
+    assert issue.details == {
+        "reason": "no_rows",
+        "split": "train",
+        "config": "default",
+        "shards": 1,
+    }
+    assert "row가 하나도 없습니다" in issue.user_message
+    list(stream)  # a second read reports the state of that read only
+    assert [i.code for i in stream.issues] == [ErrorCode.EMPTY_DATASET]
+
+
+def test_every_shard_empty_is_an_empty_split(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    root.mkdir()
+    for shard in ("train-0.jsonl", "train-1.jsonl"):
+        (root / shard).write_bytes(b"")
+    stream = stream_for(local_source(root))
+    assert list(stream) == [] and stream.complete
+    assert stream.shards_completed == 2
+    assert stream.issues[0].code == ErrorCode.EMPTY_DATASET
+    assert stream.issues[0].details["shards"] == 2
+
+
+def test_split_without_data_files_is_an_empty_split(tmp_path: Path) -> None:
+    source = local_source(write_jsonl(tmp_path / "train.jsonl", [{"a": 1}]))
+    limits = ReaderLimits()
+    files = SourceFiles(source, SourceAccess(), limits)
+    config = resolve_layout(files).configs[0]
+    stream = DatasetRowStream(files, config, SplitLayout(name="train", files=()), limits)
+    assert list(stream) == [] and stream.complete and stream.shards == []
+    issue = stream.issues[0]
+    assert (issue.code, issue.details["shards"]) == (ErrorCode.EMPTY_DATASET, 0)
+    assert "데이터 파일이 없어" in issue.user_message
+
+
+def test_empty_split_with_declared_rows_is_not_complete(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    root.mkdir()
+    (root / "train.jsonl").write_bytes(b"")
+    (root / "README.md").write_text(
+        "---\ndataset_info:\n  splits:\n  - name: train\n    num_examples: 2\n---\n",
+        encoding="utf-8",
+    )
+    stream = stream_for(local_source(root))
+    assert list(stream) == []
+    assert not stream.complete  # the metadata promises rows the files do not hold
+    assert [(i.code, i.details["reason"]) for i in stream.issues] == [
+        (ErrorCode.EMPTY_DATASET, "no_rows"),
+        (ErrorCode.SCAN_PARTIAL, "row_count_mismatch"),
+    ]
+
+
+def test_a_split_with_rows_has_no_stream_issues(tmp_path: Path) -> None:
+    stream = stream_for(local_source(sharded_dir(tmp_path / "ds")))
+    assert len(list(stream)) == 9 and stream.complete
+    assert stream.issues == []
 
 
 def test_too_many_failed_rows_stops(tmp_path: Path) -> None:

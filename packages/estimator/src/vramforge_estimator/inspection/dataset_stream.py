@@ -17,6 +17,11 @@ row indexes never shift. The reason is appended to `issues`.
 
 `complete` is True only after every shard reached EOF normally, no record failed, every shard
 matched the manifest and the row count matched the split metadata when the dataset declares one.
+
+Empty split: when every shard was read to EOF and none holds a record (or the split has no data
+file), the stream yields nothing, is still `complete` (nothing was left unread) and reports
+EMPTY_DATASET in `issues`; the scanner turns that into a failed scan, never into a complete
+analysis of zero rows.
 """
 
 from __future__ import annotations
@@ -131,6 +136,8 @@ class DatasetRowStream:
             )
         if stopped:
             return
+        if self.rows_seen == 0:
+            self.issues.append(self._empty_issue())
         if self.total_rows is not None and self.rows_seen != self.total_rows:
             self.issues.append(
                 _issue(
@@ -287,6 +294,24 @@ class DatasetRowStream:
                     shard_id=shard_id,
                 )
             )
+
+    def _empty_issue(self) -> Issue:
+        count = len(self.shards)
+        if count:
+            message = (
+                f"선택한 split '{self.split}'의 데이터 파일 {count}개를 끝까지 읽었지만 row가 "
+                "하나도 없습니다. 분석할 데이터가 없습니다."
+            )
+        else:
+            message = f"선택한 split '{self.split}'에 데이터 파일이 없어 분석할 row가 없습니다."
+        return _issue(
+            ErrorCode.EMPTY_DATASET,
+            message,
+            reason="no_rows",
+            split=self.split,
+            config=self.config,
+            shards=count,
+        )
 
     def _stop(self, issue: Issue) -> None:
         self.issues.append(issue)
