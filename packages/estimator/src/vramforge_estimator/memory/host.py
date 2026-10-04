@@ -9,6 +9,8 @@ is unknown; the known items are still listed.
 
 from __future__ import annotations
 
+from vramforge_estimator.architectures import get_adapter
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import (
     AnalysisRamEstimate,
     DiskEstimate,
@@ -23,6 +25,8 @@ from vramforge_estimator.schemas import (
     Strategy,
     TensorInfo,
 )
+from vramforge_estimator.trainers.common import BNB_QMAP_BYTES, eight_bit_state_bytes
+from vramforge_estimator.trainers.trainable import TrainableSlice, executed_slices
 from vramforge_estimator.units import tensor_bytes
 
 RUNTIME_BASELINE_NOTE = (
@@ -130,39 +134,68 @@ def _files_item(name: str, source: SourceManifest | None, what: str) -> Estimate
     )
 
 
-def _trainable_params(inventory: ModelInventory, cfg: ResolvedConfig) -> int | None:
-    if cfg.strategy is Strategy.FULL:
-        return sum(t.numel for t in _in_scope(inventory, cfg))
-    for r in cfg.resolutions:
-        if r.field == "lora.trainable_params" and isinstance(r.resolved, int):
-            return r.resolved
-    return None
+def _optimizer_file_bytes(s: TrainableSlice, cfg: ResolvedConfig) -> tuple[int, int]:
+    """Saved optimizer state of the executed part of a trainable bucket: AdamW keeps 2 states in
+    the param dtype plus a 0-dim fp32 `step` per tensor; bnb 8-bit uses its per-tensor rule
+    (docs/research/loading-quantization-peft.md §Q8.2-8.3)."""
+    opt = cfg.optimizer
+    if opt.eight_bit:
+        return eight_bit_state_bytes(s, opt.min_8bit_size or 4096, opt.block_size or 256)
+    states = opt.states_per_param * tensor_bytes(s.executed_numel, s.dtype)
+    steps = 4 * s.executed_tensors
+    return states + steps, states + steps
+
+
+def _unknown_checkpoint(reason: str) -> EstimateItem:
+    return EstimateItem(
+        name="checkpoint.per_save",
+        bytes_low=None,
+        bytes_high=None,
+        evidence=Evidence.UNKNOWN,
+        note=reason,
+    )
 
 
 def _checkpoint_item(inventory: ModelInventory, cfg: ResolvedConfig) -> EstimateItem:
-    params = _trainable_params(inventory, cfg)
-    if params is None:
-        return EstimateItem(
-            name="checkpoint.per_save",
-            bytes_low=None,
-            bytes_high=None,
-            evidence=Evidence.UNKNOWN,
-            note="학습 파라미터 수를 알 수 없어 checkpoint 크기를 계산할 수 없습니다.",
+    """One save: the trained weights (PEFT: adapter file with LoRA, modules_to_save copies and
+    trained biases; full FT: the whole model) plus the optimizer state, which exists only for
+    parameters that receive gradients (text-only data never creates vision-tower state)."""
+    if cfg.architecture_adapter is None:
+        return _unknown_checkpoint("architecture adapter가 없어 checkpoint 크기를 알 수 없습니다.")
+    try:
+        arch = get_adapter(cfg.architecture_adapter)
+        slices = executed_slices(arch.trainable_groups(inventory, cfg), inventory, cfg)
+        if cfg.strategy is Strategy.FULL:
+            resident = arch.resident_weights(inventory, cfg, [])
+            sizes = [w.bytes_high for w in resident]
+            weights: int | None = (
+                None if any(v is None for v in sizes) else sum(v or 0 for v in sizes)
+            )
+        else:
+            weights = sum(tensor_bytes(sl.numel, sl.dtype) for sl in slices)
+    except EstimatorError:
+        return _unknown_checkpoint(
+            "학습 파라미터 구성을 알 수 없어 checkpoint 크기를 계산할 수 없습니다."
         )
-    weights = tensor_bytes(params, cfg.effective_dtypes.adapter)
-    if cfg.optimizer.eight_bit:
-        low, high = weights + params * 2, weights + params * 8
-    else:
-        state = cfg.optimizer.states_per_param * tensor_bytes(params, cfg.effective_dtypes.gradient)
-        low = high = weights + state
+    if weights is None:
+        return _unknown_checkpoint(
+            "모델 가중치 크기를 알 수 없어 checkpoint 크기를 계산할 수 없습니다."
+        )
+    state = [_optimizer_file_bytes(sl, cfg) for sl in slices if sl.executed_numel]
+    low = weights + sum(lo for lo, _ in state)
+    high = weights + sum(hi for _, hi in state)
+    if cfg.optimizer.eight_bit and state:
+        low, high = low + BNB_QMAP_BYTES, high + BNB_QMAP_BYTES
     return EstimateItem(
         name="checkpoint.per_save",
         bytes_low=low,
         bytes_high=high,
         evidence=Evidence.ANALYTIC,
         note=(
-            "학습 가중치(full: 모델 전체, PEFT: adapter)와 optimizer state 1회 저장분입니다. "
-            "보존 개수(save_total_limit)만큼 배수가 됩니다."
+            "학습 가중치(PEFT: LoRA·modules_to_save 사본·학습 bias를 담은 adapter 파일, full: 모델 "
+            "전체)와 gradient를 받는 파라미터의 optimizer state 1회 저장분입니다. scheduler·RNG·"
+            "tokenizer 같은 작은 파일과 직렬화 header는 제외했고, 보존 개수(save_total_limit)만큼 "
+            "배수가 됩니다."
         ),
     )
 

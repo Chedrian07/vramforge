@@ -350,7 +350,11 @@ def add_model_weights(
 # ---------------------------------------------------------------- trainable state
 
 
-def _eight_bit_bytes(s: TrainableSlice, min_size: int, block: int) -> tuple[int, int]:
+def eight_bit_state_bytes(s: TrainableSlice, min_size: int, block: int) -> tuple[int, int]:
+    """(low, high) of bnb 8-bit Adam state per executed tensor: 2n + 8·ceil(n/block) when
+    n >= min_size and not an nn.Embedding, else two fp32 states (8n); a range if the per-tensor
+    sizes are unknown (docs/research/loading-quantization-peft.md §Q8.3)."""
+
     def per_tensor(n: int, embedding: bool) -> int:
         if embedding or n < min_size:
             return 8 * n
@@ -368,7 +372,7 @@ def optimizer_state_bytes(s: TrainableSlice, cfg: ResolvedConfig) -> tuple[int, 
     (docs/research/loading-quantization-peft.md §Q8.2-8.3)."""
     opt = cfg.optimizer
     if opt.eight_bit:
-        low, high = _eight_bit_bytes(s, opt.min_8bit_size or 4096, opt.block_size or 256)
+        low, high = eight_bit_state_bytes(s, opt.min_8bit_size or 4096, opt.block_size or 256)
         note = "bnb 8-bit: numel ≥ 4096이면 2 B + absmax, 작은 tensor와 nn.Embedding은 fp32 8 B."
         if opt.paged:
             note += " paged state도 VRAM에 포함했습니다 (paging 절감은 확정치로 쓰지 않음)."
@@ -655,6 +659,7 @@ __all__ = [
     "add_trainable_state",
     "add_workspace",
     "common_assumptions",
+    "eight_bit_state_bytes",
     "extend_live_at",
     "grads_live",
     "lm_head_input_saved",
