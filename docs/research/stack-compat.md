@@ -17,6 +17,7 @@
 | 저장소 밖 산출물 | `/tmp/vf-stack/` (`web*`, `py`, `proof`, `e2e`), `/tmp/vf-research/scratch/stack/` (`tok_no_torch.py`, `fastapi_sse_204.py`) |
 | 근거 표기 | npm 패키지는 `<pkg>@<ver> <패키지 기준 경로>:<줄>`, Python은 `<pkg>==<ver> <site-packages 기준 경로>:<줄> (<심볼>)`, 그 밖은 실험 ID(E1–E21). 태그는 VERIFIED(소스 확인 또는 실측), INFERRED(근거 기반 추론, 미실행), UNKNOWN |
 | 주의 | Docker Hub 익명 pull 한도에 걸려서(E11) proof의 Docker Hub 이미지는 **같은 digest의** `mirror.gcr.io/library/*`로 받았다. compose의 `*_IMAGE` 변수 override만 사용했고 파일은 바꾸지 않았다. Docker Desktop 자체가 아니라 OrbStack에서 실행했다 |
+| 교차 검증 | 2026-10-04 `verify-stack-compat`가 핵심 주장 33건을 설치 소스 재확인과 독립 재실험으로 다시 검증했다(VERIFIED 29, CORRECTED 2, UNVERIFIABLE 2). 정정하거나 보강한 곳은 본문에 **검증:**으로 표시했다. 전체 목록은 맨 끝 [검증 로그](#검증-로그-verification-log)에 있다 |
 
 ## 핵심 결론
 
@@ -27,7 +28,7 @@
 5. **Radix(`radix-ui` 1.6.7)는 필요한 primitive 전부가 React 19.3에서 동작한다.** jsdom에서는 Select용 polyfill이 필요하다. (Q2, Q4)
 6. **Python 스택은 lock 하나로 3.12와 3.13에서 모두 해석된다.** torch 없이 tokenizer, chat template, datasets가 동작하고, binary 의존성은 전부 amd64/arm64 manylinux wheel이 있다. (Q5, Q9)
 7. **SSE는 FastAPI 0.142 자체 기능으로 충분하다.** Caddy 2.11.6은 `text/event-stream`을 설정 없이 즉시 flush한다(gzip `encode`를 켜도 마찬가지). Chromium `EventSource`는 `Last-Event-ID` 자동 재연결과 204 중단 동작을 그대로 한다. (Q3, Q8)
-8. **RQ는 기본값에 함정이 있다.** job timeout 기본값이 180초이고, 직렬화 기본값이 pickle이며, SimpleWorker는 정지할 수 없다. work-horse가 SIGKILL되면 `on_failure`도 실행되지 않는다. (Q6)
+8. **RQ는 기본값에 함정이 있다.** job timeout 기본값이 180초이고, 직렬화 기본값이 pickle이며, SimpleWorker는 정지할 수 없다. work-horse가 SIGKILL되면 `on_failure`도 실행되지 않는다. **검증:** `Retry`가 붙은 job은 horse가 SIGKILL돼도 다시 실행된다. `unique=True`는 job이 끝난 뒤에도 job hash가 TTL 동안 남아 있으면 같은 id를 거부한다. (Q6)
 9. **proof stack 결과.** cold build 49초, 기동 30초 만에 상시 서비스 6개(proxy, web, api, worker, redis, postgres)가 healthy가 됐고 일회성 migrate는 exit 0으로 끝났다. Playwright 공식 이미지로 실제 브라우저 e2e 3건이 통과했다. (Q8)
 10. **linux/amd64 이미지는 arm64 호스트에서 에뮬레이션으로 빌드하고 실행할 수 있다.** worker 빌드 27초, web 빌드 49초였고, 실제 tokenizer 결과도 arm64와 같다. (Q9)
 
@@ -66,12 +67,12 @@
 - **[VERIFIED E1]** 스캐폴드가 고정하는 버전은 `react`/`react-dom` **19.2.8**(정확한 버전), `typescript ^5`(5.9.3 설치), `eslint ^9`(9.39.5, "no longer supported" deprecated 경고), `@types/node ^20`, `tailwindcss ^4`, `@tailwindcss/postcss ^4`, `eslint-config-next 16.3.8`이다. `pnpm-workspace.yaml`에 `ignoredBuiltDependencies: [sharp, unrs-resolver]`가 생성된다(**[INFERRED]** pnpm 10이 의존성 lifecycle script 실행에 명시 승인을 요구하기 때문으로 보인다. 이 설정 그대로 Docker 빌드와 실행이 정상인 것은 E11에서 확인했다).
 - **[VERIFIED E1]** 기본 `app/layout.tsx`가 `next/font/google`(Geist)을 쓴다. **[INFERRED]** 이 폰트는 빌드 시 Google Fonts에서 받아 오므로 오프라인·사설망 빌드에서 실패할 수 있다. plan §3.2는 한글 system sans-serif를 요구하므로 제거한다. 제거한 뒤에도 빌드가 정상인 것은 확인했다(E3).
 - **[VERIFIED E3]** React 19.3.0, TS 6.0.3, `@types/node` 24.19.1로 올려도 `next build`, `eslint`, `tsc --noEmit`이 모두 통과한다. `next build`는 Turbopack이 기본이다(출력 `▲ Next.js 16.3.8 (Turbopack)`).
-- **[VERIFIED]** App Router 런타임은 프로젝트의 `react`가 아니라 Next에 vendoring된 React를 쓴다. `next@16.3.8 dist/compiled/react/cjs/react.production.js`의 버전 문자열은 `19.3.0-canary-cbb046ab-20260731`이다. 프로젝트의 `react@19.3.0`은 Vitest/RTL 테스트와 서드파티 peer 해석에 쓰인다.
+- **[VERIFIED]** App Router 런타임은 프로젝트의 `react`가 아니라 Next에 vendoring된 React를 쓴다. `next@16.3.8 dist/compiled/react/cjs/react.production.js`의 버전 문자열은 `19.3.0-canary-cbb046ab-20260731`이다. 프로젝트의 `react@19.3.0`은 Vitest/RTL 테스트와 서드파티 peer 해석에 쓰인다. **검증:** standalone 빌드의 App Router 서버 컴포넌트에서 `React.version`을 렌더링하니 `19.3.0-canary-cbb046ab-20260731`이 나왔다(프로젝트 `react`는 19.3.0).
 
 ### 1.2 Next 16.3.8의 type-check 경로
 
 - **[VERIFIED]** `next@16.3.8 dist/server/config-shared.js:257`에서 `experimental.useTypeScriptCli`의 기본값이 `true`다. 그래서 `next build`는 TypeScript JS API를 로드하지 않고 **프로젝트 로컬 `tsc` CLI를 실행**한다. 번들 문서 `dist/docs/01-app/03-api-reference/05-config/02-typescript.md`의 "Using TypeScript 7" 절도 같은 내용이다(TS 7 지원, 대신 Next 전용 code frame과 오류 재작성은 적용되지 않음).
-- **[VERIFIED]** `next@16.3.8 dist/lib/verify-typescript-setup.js:82-87`에서 TS가 없을 때 Next가 자동 설치하는 버전은 `typescript@^6.0.0`이다. 즉 Next 16.3이 기준으로 삼는 버전은 TS 6이다.
+- **[VERIFIED, 검증: 정정]** `next@16.3.8 dist/lib/verify-typescript-setup.js:82-87`의 `install: 'typescript@^6.0.0'`은 `typescriptApiPackage`의 값이다. 이 객체는 `experimental.useTypeScriptCli: false`(API 모드)일 때만 쓰인다. 기본값(CLI 모드)에서 쓰는 `typescriptCliPackage`(`:88-94`)에는 `install`이 없다. 그래서 `dist/lib/install-dependencies.js:31`의 `dep.install ?? dep.pkg`에 따라 버전 없는 `typescript`, 즉 npm `latest`(2026-10-04 기준 **7.0.2**)를 설치한다. 따라서 "Next 16.3이 기준으로 삼는 버전은 TS 6"이라는 결론은 성립하지 않는다. 오히려 TS를 명시적으로 고정하지 않으면 자동 설치가 TS 7을 가져와 lint가 깨진다. `typescript 6.0.3`을 고정해야 하는 근거가 하나 더 생긴 셈이다.
 - **[VERIFIED]** `dist/lib/verify-typescript-setup.js:129`와 `dist/lib/typescript/runTypeScriptCli.js:85-86`: `useTypeScriptCli:false`인데 JS API가 없는 TS(=7)가 설치돼 있으면 `TypeScript 7.0.2 does not provide the compiler API required by Next.js ... or install TypeScript 6 instead.`(E1467)로 실패한다.
 
 ### 1.3 TypeScript 7.0.2 실험
@@ -92,10 +93,10 @@
 - **[VERIFIED E3]** 단일 프로젝트(lockfile이 `apps/web` 안에 있는 경우)는 `.next/standalone/` 아래에 `server.js`, `package.json`, `.next/`(서버 산출물), `node_modules`(pnpm `.pnpm` 구조)가 만들어진다. probe 앱 기준 standalone 디렉터리 전체가 약 41 MB였다. `.next/static`(632 KB)과 `public`은 **포함되지 않으므로** 직접 복사해야 한다.
 - **[VERIFIED E11]** 루트 pnpm workspace(`pnpm-workspace.yaml`이 루트에 있고 `apps/*`가 멤버인 경우)는 `apps/web/.next/standalone/apps/web/server.js`처럼 경로가 **한 단계 중첩**되고 `node_modules`는 standalone 루트에 놓인다. **[INFERRED]** Next가 `outputFileTracingRoot`를 workspace 루트로 추론하기 때문으로 보인다. 두 레이아웃 모두 Docker로 빌드해 HTTP 200을 확인했다(E11, E20).
 - **[VERIFIED]** 생성된 `.next/standalone/server.js:8-9`(next 16.3.8)는 `PORT`(기본 3000)와 `HOSTNAME`을 읽고, `HOSTNAME`이 없을 때만 `'0.0.0.0'`을 쓴다. `KEEP_ALIVE_TIMEOUT`도 읽는다.
-- **[VERIFIED E18] HOSTNAME 함정.** `--hostname webtest -e HOSTNAME=webtest`로 실행하면 서버가 `http://webtest:3000`에만 bind한다. 그러면 컨테이너 안의 `127.0.0.1:3000` healthcheck는 `ECONNREFUSED`, `webtest:3000`은 200이 된다. 이미지에 `ENV HOSTNAME=0.0.0.0`을 넣으면 `docker run`에서도 그 값이 유지된다(확인함).
+- **[VERIFIED E18] HOSTNAME 함정.** `--hostname webtest -e HOSTNAME=webtest`로 실행하면 서버가 `http://webtest:3000`에만 bind한다. 그러면 컨테이너 안의 `127.0.0.1:3000` healthcheck는 `ECONNREFUSED`, `webtest:3000`은 200이 된다. 이미지에 `ENV HOSTNAME=0.0.0.0`을 넣으면 `docker run`에서도 그 값이 유지된다(확인함). **검증: `-e`가 없어도 같은 함정이 생긴다.** Docker는 모든 컨테이너 env에 `HOSTNAME=<container id>`를 자동으로 넣는다. `node:24.21.0-trixie-slim`에서 `listen(3000, process.env.HOSTNAME)`은 컨테이너 IP(`192.168.215.2`)에만 bind했고, `127.0.0.1`은 ECONNREFUSED였다. 따라서 이 ENV가 없으면 기본 `docker run`과 compose에서도 healthcheck가 실패한다. `ENV HOSTNAME=0.0.0.0` 이미지는 `--hostname foo`로 실행해도 `0.0.0.0`을 유지했다. compose `environment:`나 `-e HOSTNAME=`으로 다른 값을 주면 덮어쓴다(Docker 표준 동작, INFERRED).
 - **[VERIFIED E3/E18]** `next.config`는 빌드할 때 `server.js` 안에 JSON으로 박힌다(`"_originalRewrites":{"beforeFiles":[],…}`). 런타임에 `API_PROXY_TARGET`을 줘도 rewrites는 비어 있어서 web의 `/api/v1/health`가 404를 반환한다. 따라서 **`/api` 라우팅은 reverse proxy(Caddy)에서 하고, `next.config`의 rewrites는 `next dev` 전용으로만 쓴다.**
 - **[VERIFIED E3]** standalone `node_modules`에는 빌드한 호스트용 sharp 바이너리(macOS에서 빌드하면 `@img/sharp-darwin-arm64`)가 들어간다. 그러므로 **빌드는 반드시 Linux 컨테이너 안에서** 한다(호스트 빌드 결과를 COPY하지 않는다).
-- **[VERIFIED E18] fresh checkout typecheck.** `.next/`와 `next-env.d.ts`는 gitignore 대상이다. 그래서 Node 24 컨테이너에서 새로 설치한 뒤 `tsc --noEmit`을 돌리면 `app/layout.tsx(9,50): error TS2304: Cannot find name 'LayoutProps'`로 실패한다. `next typegen`(`.next/types/*` 생성) 뒤에는 통과한다. 그러므로 `typecheck` 스크립트는 `next typegen && tsc --noEmit`이어야 한다.
+- **[VERIFIED E18] fresh checkout typecheck.** `.next/`와 `next-env.d.ts`는 gitignore 대상이다. 그래서 Node 24 컨테이너에서 새로 설치한 뒤 `tsc --noEmit`을 돌리면 `app/layout.tsx(9,50): error TS2304: Cannot find name 'LayoutProps'`로 실패한다. `next typegen`(`.next/types/*` 생성) 뒤에는 통과한다. 그러므로 `typecheck` 스크립트는 `next typegen && tsc --noEmit`이어야 한다. **검증:** create-next-app 16.3.8 템플릿(`dist/templates/app-tw/ts/app/layout.tsx`)부터 `RootLayout({ children }: LayoutProps<"/">)`를 쓰고, 템플릿 `gitignore`가 `/.next/`와 `next-env.d.ts`를 제외한다. 따라서 스캐폴드에서 시작한 프로젝트는 모두 이 문제를 겪는다. 최소 앱으로 재현했을 때 `error TS2304: Cannot find name 'LayoutProps'`, exit 2였고 `next typegen` 뒤에는 exit 0이었다.
 
 ### 1.6 Tailwind CSS 4.3.3
 
@@ -198,14 +199,14 @@
 | 기본 job timeout | **180초** (`Queue.DEFAULT_TIMEOUT`). 긴 토큰화 작업에는 `job_timeout`을 반드시 명시한다(정수 초 또는 `"2h"`, `"30m"`) | `rq==2.12.0 rq/queue.py:106`, `rq/utils.py:432-451 (parse_timeout)` VERIFIED |
 | enqueue 인자 | `job_id`, `job_timeout`, `result_ttl`(기본 500초), `ttl`, `failure_ttl`(기본 1년), `depends_on`, `at_front`, `meta`, `retry`, `repeat`, `on_success`, `on_failure`, `on_stopped`, `unique`, `pipeline` | `rq/queue.py:963-1000 (Queue.parse_args)`, `rq/defaults.py` VERIFIED |
 | 함수 참조 | `"vramforge_worker_cpu.tasks.analyze"` 같은 문자열 경로를 쓸 수 있다. API 이미지가 worker 코드를 import하지 않아도 된다 | E11, E15 VERIFIED |
-| 멱등 enqueue | `unique=True`이면 `job_id`가 필요하고, 같은 id를 다시 넣으면 `DuplicateJobError`가 난다 | `rq/queue.py:755-764`, `rq/exceptions.py:17`, E15 VERIFIED |
+| 멱등 enqueue | `unique=True`이면 `job_id`가 필요하고(없으면 `ValueError`), 같은 id를 다시 넣으면 `DuplicateJobError`가 난다. **검증:** 중복 검사는 Lua `EXISTS rq:job:<id>`다. 그래서 job이 끝난 뒤(FINISHED/FAILED/STOPPED/CANCELED)에도 job hash가 `result_ttl`/`failure_ttl` 동안 남아 있으면 같은 id가 거부된다(FINISHED 뒤 재enqueue → `DuplicateJobError` 실측). job id는 `[A-Za-z0-9_-]+`만 허용한다(`a:1` → `ValueError`) | `rq/queue.py:755-764`, `rq/scripts.py:13-24,96-97`, `rq/job.py:56,85-86`, `rq/exceptions.py:17`, E15 + 검증 VERIFIED |
 | 상태 | `JobStatus`: created, queued, finished, failed, started, deferred, scheduled, stopped, canceled. `Job.fetch(id, connection=, serializer=)`, `job.get_status()`, `job.return_value()`, `job.latest_result()`로 조회 | `rq/job.py:59-70`, `:865`, `:934` VERIFIED |
 | 진행 보고 | task 안에서 `get_current_job()`을 얻고 `job.meta[...] = …`, `job.save_meta()`(job hash의 `meta` 필드에 hset) → API에서 `job.get_meta()`. E13에서 `progress: {processed_rows: 3, total_rows: 8}` 확인 | `rq/job.py:139`, `:1172-1175` VERIFIED |
 | queued job 취소 | `job.cancel()` → CANCELED, 큐에서 제거, CanceledJobRegistry에 추가. **실행 중인 horse를 멈추지는 않는다** | `rq/job.py:1177-1240`, E15 VERIFIED |
-| 실행 중 job 정지 | `send_stop_job_command(conn, job_id, serializer=None)`: 실행 중이 아니면 `InvalidJobOperation`을 낸다. `rq:pubsub:<worker>` 채널에 `stop-job`을 publish하면 worker가 `_stopped_job_id`를 설정하고 `kill_horse()`(`os.killpg(…, SIGKILL)`)를 호출한다. 결과는 **STOPPED**이고 retry하지 않으며 FailedJobRegistry로 간다 | `rq/command.py:14,70-82,128-141`, `rq/worker/worker_classes.py:30-37`, `rq/worker/base.py:100,715-719`, E15 VERIFIED |
-| `on_stopped` | 강제 정지 뒤 **부모 worker 프로세스**가 `callback(job, connection)`을 실행한다. E15에서 DB를 CANCELLED로 바꾸고 이벤트를 추가했다 | `rq/worker/worker_classes.py:131-135`, E15 VERIFIED |
+| 실행 중 job 정지 | `send_stop_job_command(conn, job_id, serializer=None)`: 실행 중이 아니면 `InvalidJobOperation`을 낸다. `rq:pubsub:<worker>` 채널에 `stop-job`을 publish하면 worker가 `_stopped_job_id`를 설정하고 `kill_horse()`(`os.killpg(…, SIGKILL)`)를 호출한다. 결과는 **STOPPED**이고 retry하지 않으며 FailedJobRegistry로 간다. **검증:** `Retry(max=2)`를 붙인 실행 중 job을 정지해도 STOPPED였고 `retries_left`는 2 그대로였다 | `rq/command.py:14,70-82,128-141`, `rq/worker/worker_classes.py:30-37`, `rq/worker/base.py:100,715-719`, E15 + 검증 VERIFIED |
+| `on_stopped` | 강제 정지 뒤 **부모 worker 프로세스**가 `callback(job, connection)`을 실행한다. E15에서 DB를 CANCELLED로 바꾸고 이벤트를 추가했다. **검증:** callback이 기록한 pid가 horse가 아니라 worker pid였다 | `rq/worker/worker_classes.py:131-135`, E15 + 검증 VERIFIED |
 | SimpleWorker | `BaseWorker.kill_horse`가 no-op이라 stop 명령이 효과가 없다. **forking `rq.Worker`(기본값)를 쓴다** | `rq/worker/base.py:1649-1651` VERIFIED |
-| horse 비정상 종료 | OOM 등으로 stop 명령 없이 SIGKILL되면 `Work-horse terminated unexpectedly`, `handle_work_horse_killed`, FAILED 순으로 처리된다. `on_success`/`on_failure`는 horse 안의 `perform_job`에서만 실행되므로 **이 경우 on_failure는 실행되지 않는다**. `Worker(work_horse_killed_handler=…)` 훅이 있다 | `rq/worker/worker_classes.py:137-146`, `rq/worker/base.py:150,1325-1331,1574,1587` VERIFIED |
+| horse 비정상 종료 | OOM 등으로 stop 명령 없이 SIGKILL되면 `Work-horse terminated unexpectedly`, `handle_work_horse_killed`, FAILED 순으로 처리된다. `on_success`/`on_failure`는 horse 안의 `perform_job`에서만 실행되므로 **이 경우 on_failure는 실행되지 않는다**. `Worker(work_horse_killed_handler=…)` 훅이 있다. **검증:** 반대로 `retry=Retry(...)`가 있으면 부모의 `handle_job_failure`가 `job.should_retry`를 보고 **다시 실행한다**. stop 명령으로 죽인 job만 retry에서 빠진다(`base.py:697-750`). horse가 자기 자신에 SIGKILL을 보내는 실험에서 on_failure는 실행되지 않았다(대조군인 일반 예외 job은 실행됨). `Retry(max=1)` job은 한 번 더 실행된 뒤 `Work-horse terminated unexpectedly; waitpid returned 9 (signal 9)`로 FAILED였다 | `rq/worker/worker_classes.py:137-146`, `rq/worker/base.py:150,697-750,1325-1331,1574,1587`, 검증 실험 VERIFIED |
 | retry | `Retry(max, interval=int\|list)`. interval이 0보다 크면 SCHEDULED가 되어 scheduler가 다시 넣으므로 **`--with-scheduler`가 필요하다**. E15에서 `queued(2) → scheduled(1) → scheduled(0) → failed(0)` 확인 | `rq/job.py:1710-1733,1847-1878` VERIFIED |
 | 직렬화 | 기본은 **pickle**(`DefaultSerializer`)이고, `JSONSerializer`가 있다(CLI 별칭 `json`). JSON 왕복(payload는 zlib 압축 JSON)은 E15에서 확인했다 | `rq/serializers.py:19-21,27,38` VERIFIED |
 | worker CLI | `rq worker [QUEUES] -u/--url (env RQ_REDIS_URL) -s/--with-scheduler --worker-ttl -S/--serializer -w/--worker-class -j/--job-class -b/--burst --max-jobs --max-idle-time -n/--name` | `rq/cli/helpers.py:393`, `rq worker --help` VERIFIED |
@@ -249,7 +250,7 @@ E15 실험 요약 **[VERIFIED]**:
 
 ### 7.3 이미지별 주의점
 - **[VERIFIED E19/E11] PostgreSQL 18.** `postgres:18-alpine`은 `PGDATA=/var/lib/postgresql/18/docker`, `VOLUME /var/lib/postgresql`이다(17은 `/var/lib/postgresql/data`). 따라서 **named volume은 `/var/lib/postgresql`에 마운트한다.**
-- **[VERIFIED]** `postgres:18.6-alpine /usr/local/bin/docker-entrypoint.sh:295-297`(`docker_temp_server_start`): initdb 중에 띄우는 임시 서버는 `listen_addresses=''`, 즉 unix socket만 연다. TCP로 묻는 `pg_isready -h 127.0.0.1`은 최종 서버가 뜬 뒤에만 성공한다.
+- **[VERIFIED]** `postgres:18.6-alpine /usr/local/bin/docker-entrypoint.sh:295-297`(`docker_temp_server_start`): initdb 중에 띄우는 임시 서버는 `listen_addresses=''`, 즉 unix socket만 연다. TCP로 묻는 `pg_isready -h 127.0.0.1`은 최종 서버가 뜬 뒤에만 성공한다. **검증(실측):** 6초 걸리는 init 스크립트를 넣고 0.5초 간격으로 확인했다. 임시 서버가 떠 있는 동안 socket `pg_isready`는 0(ready)을, TCP `pg_isready -h 127.0.0.1`은 2(no response)를 반환했다. 최종 서버가 뜬 뒤에야 둘 다 0이 됐다. 즉 `-h`가 없는 healthcheck는 init 도중에 healthy로 잘못 판정된다.
 - **[VERIFIED E11]** alpine postgres 로그에 `no usable system locales were found`가 나온다. ICU/locale collation이 필요하지 않으면 무시해도 된다.
 - **[VERIFIED E19/E11]** `redis:8-alpine` 이미지 설정에는 VOLUME이 없다. `--appendonly yes`와 `/data` 마운트를 명시한다. 로그에 `Redis does not require authentication…` 경고가 나오므로 포트를 publish하지 않는다.
 - **[VERIFIED E19/E11]** `caddy:2-alpine`은 `XDG_DATA_HOME=/data`, `XDG_CONFIG_HOME=/config`이고 80/443/2019를 노출한다. 로컬 HTTP 전용이면 `admin off`와 `auto_https off`를 쓴다. 이때 `HTTP/2 skipped because it requires TLS` 경고는 정상이다. CRLF 줄 끝의 Caddyfile도 `caddy adapt`가 정상 처리한다(Windows checkout, E18).
@@ -292,6 +293,7 @@ SSE 도착 시각(Caddy 경유, `interval=1s`) **[VERIFIED E12]**:
 - **[VERIFIED]** Caddy는 응답 Content-Type이 `text/event-stream`이면 `flushInterval`을 -1(즉시)로 둔다(`caddy v2.11.6 modules/caddyhttp/reverseproxy/streaming.go:271-292 (Handler.flushInterval)`). `encode`도 SSE면 헤더를 즉시 쓰고 Flush 때 encoder까지 flush한다(`modules/caddyhttp/encode/encode.go:291-298, 320-345`). 그래서 **`flush_interval` 설정이 필요 없다.**
 - **[VERIFIED]** FastAPI 0.142.2는 generator가 15초 동안 조용하면 `: ping` keepalive를 끼워 넣고(`fastapi/sse.py:237,241`, `fastapi/routing.py:575-628`), `Cache-Control: no-cache`와 `X-Accel-Buffering: no`를 설정한다(`routing.py:664-666`). sse-starlette의 기본값은 ping 15초, `Cache-Control: no-store`, `X-Accel-Buffering: no`, 줄 구분자 `\r\n`이다(`sse_starlette/sse.py:264-318`).
 - **[VERIFIED `fastapi_sse_204.py`]** FastAPI native SSE에서 `data`는 항상 JSON으로 직렬화된다(문자열도 따옴표가 붙음). 미리 만든 문자열은 `raw_data`로 보낸다. generator 엔드포인트에서 **첫 yield 전에 `HTTPException(204)`를 던지면 204가 되지 않고 `ExceptionGroup`이 난다.** 재연결을 멈추는 204가 필요하면 generator가 아닌 엔드포인트에서 `Response(status_code=204)`나 sse-starlette `EventSourceResponse`를 반환한다(E14에서 sse-starlette로 확인).
+- **검증(보강).** (1) 실제 uvicorn 서버에서 첫 yield 전에 `HTTPException(204)`를 던지면 클라이언트는 `HTTP/1.1 200 OK`와 SSE 헤더를 먼저 받고, 이어서 전송이 끊긴다(curl `transfer closed with outstanding read data remaining`, 서버 로그 `ExceptionGroup`). EventSource에는 정상 연결 뒤 끊긴 것으로 보이므로 **재연결을 계속한다**. (2) `fastapi.sse.EventSourceResponse`는 marker 클래스다(`fastapi/sse.py:20-33`, "The actual encoding logic lives in the FastAPI routing layer"). generator가 아닌 엔드포인트에서 `EventSourceResponse(gen())`로 `ServerSentEvent` 객체를 내보내면 `AttributeError: 'ServerSentEvent' object has no attribute 'encode'`가 난다. 직접 반환하려면 `fastapi.sse.format_sse_event(...)`로 만든 bytes를 yield해야 한다. 이 경우 `Cache-Control: no-cache`, `X-Accel-Buffering: no`, 15초 ping이 붙지 않는다(모두 라우팅 계층 기능). 이 패턴(204 분기 + `format_sse_event`, `retry: 500`)은 Chromium에서 `Last-Event-ID` 재연결과 204 중단까지 확인했다(검증 로그 V23).
 - **[VERIFIED E18]** nginx 1.30 비교: 기본 설정과 `proxy_ignore_headers X-Accel-Buffering` 두 경우 모두 이 테스트에서는 이벤트가 1초 간격으로 도착했다. **[INFERRED]** nginx를 쓴다면 그래도 `proxy_buffering off`와 `proxy_read_timeout`을 명시하는 것이 안전하다.
 
 분석 job과 재개 **[VERIFIED E13]**: `POST /api/v1/analyses`가 202를 주고 DB에 QUEUED를 쓴 뒤 RQ에 넣는다. worker는 `job.meta`를 갱신하고 Redis Stream에 XADD한다. `GET …/events`는 XREAD BLOCK으로 스트림을 읽어 SSE로 내보내고, `completed`에서 끝난다. `Last-Event-ID: <3번째 id>`로 다시 연결하면 4–6번째 이벤트만 재생된다. 이벤트 id는 Redis Stream id(`1791117879768-0` 형식)다.
@@ -303,7 +305,7 @@ SSE 도착 시각(Caddy 경유, `interval=1s`) **[VERIFIED E12]**:
 - **[VERIFIED E17]** OrbStack builder는 `linux/amd64 (+2), linux/arm64, …` 플랫폼을 지원한다(Rosetta 사용).
   - `docker buildx build --platform linux/amd64 --target worker-cpu … --load`: **27초**. 이 중 의존성 `uv sync`가 11.0초이고, 모든 wheel이 받기만 하면 되는 binary라 컴파일이 없다.
   - web(`next build` 포함) amd64: **49초**(pnpm install 13.0초, next build 26.3초). 실행하면 `node -p process.arch`가 `x64 v24.21.0`이고 HTTP 200을 반환한다.
-- **[VERIFIED E17]** 컨테이너 안에서 실제 tokenizer로 전체 스캔(4,656 row, chosen과 rejected 9,312 시퀀스, system+user+assistant template)을 돌렸다. 두 아키텍처 모두 `max_len 2276`, `total_tokens 1,886,384`로 같았고 torch 미설치, `psycopg impl: binary`였다. 시간은 amd64(에뮬레이션) 11.2초, arm64(네이티브) 6.9초, `python:3.13-slim` arm64도 같은 결과였다. 이 값은 smoke test이며 TRL 전처리 길이가 아니다. golden 값은 [`example-model-dataset.md`](example-model-dataset.md)를 쓴다.
+- **[VERIFIED E17]** 컨테이너 안에서 실제 tokenizer로 전체 스캔(4,656 row, chosen과 rejected 9,312 시퀀스, system+user+assistant template)을 돌렸다. 두 아키텍처 모두 `max_len 2276`, `total_tokens 1,886,384`로 같았고 torch 미설치, `psycopg impl: binary`였다. 시간은 amd64(에뮬레이션) 11.2초, arm64(네이티브) 6.9초, `python:3.13-slim` arm64도 같은 결과였다. 이 값은 smoke test이며 TRL 전처리 길이가 아니다. golden 값은 [`example-model-dataset.md`](example-model-dataset.md)를 쓴다. **검증:** 같은 template 스캔(데이터셋 JSON 직접 로드, `truncation=False`)을 `--platform linux/amd64`와 `linux/arm64`의 `python:3.12.15-slim-trixie`, 그리고 macOS arm64에서 실행했다. 세 곳 모두 9,312 시퀀스, `max_len 2276`, `total 1,886,384`였고 **전체 token id 열의 sha256(`dc46ec396e743a1d…`)까지 같았다**.
 - **[INFERRED]** 최종 사용자는 `docker compose up --build`가 호스트 아키텍처용으로 빌드하므로 cross-build가 필요 없다. cross-build는 CI 검증(goals Q5)이나 멀티 아키텍처 이미지 배포에만 쓴다. QEMU가 없는 Linux CI에서는 `docker/setup-qemu-action`(binfmt 등록)이 필요하고, Rosetta 없는 QEMU 에뮬레이션은 위 시간보다 느릴 것이다(측정 안 함).
 
 ## 10. 권장 고정 버전과 검증한 설정 (Q10)
@@ -580,6 +582,8 @@ CMD ["rq", "worker", "--worker-ttl", "60", "--with-scheduler", "--serializer", "
 - proof의 상시 worker는 기본 pickle 직렬화(`rq worker --worker-ttl 60 --with-scheduler analysis`)로 돌았다. `--serializer json`은 같은 이미지에서 burst worker(`rq worker --burst -S json jsonq`)로 따로 확인했다(E15). 이 옵션을 쓰면 API 쪽 Queue, `Job.fetch`, `send_stop_job_command`도 모두 `JSONSerializer`로 맞춰야 한다.
 - **[VERIFIED E21]** 위 두 Dockerfile 블록을 이 문서에서 그대로 추출해 proof 트리에서 빌드했다(api, worker, web 합계 75초). api 이미지는 `vramforge_api.main` import와 `alembic 1.20.0`이 동작했고 `/data`, `/data/hf`가 `app` 소유, `HF_HOME=/data/hf`였다. worker 이미지는 `rq 2.12.0`이고 torch가 없었으며 CMD가 위와 같았다. web 이미지는 HTTP 200을 반환했다. 단 실행 조건이 저장소와 다르다. proof 트리의 패키지 이름은 `vramforge-worker-cpu`였고 build backend는 `uv_build`였다.
 - 저장소 멤버는 `hatchling`을 쓴다. 마지막 `uv sync --no-editable`이 hatchling을 내려받아 wheel을 만드는 경로는 **INFERRED**다. 루트 `README.md` bind는 파일이 있으면 동작한다(E21). 저장소 root의 `readme = "README.md"` 때문에 이 bind가 꼭 필요한지는 **INFERRED**다. 모듈 경로(`vramforge_api.main:app`, `services/api/migrations`)는 실제 구현에 맞춘다.
+- **검증 (호스트 실행, Docker 밖).** 저장소 HEAD를 `git archive`로 복사해 `uv sync --frozen --no-dev --no-editable --package vramforge-worker`(uv 0.11.19)를 실행했다. 멤버 3개가 hatchling으로 wheel 빌드되어 `direct_url.json`에 `"editable": false`로 설치됐고 75개 패키지, torch 없음이었다. 루트 `README.md`를 지운 상태에서도 1단계(`--no-install-workspace`, pyproject만 bind; 서드파티 72개)와 2단계(`--no-editable`)가 모두 성공했다. 따라서 **README bind는 필수가 아니다**(이미지의 uv 0.12.23에서는 INFERRED). 컨테이너 안 빌드는 하지 않았다.
+- **검증: 정정.** §8 머리말은 "§10의 스니펫은 proof 파일을 저장소 경로와 이름에 맞춰 옮긴 것"이라고 하지만, 현재 저장소와는 맞지 않는 부분이 있다. 현재 저장소의 ASGI 객체는 `vramforge_api.app:app`(`services/api/src/vramforge_api/app.py:32`)이고, `alembic.ini`, `migrations/`, `vramforge_worker.healthcheck`, `vramforge_worker.tasks`는 아직 없다. 위 Dockerfile을 그대로 쓰면 `COPY services/api/alembic.ini`에서 빌드가 실패하고, CMD의 `vramforge_api.main:app`도 import되지 않는다.
 - `/data`를 이미지에서 미리 만들어 소유권을 `app`에 줘야 한다. 처음 붙는 named volume은 이미지의 디렉터리 소유권을 물려받는다. 디렉터리가 없으면 root 소유가 되어 uid 10001이 `Permission denied`를 받는다(E18 VERIFIED).
 
 `infra/docker/web.Dockerfile` (루트 pnpm workspace일 때. 단독 프로젝트 변형은 아래 주석 참고)
@@ -795,14 +799,16 @@ queue.enqueue(
 )
 ```
 
+**검증:** 이 패턴에서는 같은 `analysis_id`를 다시 실행(재시도·resume)하면 `failure_ttl`(7일)이나 `result_ttl`(1일)이 끝날 때까지 `DuplicateJobError`가 난다. 재실행 전에 기존 job을 지우거나(`Job.fetch(...).delete()`), 시도마다 다른 job id를 쓴다. id에는 `[A-Za-z0-9_-]`만 쓸 수 있어 `:`는 안 되므로 예를 들면 `f"{analysis_id}-a{attempt}"`처럼 만든다. 분석 job에는 `Retry`를 붙이지 않는다. OOM으로 죽은 horse도 재시도되어 같은 OOM을 반복하기 때문이다(§6 표).
+
 ---
 
 ## 구현 시사점 (Implementation implications)
 
 ### Web (`apps/web`)
-- **W1.** 버전은 §10.1로 고정한다. 특히 `typescript 6.0.3`, `eslint 9.39.5`, `react-is 19.3.0`(직접 의존성)이다. TS 7로 올리는 시점은 typescript-eslint와 openapi-typescript가 TS 7 API를 지원한 뒤로 미룬다(typescript-eslint#10940 추적).
+- **W1.** 버전은 §10.1로 고정한다. 특히 `typescript 6.0.3`, `eslint 9.39.5`, `react-is 19.3.0`(직접 의존성)이다. TS 7로 올리는 시점은 typescript-eslint와 openapi-typescript가 TS 7 API를 지원한 뒤로 미룬다(typescript-eslint#10940 추적). TS를 devDependencies에 고정하지 않으면 Next 16.3.8 자동 설치가 npm latest(TS 7.0.2)를 가져온다(§1.2 검증).
 - **W2.** `typecheck` 스크립트는 `next typegen && tsc --noEmit`이다. 이것이 없으면 CI(fresh checkout)에서 `LayoutProps` 같은 route 타입이 정의되지 않아 실패한다(E18).
-- **W3.** `next.config.ts`에는 `output: "standalone"`을 둔다. 프로덕션의 `/api` 라우팅은 Caddy가 하고 Next rewrites에 기대지 않는다(빌드 시 고정). 런타임 이미지에는 `HOSTNAME=0.0.0.0`과 `PORT=3000`을 두고, `.next/static`과 `public`을 복사하고, 빌드는 컨테이너 안에서 한다.
+- **W3.** `next.config.ts`에는 `output: "standalone"`을 둔다. 프로덕션의 `/api` 라우팅은 Caddy가 하고 Next rewrites에 기대지 않는다(빌드 시 고정). 런타임 이미지에는 `HOSTNAME=0.0.0.0`과 `PORT=3000`을 두고, `.next/static`과 `public`을 복사하고, 빌드는 컨테이너 안에서 한다. Docker가 `HOSTNAME`을 컨테이너 id로 자동 설정하므로 `HOSTNAME=0.0.0.0`은 선택이 아니라 필수다. compose `environment:`에서 `HOSTNAME`을 덮어쓰지 않는다(§1.5 검증).
 - **W4.** `next/font/google`을 쓰지 않는다(빌드 시 외부 네트워크가 필요함). 시스템 폰트 스택과 `tabular-nums`를 쓴다(plan §3.2).
 - **W5.** 다크 모드는 `@custom-variant dark (&:where(.dark, .dark *));` + `<html class="dark">` 토글로 구현한다.
 - **W6.** Vitest는 §10.4 설정과 polyfill을 쓴다. EventSource는 `vi.stubGlobal`로 대체한다. Recharts 테스트는 고정 크기 차트로 한다.
@@ -815,25 +821,25 @@ queue.enqueue(
 - **P2.** tokenizer 경로는 torch 없이 동작한다. `apply_chat_template(...)`의 반환값은 **`BatchEncoding`**이므로 `["input_ids"]`로 꺼낸다. `return_tensors="pt"`는 쓰지 않는다. `TRANSFORMERS_NO_ADVISORY_WARNINGS=1`을 둔다. torch-free import guard 테스트(커밋 086c5c5)와 같은 방향이다.
 - **P3.** starlette 1.7.0의 `TestClient`는 `httpx2`를 먼저 찾는다. 없으면 `httpx`로 동작하지만 `StarletteDeprecationWarning`을 낸다(`starlette==1.7.0 starlette/testclient.py:33-51`, VERIFIED). pytest에서 경고를 오류로 바꾼다면 `httpx2`(PyPI 2.13.1, 미설치·미검증)를 dev group에 넣거나 그 경고를 필터링한다.
 - **P4.** compose healthcheck에는 의존성 없는 liveness 엔드포인트(항상 200)를 쓴다. DB·Redis·worker 상태를 담는 상세 `health`/`ready`를 healthcheck에 쓰면 worker 하나가 지연될 때 proxy까지 기동이 멈춘다.
-- **P5.** Alembic은 일회성 `migrate` 서비스(`service_completed_successfully`)에서 실행한다. non-editable 설치에서는 `alembic.ini`와 `migrations/`를 이미지에 COPY한다(검증한 방식). `script_location = vramforge_api:migrations` 패키지 리소스 방식도 가능하지만(`alembic==1.20.0 alembic/util/pyfiles.py:52-74`), 소스 주석에 "zero tests"라고 적혀 있어서 **INFERRED**로 둔다.
+- **P5.** Alembic은 일회성 `migrate` 서비스(`service_completed_successfully`)에서 실행한다. non-editable 설치에서는 `alembic.ini`와 `migrations/`를 이미지에 COPY한다(검증한 방식). `script_location = vramforge_api:migrations` 패키지 리소스 방식도 가능하지만(`alembic==1.20.0 alembic/util/pyfiles.py:52-74`), 소스 주석에 "zero tests"라고 적혀 있어서 **INFERRED**로 둔다. 2026-10-04 HEAD 기준으로 저장소에는 아직 `alembic.ini`와 `migrations/`가 없다(§10.7 검증).
 
 ### RQ·작업 제어
-- **R1.** 모든 enqueue에 `job_timeout`을 명시한다(기본 180초). `job_id = analysis_id`, `unique=True`로 중복 enqueue를 막는다. `result_ttl`/`failure_ttl`도 명시하고, 결과의 기준 저장소는 PostgreSQL이다.
+- **R1.** 모든 enqueue에 `job_timeout`을 명시한다(기본 180초). `job_id = analysis_id`, `unique=True`로 중복 enqueue를 막는다. `result_ttl`/`failure_ttl`도 명시하고, 결과의 기준 저장소는 PostgreSQL이다. 단 `unique`는 job hash가 남아 있는 동안(완료 뒤 `result_ttl`/`failure_ttl` 포함) 같은 id를 거부한다. 그래서 재실행할 때는 기존 job을 삭제하거나 시도별 id(`{analysis_id}-a{n}`, `:` 사용 불가)를 쓴다(§6 검증).
 - **R2.** **pickle 대신 `JSONSerializer`**를 쓴다(plan §18 "임의 pickle 실행 금지"). Queue, `Job.fetch`, `send_stop_job_command(serializer=...)`, worker의 `--serializer json`을 모두 맞춘다. task 인자는 id 같은 JSON 값만 넘긴다.
 - **R3.** 취소는 세 단계로 한다. (1) DB/Redis 취소 플래그를 세우고 worker가 shard 경계에서 확인해 checkpoint를 남기고 `CANCELLED`로 끝낸다(협조적, 기본). (2) queued 상태면 `job.cancel()`을 호출하고 DB도 직접 `CANCELLED`로 바꾼다. (3) 유예 시간 뒤에도 실행 중이면 `send_stop_job_command`로 강제 정지하고 `on_stopped` callback에서 DB를 갱신한다. worker는 forking `rq.Worker`를 쓴다(SimpleWorker 금지).
-- **R4.** horse가 OOM 등으로 죽으면 `on_failure`가 실행되지 않는다. lease 만료 회수(plan §16.1–16.2)나 커스텀 worker의 `work_horse_killed_handler`로 DB 상태를 맞춘다. RQ의 FAILED 상태를 DB 상태의 근거로 쓰지 않는다.
+- **R4.** horse가 OOM 등으로 죽으면 `on_failure`가 실행되지 않는다. lease 만료 회수(plan §16.1–16.2)나 커스텀 worker의 `work_horse_killed_handler`로 DB 상태를 맞춘다. RQ의 FAILED 상태를 DB 상태의 근거로 쓰지 않는다. `Retry`가 있으면 OOM으로 죽은 job도 다시 실행되므로 분석 job에는 `Retry`를 붙이지 않는다(§6 검증).
 - **R5.** worker는 `--worker-ttl 60 --with-scheduler`로 띄운다. retry interval에 scheduler가 필요하고, healthcheck 신선도에 짧은 heartbeat가 필요하기 때문이다. `--name`은 고정하지 않는다. `stop_grace_period`는 shard 하나를 마무리할 시간 이상으로 둔다. SIGTERM은 warm shutdown이고 그 뒤 SIGKILL이 온다.
 - **R6.** 진행률은 두 곳에 쓴다. UI 폴링용 최신값은 `job.meta`+`save_meta`나 DB에, `Last-Event-ID` 재생용 이벤트는 단조 id를 가진 영속 저장소(Postgres `analysis_events` 또는 Redis Stream)에 쓴다. 재생이 안 되는 pub/sub만으로는 plan §15.3의 재연결 복구를 만족하지 못한다(INFERRED).
 
 ### SSE·프록시
 - **S1.** Caddy에는 flush 설정이 필요 없다(VERIFIED). `encode zstd gzip`을 켜도 SSE는 이벤트마다 전달된다. nginx로 바꾸면 `proxy_buffering off`, `proxy_http_version 1.1`, 긴 `proxy_read_timeout`을 둔다(INFERRED).
-- **S2.** FastAPI native SSE의 15초 ping이 idle 연결을 유지한다. 재연결을 멈추게 할 204가 필요한 경로(이미 종료된 분석)는 generator가 아닌 엔드포인트로 분기한다. native generator 안에서 HTTPException을 던지면 204가 되지 않는다.
+- **S2.** FastAPI native SSE의 15초 ping이 idle 연결을 유지한다. 재연결을 멈추게 할 204가 필요한 경로(이미 종료된 분석)는 generator가 아닌 엔드포인트로 분기한다. native generator 안에서 HTTPException을 던지면 204가 되지 않는다. 실제 서버에서는 200 응답 뒤 연결이 끊기는 형태가 되어 EventSource가 재연결 루프에 빠진다(§8 검증). 분기한 엔드포인트에서 스트림을 반환할 때 `fastapi.sse.EventSourceResponse`는 `ServerSentEvent`를 인코딩하지 못한다. 두 가지 중 하나를 고른다. (a) `format_sse_event(...)` bytes를 yield하고 `Cache-Control: no-cache`, `X-Accel-Buffering: no`, keepalive를 직접 넣는다. (b) sse-starlette `EventSourceResponse`(ping 15초, `Cache-Control: no-store`, `X-Accel-Buffering: no` 내장)를 쓴다.
 - **S3.** SSE `data`에는 원문 row나 token을 넣지 않는다(plan §15.3). 같은 이유로 FastAPI native에서는 `data=`(자동 JSON)나 `raw_data=`(이미 직렬화한 JSON)를 일관되게 쓴다.
 
 ### Docker·Compose
 - **D1.** 모든 값에 `${VAR:-default}` 기본값을 두고 `.env`가 없어도 기동되게 한다. 이미지도 `*_IMAGE` 변수로 받아 mirror로 바꿀 수 있게 한다. `env -i … docker compose config -q`를 CI 게이트에 넣는다.
 - **D2.** base image 태그는 §7.2의 패치 버전까지 고정한다. 필요하면 digest도 고정한다. Dockerfile 첫 줄 `# syntax=`는 빼서 Docker Hub 의존을 하나 줄인다.
-- **D3.** PostgreSQL 18 볼륨은 `/var/lib/postgresql`에 마운트하고 healthcheck는 `pg_isready -h 127.0.0.1`이다. Redis는 포트를 publish하지 않고 `--appendonly yes`와 `/data` 볼륨을 쓴다.
+- **D3.** PostgreSQL 18 볼륨은 `/var/lib/postgresql`에 마운트하고 healthcheck는 `pg_isready -h 127.0.0.1`이다(`-h`가 없으면 init 중 임시 서버를 healthy로 잘못 판정한다, §7.3 실측). Redis는 포트를 publish하지 않고 `--appendonly yes`와 `/data` 볼륨을 쓴다.
 - **D4.** 앱 컨테이너는 non-root(uid 10001 / `node`)로 실행하고, 볼륨 마운트 지점(`/data/*`)은 이미지에서 미리 만들어 소유권을 준다.
 - **D5.** 기동 확인은 `docker compose up -d --build --wait`로 한다(migrate가 exit 0이어도 exit 0). 기본 바인드는 `127.0.0.1:8080`이다(plan §18).
 - **D6.** amd64 이미지 빌드 검증(goals Q5)은 `docker buildx build --platform linux/amd64 --target worker …`로 한다. arm64 호스트에서 worker 27초, web 49초였다. CI에서는 QEMU 설정이 필요하다.
@@ -850,6 +856,52 @@ queue.enqueue(
 7. **API 이미지 크기(727 MB).** api가 `vramforge-estimator[analysis]`에 의존해서 pyarrow, transformers, pandas가 들어간다. API에서 source inspection을 동기로 하려면 필요하지만, worker로 넘긴다면 extra 없이 슬림하게 만들 수 있다. 결정은 오케스트레이터 몫이다.
 8. **pnpm 11/12 전환**은 보류했다. 11은 `minimumReleaseAge` 기본 정책 때문에 frozen install이 막혔고, 12는 lockfile 재생성이 필요했다. 공급망 정책을 일부러 도입할지 결정해야 한다.
 9. **Redis 8 서버 이미지의 라이선스 조건**은 이번 조사에서 확인하지 않았다(UNKNOWN). Redis 프로토콜 호환 대안(Valkey 등)으로 RQ가 동작하는지도 시험하지 않았다(INFERRED: RQ는 Redis 명령만 사용).
-10. **RQ `job_timeout=-1`(무제한) 같은 특수값**은 확인하지 않았다. 긴 스캔에는 명시적인 큰 값과 협조적 취소를 권장한다.
-11. **hatchling 멤버의 `--no-editable` Docker 빌드**와 alembic 패키지 리소스 `script_location`은 저장소 구조로 실제 빌드하지 않았다(INFERRED).
+10. **RQ `job_timeout=-1`(무제한) 같은 특수값**은 확인하지 않았다. 긴 스캔에는 명시적인 큰 값과 협조적 취소를 권장한다. 검증(소스만): `get_heartbeat_ttl`은 `job.timeout <= 0`이면 monitoring interval 분기로 간다(`rq/worker/base.py:1062-1074`). `UnixSignalDeathPenalty.setup_death_penalty`는 `signal.alarm(self._timeout)`을 그대로 호출한다(`rq/timeouts.py`). Linux에서는 `alarm(-1)`이 unsigned로 바뀌어 사실상 무제한이 될 것으로 보인다(INFERRED). macOS에서는 `signal.alarm(-1)`이 4294967295를 반환했다. 실행 검증을 하지 않았으므로 권장은 그대로 둔다.
+11. **hatchling 멤버의 `--no-editable` Docker 빌드**와 alembic 패키지 리소스 `script_location`은 저장소 구조로 실제 빌드하지 않았다(INFERRED). 검증: 같은 두 단계 `uv sync`는 저장소 HEAD로 호스트(macOS, uv 0.11.19)에서 성공했고 루트 README도 필요 없었다(§10.7). 남은 것은 컨테이너 안 빌드와, alembic 파일을 추가한 뒤의 확인이다.
 12. **Docker Engine 최소 버전.** `--wait`, `service_completed_successfully`, 내장 BuildKit frontend의 `RUN --mount` 등의 하한을 오래된 엔진(예: 24.x)에서 시험하지 않았다. README에 최소 버전을 적을 때 근거가 필요하다.
+
+## 검증 로그 (Verification log)
+
+| 항목 | 값 |
+|---|---|
+| 검증자 | `verify-stack-compat` (적대적 교차 검증, Milestone M0), 2026-10-04 |
+| 방법 | 원저자의 `/tmp/vf-stack` 산출물은 쓰지 않았다. npm tarball(`npm pack`)과 별도 venv의 소스를 다시 읽었고, 최소 재현 프로젝트를 새로 만들어 실행했다. 판정 기준: VERIFIED = 소스 확인 또는 재실험으로 일치, CORRECTED = 본문을 고침, UNVERIFIABLE = 재실행하지 않음(환경 의존 수치 등) |
+| 환경 | macOS arm64, OrbStack Docker Engine 29.4.0 / Compose v5.1.2, 호스트 Node v25.8.0, pnpm 10.15.0, uv 0.11.19. torch 없는 Python 3.12 venv(`/tmp/vf-research/venv-verify-stack-compat`: transformers 5.18.0, tokenizers 0.23.2, hub 1.33.0, datasets 5.0.1, fastapi 0.142.2, starlette 1.7.0, sse-starlette 3.5.0, rq 2.12.0, redis 8.1.0). Docker 이미지는 `mirror.gcr.io/library/*`(digest 동일)를 썼다 |
+| 재현 스크립트 | `/tmp/vf-research/scratch/verify-stack-compat/` (`web*/`, `oat/`, `vt/`, `rootws/`, `rq/rq_exp.py`, `rq/hb_experiment.sh`, `sse/`, `es/es_app.py`, `caddy/`, `pg/`, `compose/`, `xarch/scan.py`, `hatch/`) |
+| 정리 | 만든 컨테이너, 볼륨, 이미지, build cache record는 지웠다. 끝난 뒤 `docker system df`는 이미지 2개, build cache 13개 169.6 MB, 볼륨 0개, 컨테이너 0개였다(원래 있던 `<none>` 이미지 2개는 건드리지 않음) |
+
+| # | 주장 (위치) | 판정 | 근거 |
+|---|---|---|---|
+| V1 | TS 7.0.2에서 `next build`는 통과하고 타입 오류도 잡지만 `eslint`는 실패한다 (§1.2–1.3, 핵심 결론 1) | VERIFIED | `next@16.3.8 dist/server/config-shared.js:257`(`useTypeScriptCli: true`), `typescript-eslint@8.71.0 dist/index.js:41-52`(`versionMajor >= 7` throw, peer `>=4.8.4 <6.1.0`). 최소 앱 재현: build exit 0(`Finished TypeScript in 292ms`), 주입한 TS2322는 exit 1, eslint exit 2 |
+| V2 | TS가 없을 때 Next가 `typescript@^6.0.0`을 자동 설치하므로 기준 버전은 TS 6이다 (§1.2) | CORRECTED | `^6.0.0`은 API 모드 전용 `typescriptApiPackage`(`verify-typescript-setup.js:82-87`)에만 있다. 기본 CLI 모드 spec(`:88-94`)에는 `install`이 없어 `install-dependencies.js:31`의 `dep.install ?? dep.pkg`가 bare `typescript`(npm latest 7.0.2)를 설치한다 |
+| V3 | openapi-typescript 7.13.0은 TS 7.0.2에서 crash, TS 6.0.3에서는 peer 경고만 (§1.3, §3.4) | VERIFIED | FastAPI 0.142.2가 만든 OpenAPI `3.1.0`(SSE에 `itemSchema`, `openapi/utils.py:452`)으로 pnpm 재현: TS7은 `TypeError … 'createKeywordTypeNode'`(`dist/lib/ts.mjs:11:28`), exit 1. TS6은 생성 성공 + `unmet peer typescript@^5.x`. SSE content는 `"text/event-stream": unknown` |
+| V4 | ESLint 10.12.0 + eslint-config-next 16.3.8은 `contextOrFilename.getFilename is not a function`으로 죽는다 (§1.4) | VERIFIED | 같은 앱에 eslint 10.12.0을 넣으니 exit 2, 스택은 `eslint-plugin-react@7.37.5 lib/util/version.js:31`. 9.39.5는 exit 0. eslint-plugin-react `latest`가 7.37.5라 대체 버전이 없다 |
+| V5 | recharts 3.10.1의 react-is peer가 pnpm에서 16.13.1로 맞춰져 fragment 안 `<Cell>`이 무시된다 (§3.3, W1) | VERIFIED | eslint-config-next가 있는 프로젝트에 `pnpm add recharts@3.10.1` → 가상 store 이름에 `react-is@16.13.1`. recharts의 `findAllByType`(`lib/util/ReactUtils.js`)이 Fragment 안 Cell 0개 → `pnpm add react-is@19.3.0` 뒤 2개(`#ff0000`,`#00ff00`). 원인: react-is 16의 `Symbol.for('react.element')` 대 React 19의 `react.transitional.element` |
+| V6 | standalone `server.js:8-9`(`PORT`, `HOSTNAME`), static·public 미포함, rewrites 빌드 시 고정 (§1.5) | VERIFIED | 직접 빌드: `server.js:8-9` 일치, standalone에 `.next/static`·`public` 없음. `API_PROXY_TARGET`을 런타임에만 주면 `/api/v1/health` 404, 빌드 시 주면 upstream 200 |
+| V7 | `ENV HOSTNAME=0.0.0.0`이 없으면 127.0.0.1 healthcheck가 ECONNREFUSED (§1.5, W3) | VERIFIED | 보강: Docker는 `-e` 없이도 `HOSTNAME=<container id>`를 넣는다. `listen(3000, process.env.HOSTNAME)`은 `192.168.215.2`에만 bind되어 127.0.0.1이 ECONNREFUSED. 이미지 ENV는 `--hostname foo`에서도 유지 |
+| V8 | 루트 pnpm workspace에서는 `apps/web/.next/standalone/apps/web/server.js`로 한 단계 중첩된다 (§1.5, §10.7) | VERIFIED | `packages: [apps/*]` 루트에서 `pnpm --filter @vramforge/web build` → 해당 경로에 `server.js`, standalone 루트에 `node_modules` |
+| V9 | fresh checkout `tsc --noEmit`은 `LayoutProps`에서 실패하고 `next typegen` 뒤 통과한다 (§1.5, W2) | VERIFIED | create-next-app 16.3.8 템플릿 layout이 `LayoutProps<"/">`를 쓰고 `next-env.d.ts`를 gitignore한다. 재현: `TS2304`, exit 2 → typegen 뒤 exit 0. Node 24 컨테이너는 재실행하지 않았다 |
+| V10 | App Router 런타임은 Next에 vendoring된 React를 쓴다 (§1.1) | VERIFIED | 서버 컴포넌트에서 `React.version`이 `19.3.0-canary-cbb046ab-20260731`로 렌더링됐다(프로젝트 react 19.3.0) |
+| V11 | Vitest 5.0.3의 vite peer, Vite 8 `resolve.tsconfigPaths`, jest-dom `/vitest`, DOM 환경에 EventSource 없음, jsdom Radix Select polyfill (§2, §4.1) | VERIFIED | `vite@8.3.2 dist/node/index.d.ts:2722-2726`, vitest peer `^6.4.0 \|\| ^7.0.0 \|\| ^8.0.0`. probe: `@/` alias 통과. jsdom은 polyfill 없이 `target.hasPointerCapture is not a function`, polyfill 있으면 3/3. happy-dom은 polyfill 없이 3/3. Select 말고 Radix 7종은 재실행하지 않았다 |
+| V12 | transformers 5.18.0은 torch 없이 동작하고 `apply_chat_template` 기본값이 `tokenize=True, return_dict=True` (§5.4, P2) | VERIFIED | `tokenization_utils_base.py:2990-3007`(`truncation=False` 기본), `__init__.py:873-876`, `utils/logging.py:317-325`(빈 문자열이 아닌 값이면 모두 경고 억제). `Qwen3_5Tokenizer`는 base 구현을 쓰고 `BatchEncoding`을 반환했다. `return_tensors="pt"`는 ImportError, framework module import 없음 |
+| V13 | datasets·tokenizers가 hub `<2.0`, transformers는 torch에 의존하지 않는다 (§5.2) | VERIFIED | 설치 METADATA: datasets `huggingface-hub<2.0,>=0.25.0`, `fsspec[http]<=2026.6.0`. tokenizers `<2.0`. transformers `<3.0,>=1.31.0`이고 torch는 extra. PyPI 최신은 hub 2.1.1, fsspec 2026.9.0 |
+| V14 | 현재 저장소 lock으로 api 74개, worker 75개를 설치하고 torch·trl·peft·accelerate는 없다 (§5.1) | VERIFIED | HEAD의 pyproject 4개와 `uv.lock`으로 `uv sync --frozen --no-dev --package … --dry-run`을 다시 실행: 74/75(75 = 서드파티 72 + 멤버 3). proof workspace의 "80개"는 재실행하지 않았다 |
+| V15 | binary 패키지가 모두 cp312·cp313 × x86_64·aarch64 manylinux wheel을 갖는다 (§5.3) | VERIFIED | 저장소 `uv.lock`에서 api/worker 설치 집합 가운데 플랫폼 wheel이 있는 23개가 4조합을 모두 충족했다(charset-normalizer, sqlalchemy 등 7개는 pure wheel도 있음) |
+| V16 | RQ 기본값: timeout 180초, result_ttl 500, failure_ttl 1년, 기본 pickle, retry interval에는 scheduler 필요 (§6) | VERIFIED | `rq/queue.py:106`, `rq/defaults.py:32,43,50`, `rq/serializers.py:19-38`, `rq/job.py:1710-1733`, `rq/cli/workers.py:37,58`. Redis 8.10.2 실험: job.timeout 180, scheduler 없으면 SCHEDULED에서 멈춤, `--with-scheduler`이면 scheduled(1)→scheduled(0)→failed(0). JSON job을 기본 serializer로 fetch하면 UnpicklingError |
+| V17 | `unique=True` + 같은 job_id → DuplicateJobError (§6, R1) | VERIFIED | 보강: 검사는 Lua `EXISTS rq:job:<id>`(`rq/scripts.py:13-24`)라서 **FINISHED 뒤에도** 재enqueue가 거부됐다. id는 `[A-Za-z0-9_-]+`만 허용(`rq/job.py:56,85-86`, `a:1` → ValueError) |
+| V18 | cancel은 queued에만 효과가 있다. stop은 SIGKILL로 STOPPED, retry 없이 FailedJobRegistry로 간다. `on_stopped`는 부모에서 실행되고 SimpleWorker는 정지할 수 없다 (§6, R3) | VERIFIED | `rq/command.py:70-82,128-141`, `worker_classes.py:30-37,131-135`, `base.py:697-750,1649-1651`. 실험: queued에 stop → InvalidJobOperation, cancel → CANCELED + CanceledJobRegistry. 실행 중 stop(`Retry(max=2)`) → STOPPED, retries_left 2, callback pid = worker pid. SimpleWorker는 stop 뒤에도 FINISHED |
+| V19 | OOM 등으로 horse가 죽으면 `on_failure`가 실행되지 않는다 (§6, R4) | VERIFIED | 보강: `execute_failure_callback`은 horse 안 `perform_job`(`base.py:1587`)에만 있다. horse 자기 SIGKILL 실험: FAILED, `waitpid returned 9 (signal 9)`, on_failure 미실행(대조군은 실행). **`Retry(max=1)`이면 한 번 더 실행된다** |
+| V20 | idle worker heartbeat 간격은 `worker_ttl-15`=405초라서 기본값이면 120초 신선도 healthcheck가 실패한다 (§6, §10.8, R5) | VERIFIED | `base.py:442-443`(`dequeue_timeout`), `:1109-1111`(loop마다 `heartbeat()`). 140초 실험: 기본 ttl은 t=125에서 heartbeat age 124.5초로 unhealthy, `--worker-ttl 60`은 최대 약 45초 |
+| V21 | FastAPI native SSE: 15초 ping, `no-cache`/`X-Accel-Buffering: no`, data JSON 직렬화, 첫 yield 전 HTTPException(204)은 204가 되지 않는다 (§8, S2) | VERIFIED | 보강: `sse.py:237,241`, `routing.py:617-621,664-666`. 실제 uvicorn에서는 `200 OK` 헤더 뒤 전송이 끊겨 EventSource가 재연결한다. non-generator `Response(204)`는 204. native `EventSourceResponse`를 직접 반환하면 `ServerSentEvent` 인코딩 실패, `format_sse_event` bytes를 쓰면 기본 헤더와 ping이 빠진다. sse-starlette 기본값은 `sse.py:264-265,315,318`에서 확인 |
+| V22 | Caddy 2.11.6은 `text/event-stream`을 즉시 flush하고 `encode zstd gzip`도 SSE를 지연시키지 않는다 (§8, S1) | VERIFIED | tag v2.11.6 `streaming.go:271-292`, `encode.go:291-298,320-345`. `caddy:2.11.6-alpine` 경유 1초 간격 이벤트: plain +0.02/1.02/2.03/3.03초, gzip +0.01/1.01/2.02/3.02초 |
+| V23 | Chromium EventSource는 `Last-Event-ID`로 자동 재연결하고 `retry:`를 적용하며 204에서 멈춘다 (§3.5, W9) | VERIFIED | 로컬 FastAPI와 Playwright 도구의 Chromium(Chrome/154로, v1.63.0 이미지의 브라우저와 다름): 서버가 받은 Last-Event-ID는 `[null, "2", "5"]`(0/0.51/1.02초, `retry: 500`), 204 뒤 readyState 2. Playwright 컨테이너 e2e(E14)는 재실행하지 않았다 |
+| V24 | postgres:18은 `PGDATA=/var/lib/postgresql/18/docker`, `VOLUME /var/lib/postgresql`이고 init 임시 서버는 socket만 연다 (§7.3, D3) | VERIFIED | `imagetools inspect` config, 이미지 안 `docker-entrypoint.sh:297`. 실측: 임시 서버 동안 socket `pg_isready` 0, TCP 2. 최종 서버 뒤 둘 다 0 |
+| V25 | Node 24가 Active LTS(24.21.0, 2026-10-20부터 maintenance), 26은 2026-10-28 LTS, 25는 EOL, node:26 이미지에는 corepack이 없다 (§7.1) | VERIFIED | nodejs/Release `schedule.json`, nodejs.org `dist/index.json`. `node:24.21.0-trixie-slim`은 corepack 0.36.0, npm 11.19.0, node uid 1000. `node:26.10.0-trixie-slim`에는 corepack과 yarn이 없다 |
+| V26 | 이미지 index digest 표 (§7.2, §4.2) | VERIFIED | node/python/postgres/redis/caddy의 mirror digest와 Playwright `v1.63.0-noble` = `v1.63.0`(`sha256:eff16c30…`)이 표와 일치. redis 이미지는 amd64와 arm64 모두 VOLUME 없음. Docker Hub와 직접 대조하지는 않았다 |
+| V27 | `.env` 없는 compose: `env -i … config -q`, `service_completed_successfully`, `up -d --wait` exit 0, gpu profile 제외, named volume 소유권 (§7.4, §10.7, D1·D4·D5) | VERIFIED | Compose v5.1.2 최소 프로젝트: config exit 0, `--services`에 gpu 없음, `up --wait` exit 0(migrate Exited(0), app healthy). 이미지에서 `chown`한 `/data`는 쓰기 가능, 없으면 root 소유라 `Permission denied` |
+| V28 | amd64 에뮬레이션 결과가 arm64와 같다(max_len 2276, 1,886,384 tokens) (§9) | VERIFIED | amd64·arm64 `python:3.12.15-slim-trixie`와 macOS arm64에서 9,312 시퀀스, 2276, 1,886,384, 전체 id sha256 `dc46ec396e743a1d`가 같았다 |
+| V29 | hatchling 멤버의 `--no-editable` 빌드는 INFERRED, README bind 필요 여부도 INFERRED (§10.7, 미확정 11) | VERIFIED | 호스트에서 확인: HEAD `git archive` 복사본으로 두 단계 `uv sync`가 성공(멤버 3개 wheel, `editable: false`, torch 없음)했고 README.md 없이도 성공했다. 컨테이너 안 빌드는 아니다 |
+| V30 | §10의 스니펫은 저장소 경로와 이름에 맞춘 것이다 (§8 머리말, §10.7) | CORRECTED | 현재 저장소의 ASGI 객체는 `vramforge_api.app:app`(`app.py:32`)이고 `alembic.ini`, `migrations/`, `vramforge_worker.healthcheck`/`tasks`가 없다. Dockerfile을 그대로 쓰면 COPY와 CMD가 실패한다는 점을 §10.7에 적었다 |
+| V31 | starlette 1.7.0 TestClient는 `httpx2`를 먼저 쓰고, `httpx`로 대체되면 `StarletteDeprecationWarning`을 낸다 (P3) | VERIFIED | `starlette/testclient.py:33-51`. httpx 0.28.1 venv의 TestClient 실행마다 경고가 출력됐다 |
+| V32 | proof stack 측정값(cold build 49초, 기동 30초, 이미지 크기, idle 메모리, amd64 빌드 27/49초, E21 75초) (§8, §9) | UNVERIFIABLE | 환경에 따라 달라지는 수치이고 proof stack 전체를 다시 띄우지 않았다. 구현 공식이나 기본값에는 쓰지 않는다 |
+| V33 | pnpm 11.28.2는 `minimumReleaseAge`로, 12.9.1은 lockfile 불일치로 frozen install을 거부한다 (§10.1) | UNVERIFIABLE | 재실행하지 않았다. pnpm 10.34.6 고정 결론에는 영향이 없다 |
