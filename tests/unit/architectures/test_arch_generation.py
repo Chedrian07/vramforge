@@ -163,9 +163,10 @@ def test_decode_kv_repeat_needs_a_padding_mask_and_gqa(ib: ModuleType) -> None:
     e = gen(gqa, eager, 1, 10, 5, adapter=DENSE)["policy.gen.decode.step_transient"]
     assert e.bytes_low == 2 * 1 * 6 * 14 * 40 * 2  # eager always repeats K/V
     mha = ib.tiny_dense_inventory("llama", num_key_value_heads=6)
-    assert "kv_repeat" not in gen(mha, lora, 3, 10, 5, adapter=DENSE)[
-        "policy.gen.decode.step_transient"
-    ].dims
+    assert (
+        "kv_repeat"
+        not in gen(mha, lora, 3, 10, 5, adapter=DENSE)["policy.gen.decode.step_transient"].dims
+    )
 
 
 def test_unverified_decode_paths_are_unknown(mimo: ModelInventory, auto: list[str]) -> None:
