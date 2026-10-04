@@ -176,8 +176,14 @@ def test_oversized_row_is_reported_not_truncated(make_stream, adapter, ctx) -> N
     assert branch(res, Branch.SEQUENCE).stats.max == 50_000  # full length kept
     table = pq.read_table(sorted(out.artifact_path.glob("part-*.parquet"))).to_pylist()
     assert [r["context_status"] for r in table] == ["ok", "exceeded", "ok"]
-    unknown = scan(make_stream(rows([100])), adapter, ctx, key="pre_b", limit=None)
-    assert unknown.result.context_exceeded_rows == 0
+
+
+@pytest.mark.parametrize("limit", [None, 10**30])  # no limit, or transformers' "no limit" value
+def test_unknown_context_limit_is_never_counted_as_zero(make_stream, adapter, ctx, limit) -> None:
+    out = scan(make_stream(rows([100, 50_000])), adapter, ctx, limit=limit)
+    assert out.result.context_exceeded_rows is None
+    table = pq.read_table(sorted(out.artifact_path.glob("part-*.parquet"))).to_pylist()
+    assert {r["context_status"] for r in table} == {"unknown"}
 
 
 def test_partial_stream_is_never_complete(make_stream, adapter, ctx) -> None:
@@ -374,7 +380,38 @@ def test_template_loss_and_system_omission_are_reported(make_stream, adapter, ct
     assert out.template_content_loss_rows == 1
     loss = [i for i in out.issues if i.code is ErrorCode.TEMPLATE_CONTENT_LOSS]
     assert loss and loss[0].details["row_ids"] == ["train:1"]
-    assert "2개 row에서 system 메시지를 생략" in out.result.transformation_note
+    assert out.result.omitted_system_messages == 2
+    assert out.result.transformation_note == "테스트 변환"  # the count is a field, not prose
+
+
+def test_omitted_system_messages_are_counted_per_message(make_stream, adapter, ctx) -> None:
+    data = [{"len": 10, "omitted": 3}, {"len": 11}, {"len": 12, "system": ""}]
+    assert scan(make_stream(data), adapter, ctx).result.omitted_system_messages == 4
+
+
+@pytest.mark.parametrize(
+    ("mapping", "data", "expected"),
+    [
+        ({"system": "s", "prompt": "p", "completion": "c"}, [{"len": 5}], 0),
+        ({"messages": "m"}, [{"len": 5}], 0),  # conversations may carry system messages
+        ({"prompt": "p", "completion": "c"}, [{"len": 5}], None),  # no system role mapped
+        ({"prompt": "p", "completion": "c"}, [{"len": 5, "omitted": 1}], 1),  # list prompt
+        (  # KEEP renders even an empty system value: nothing to count
+            {"system": "s", "prompt": "p", "completion": "c", "empty_system_policy": "keep"},
+            [{"len": 5, "omitted": 1}],
+            None,
+        ),
+    ],
+)
+def test_omitted_system_messages_applicability(
+    make_stream, adapter, ctx, mapping, data, expected
+) -> None:
+    from vramforge_estimator.schemas import ColumnMapping
+
+    adapter.mapping = ColumnMapping(**mapping)
+    out = scan(make_stream(data), adapter, ctx)
+    assert out.result.omitted_system_messages == expected
+    assert out.result.mapping_applied == adapter.mapping
 
 
 def test_reader_decode_failures_keep_their_reason(make_stream, adapter, ctx) -> None:

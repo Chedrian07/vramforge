@@ -130,7 +130,25 @@ def test_scan_records_exactly_what_the_adapter_computes(
     assert table.prompt_tokens == [r.prompt_tokens for r in expected]
     assert table.sequence_tokens == [r.sequence_tokens for r in expected]
     assert table.rejected_total_tokens == [r.rejected_total_tokens for r in expected]
-    assert "2개 row에서 system 메시지를 생략" in out.result.transformation_note
+    assert out.result.omitted_system_messages == 2  # the two empty system values
+    assert "omit" in out.result.transformation_note  # the policy itself is still stated
+
+
+def test_keep_policy_has_no_omitted_count(handle, make_stream, make_ctx) -> None:
+    keep = MAPPING.model_copy(update={"empty_system_policy": EmptySystemPolicy.KEEP})
+    adapter = get_adapter(Objective.GRPO, handle, keep, empty_system_policy=EmptySystemPolicy.KEEP)
+    out = full_scan(
+        make_stream(ROWS),
+        adapter,
+        make_ctx(),
+        objective=Objective.GRPO,
+        preprocess_key="pre_keep",
+        tokenizer_fingerprint="t",
+        template_fingerprint=None,
+        context_limit=None,
+    )
+    assert out.result.omitted_system_messages is None
+    assert out.result.context_exceeded_rows is None  # no limit known
 
 
 def test_dpo_rejected_outlier_reaches_the_batch_shape(handle, make_stream, make_ctx) -> None:

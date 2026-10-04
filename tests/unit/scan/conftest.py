@@ -127,7 +127,7 @@ class FakeCtx:
 
 class FakeSftAdapter:
     """Row {"len": n, "prompt": p} -> SFT record; {"fail": True} fails; {"lossy": True} loses
-    template content; {"system": ""} counts as an omitted system message."""
+    template content; {"system": ""} counts as one omitted system message, {"omitted": k} as k."""
 
     name = "fake-sft"
     version = "1"
@@ -154,6 +154,8 @@ class FakeSftAdapter:
         extras: dict[str, Any] = {}
         if row.get("system") == "":
             extras["system_omitted"] = 1
+        if "omitted" in row:
+            extras["system_omitted"] = int(row["omitted"])
         return TokenizedRecord(
             row_id=row_id,
             objective=self.objective,

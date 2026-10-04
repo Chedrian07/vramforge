@@ -32,6 +32,7 @@ from vramforge_estimator.schemas import (
     BranchStats,
     ColumnMapping,
     DatasetScanResult,
+    EmptySystemPolicy,
     ErrorCode,
     FailedRow,
     Issue,
@@ -56,9 +57,10 @@ from .artifact import (
 )
 from .base import LengthTable, ScanContext, ScanLimits, ScanOutcome
 from .stats import BRANCHES, LengthAccumulator, branch_values, primary_branch
+from .validation import SENTINEL_MIN
 
 CHECKPOINT_KIND = "vramforge.scan"
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2  # 2: omitted system messages are counted per message
 FAILED_SAMPLE_LIMIT = 100
 ROW_ID_SAMPLE_LIMIT = 20
 CANCEL_CHECK_ROWS = 16
@@ -66,7 +68,7 @@ CANCEL_CHECK_ROWS = 16
 # Monotonic clock; tests may replace it.
 clock: Callable[[], float] = time.monotonic
 
-_DIAGNOSTICS = ("template_loss", "prefix_mismatch", "special_token", "system_omitted")
+_DIAGNOSTICS = ("template_loss", "prefix_mismatch", "special_token")
 _FINAL_MESSAGES = {
     ScanCoverage.COMPLETE: "데이터셋 전체 토큰화를 마쳤습니다.",
     ScanCoverage.PARTIAL: "데이터셋을 끝까지 확인하지 못했습니다. 통계는 처리한 row까지의 값이며 "
@@ -113,6 +115,7 @@ class _State:
     rows_ok: int = 0
     rows_failed: int = 0
     context_exceeded_rows: int = 0
+    omitted_system_messages: int = 0
     elapsed: float = 0.0
     parts: list[str] = field(default_factory=list)
     accumulators: dict[Branch, LengthAccumulator] = field(default_factory=dict)
@@ -134,6 +137,7 @@ class _State:
             "rows_ok": self.rows_ok,
             "rows_failed": self.rows_failed,
             "context_exceeded_rows": self.context_exceeded_rows,
+            "omitted_system_messages": self.omitted_system_messages,
             "elapsed": self.elapsed,
             "parts": list(self.parts),
             "accumulators": {b.value: a.to_state() for b, a in self.accumulators.items()},
@@ -150,6 +154,7 @@ class _State:
             rows_ok=int(data["rows_ok"]),
             rows_failed=int(data["rows_failed"]),
             context_exceeded_rows=int(data["context_exceeded_rows"]),
+            omitted_system_messages=int(data.get("omitted_system_messages", 0)),
             elapsed=float(data["elapsed"]),
             parts=[str(p) for p in data["parts"]],
             accumulators={
@@ -312,6 +317,8 @@ def full_scan(
                 objective=objective.value,
             )
         )
+    if context_limit is not None and context_limit >= SENTINEL_MIN:
+        context_limit = None  # transformers' "no limit" sentinel is not a context (R9)
     limits = ctx.limits
     lengths_dir = ctx.artifact_dir / LENGTHS_DIR
     identity = _identity(
@@ -445,9 +452,6 @@ def full_scan(
     issues = _issues(state, stream, ending, limits)
     mapping = getattr(adapter, "mapping", None)
     note = adapter.transformation_note()
-    omitted = state.diag_counts["system_omitted"]
-    if omitted:
-        note += f" 빈 system 값 때문에 {omitted:,}개 row에서 system 메시지를 생략했습니다."
     result = DatasetScanResult(
         coverage=coverage,
         objective=objective,
@@ -455,6 +459,7 @@ def full_scan(
         split=stream.split,
         mapping_applied=mapping if isinstance(mapping, ColumnMapping) else None,
         transformation_note=note,
+        omitted_system_messages=_omitted_system_messages(mapping, state),
         rows_expected=stream.total_rows,
         rows_seen=state.rows_seen,
         rows_ok=state.rows_ok,
@@ -465,7 +470,7 @@ def full_scan(
         branches=_branch_stats(state, objective),
         failed_rows_sample=[FailedRow.model_validate(f) for f in state.failed_sample],
         duplicate_rows=duplicates,
-        context_exceeded_rows=state.context_exceeded_rows,
+        context_exceeded_rows=state.context_exceeded_rows if context_limit is not None else None,
         preprocess_key=preprocess_key,
         artifact_id=LENGTHS_DIR,
         tokenizer_fingerprint=tokenizer_fingerprint,
@@ -480,6 +485,20 @@ def full_scan(
         issues=issues,
         template_content_loss_rows=state.diag_counts["template_loss"],
     )
+
+
+def _omitted_system_messages(mapping: object, state: _State) -> int | None:
+    """System messages the OMIT policy skipped (counted per message). None when the count does
+    not apply: the KEEP policy renders every system message, and a mapping without a system or
+    messages column has no system role unless a mapped message list carried one."""
+    count = state.omitted_system_messages
+    if not isinstance(mapping, ColumnMapping):
+        return count or None
+    if mapping.empty_system_policy is not EmptySystemPolicy.OMIT:
+        return None
+    if mapping.system is None and mapping.messages is None and not count:
+        return None
+    return count
 
 
 def _source_failure(src: SourceRow) -> tuple[ErrorCode, str] | None:
@@ -552,8 +571,9 @@ def _account(
             state.note("prefix_mismatch", row_id)
         if rec.extras.get("duplicate_bos") or rec.extras.get("duplicate_eos"):
             state.note("special_token", row_id)
-        if rec.extras.get("system_omitted"):
-            state.note("system_omitted", row_id)
+        omitted = rec.extras.get("system_omitted")
+        if isinstance(omitted, int) and omitted > 0:
+            state.omitted_system_messages += omitted  # messages, not rows
     else:
         state.rows_failed += 1
         if len(state.failed_sample) < FAILED_SAMPLE_LIMIT:
