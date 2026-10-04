@@ -227,6 +227,7 @@ class DatasetRowStream:
                     reason=exc.reason,
                     shard_id=shard_id,
                     rows_read=self.rows_seen,
+                    **_positions(exc.detail),
                 )
             )
         except UnsupportedFormat as exc:

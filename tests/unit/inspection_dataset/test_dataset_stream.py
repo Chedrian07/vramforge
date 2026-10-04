@@ -311,3 +311,21 @@ def test_unexpected_reader_errors_end_the_stream_as_partial(
     assert issue.details["error_type"] == "RuntimeError"
     assert "secret" not in issue.model_dump_json()
     assert not stream.complete
+
+
+def test_type_conflict_stops_the_stream_with_its_position(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    path = write_jsonl(root / "train.jsonl", [{"m": True}] * 6 + [{"m": 2.5}] * 6)
+    write_jsonl(root / "train_z.jsonl", [{"m": False}])  # sorted after train.jsonl
+    (root / "README.md").write_text(
+        "---\nconfigs:\n- config_name: default\n  data_files: train*.jsonl\n  chunksize: 40\n---\n",
+        encoding="utf-8",
+    )
+    stream = stream_for(local_source(root))
+    rows = list(stream)
+    assert [r.row for r in rows] == [{"m": True}] * 4  # 2.5 never shows up as True
+    assert not stream.complete and stream.shards_completed == 0
+    issue = stream.issues[-1]
+    assert issue.code == ErrorCode.SCAN_PARTIAL
+    assert (issue.details["reason"], issue.details["line"]) == ("schema_mismatch", 5)
+    assert issue.details["shard_id"] == path.name

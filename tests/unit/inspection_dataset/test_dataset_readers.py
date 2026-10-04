@@ -355,3 +355,61 @@ def test_pretty_printed_objects_follow_pyarrow_like_datasets(
     path.write_text('{\n  "a": 1\n}\n{\n  "a": 2\n}\n', encoding="utf-8")
     rows, _ = read_all(path, "json")
     assert rows == [{"a": 1}, {"a": 2}] == datasets_rows(path, "json")["train"]
+
+
+def test_conflicting_value_types_stop_the_file_instead_of_being_coerced(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    # The 2nd chunk mixes booleans and floats in a column the 1st chunk locked as bool. Read one
+    # by one, 2.5 would silently become True; datasets cannot load this file at all.
+    path = write_jsonl(tmp_path / "types.jsonl", [{"m": True}] * 6 + [{"m": 2.5}] * 6)
+    items: list[Any] = []
+    source = FileSource(path.name, path=path, size=path.stat().st_size)
+    spec = FileSpec("json", {"chunksize": 40})
+    with pytest.raises(ShardBroken) as excinfo:
+        for item in iter_file(source, spec, ReaderLimits(), SchemaState(), ReadInfo()):
+            items.append(item)
+    assert excinfo.value.reason == "schema_mismatch"
+    assert excinfo.value.detail["line"] == 5  # first line of the chunk that failed
+    assert items == [{"m": True}] * 4  # only rows read before the conflict
+    with pytest.raises(Exception):  # noqa: B017 - datasets raises its own generation error
+        datasets_rows(path, "json", chunksize=40)
+
+
+def test_conflicts_next_to_a_malformed_line_still_stop(tmp_path: Path) -> None:
+    # Chunk 2 (lines 5-8) has a malformed line and a float in the bool column of chunk 1.
+    lines = ['{"m": true}'] * 6 + ["{oops", '{"m": 2.5}']
+    path = tmp_path / "mixed.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ShardBroken) as excinfo:
+        read_all(path, "json", options={"chunksize": 40})
+    assert (excinfo.value.reason, excinfo.value.detail["line"]) == ("schema_mismatch", 5)
+
+
+def test_compatible_records_next_to_a_malformed_line_keep_their_values(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.jsonl"
+    path.write_text('{"m": true}\n{oops\n{"m": 2.5}\n{"m": "text"}\n', encoding="utf-8")
+    items, _ = read_all(path, "json")
+    assert items[0] == {"m": True} and items[2:] == [{"m": 2.5}, {"m": "text"}]  # Json column
+    assert isinstance(items[1], RowError) and items[1].line == 2
+
+
+def test_records_pyarrow_cannot_read_are_row_failures(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    path = tmp_path / "strict.jsonl"
+    path.write_text(
+        '{"a": 1, "s": {"b": 1}}\n{"a": 2, "a": 3, "s": {"b": 1}}\n'
+        '{"a": 4, "s": {"b": 1, "b": 2}}\n{"a": 1e400, "s": {"b": 1}}\n{"a": 5, "s": {"b": 2}}\n',
+        encoding="utf-8",
+    )
+    items, info = read_all(path, "json")
+    assert items[0] == {"a": 1, "s": {"b": 1}} and items[-1] == {"a": 5, "s": {"b": 2}}
+    assert [(e.reason, e.line) for e in items if isinstance(e, RowError)] == [
+        ("json_parse", 2),  # duplicate key
+        ("json_parse", 3),  # duplicate nested key
+        ("json_parse", 4),  # float beyond double range
+    ]
+    assert (info.rows, info.errors) == (2, 3)
+    with pytest.raises(Exception):  # noqa: B017 - pyarrow rejects them, so datasets fails
+        datasets_rows(path, "json")

@@ -6,9 +6,13 @@ with the same block-size retries, and the same `_cast_table`. A file whose first
 `[` is a JSON array: small arrays are converted to JSON Lines in one load exactly like datasets,
 larger ones are split into elements incrementally (bounded memory).
 
-Differences, all limited to inputs datasets cannot load at all: a chunk that fails to parse is
-re-read record by record and each unparseable record becomes a `RowError` (datasets falls back to
-pandas and then raises), and quotas from `ReaderLimits` stop reading with `QuotaExceeded`.
+Differences, all limited to inputs datasets cannot load at all: in a chunk that fails to parse,
+each record that is not a JSON object pyarrow can read (syntax error, non-object, invalid UTF-8,
+duplicate key, number overflow) becomes a `RowError` (datasets falls back to pandas and then
+raises) and the other records are parsed together as one batch; if they still fail, they conflict
+with each other or with the split schema and the shard stops (`schema_mismatch`). Records are never
+cast one by one, since a one-row cast can coerce a value the batch parse rejected (2.5 -> True).
+Quotas from `ReaderLimits` stop reading with `QuotaExceeded`.
 
 Known approximations (documented, not silent): the schema is locked by the first batch of the
 selected split (datasets infers it from the first batch of the config's first split, which may be
@@ -21,6 +25,7 @@ from __future__ import annotations
 import codecs
 import io
 import json
+import math
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -401,50 +406,35 @@ class _JsonReader:
         yield from table_rows(table, self.schema.decode_paths())
 
     def _records(self, records: list[tuple[int, bytes]], *, kind: str) -> Iterator[ReadItem]:
-        """Record-by-record fallback for a batch that failed as a whole."""
-        good: list[tuple[int, bytes]] = []
-        outcome: dict[int, RowError | list[dict[str, Any]]] = {}
-        for position, line in records:
-            reason = _record_problem(line)
-            if reason is not None:
-                outcome[position] = _row_error(reason, position, kind)
-            else:
-                good.append((position, line))
+        """Fallback for a batch that failed as a whole (module docstring): unreadable records
+        become `RowError`s, the rest is parsed together or the shard stops."""
+        errors = {
+            position: _row_error(reason, position, kind)
+            for position, line in records
+            if (reason := _record_problem(line)) is not None
+        }
+        good = [(position, line) for position, line in records if position not in errors]
+        rows: Iterator[dict[str, Any]] = iter(())
         if good:
-            rows = self._rows_together(good)
-            if rows is not None:
-                for (position, _), row in zip(good, rows, strict=True):
-                    outcome[position] = [row]
-            else:
-                for position, line in good:
-                    try:
-                        table = self._parse(line)
-                    except _BatchFailed:
-                        outcome[position] = _row_error("schema_mismatch", position, kind)
-                        continue
-                    self.schema.started = True
-                    outcome[position] = list(table_rows(table, self.schema.decode_paths()))
+            try:
+                table = self._parse(b"\n".join(line for _, line in good))
+            except _BatchFailed as exc:
+                raise ShardBroken("schema_mismatch", **{kind: good[0][0]}) from exc
+            if table.num_rows != len(good):
+                raise ShardBroken("schema_mismatch", **{kind: good[0][0]})
+            self.schema.started = True
+            rows = table_rows(table, self.schema.decode_paths())
         for position, _ in records:
-            item = outcome[position]
-            if isinstance(item, RowError):
+            if position in errors:
                 self.info.errors += 1
-                yield item
+                yield errors[position]
             else:
-                self.info.rows += len(item)
-                yield from item
-
-    def _rows_together(self, good: list[tuple[int, bytes]]) -> list[dict[str, Any]] | None:
-        try:
-            table = self._parse(b"\n".join(line for _, line in good))
-        except _BatchFailed:
-            return None
-        if table.num_rows != len(good):
-            return None
-        self.schema.started = True
-        return list(table_rows(table, self.schema.decode_paths()))
+                self.info.rows += 1
+                yield next(rows)
 
 
 def _record_problem(line: bytes) -> str | None:
+    """Why pyarrow cannot read this record as one JSON object (None = it can)."""
     if not line:
         return "json_parse"
     try:
@@ -452,10 +442,26 @@ def _record_problem(line: bytes) -> str | None:
     except UnicodeDecodeError:
         return "invalid_utf8"
     try:
-        value = json.loads(text)
-    except ValueError:
+        value = json.loads(text, object_pairs_hook=_unique_keys, parse_float=_finite_float)
+    except ValueError:  # bad syntax, a duplicate key or a float pyarrow cannot store
         return "json_parse"
     return None if isinstance(value, dict) else "not_an_object"
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """pyarrow rejects an object that repeats a key ("Column(/a) was specified twice")."""
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate key")
+    return result
+
+
+def _finite_float(literal: str) -> float:
+    """pyarrow rejects float literals beyond double range ("Number too big to be stored")."""
+    value = float(literal)
+    if math.isinf(value):
+        raise ValueError("float overflow")
+    return value
 
 
 def _row_error(reason: str, position: int, kind: str) -> RowError:

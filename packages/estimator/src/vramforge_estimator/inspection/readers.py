@@ -96,7 +96,8 @@ REASON_MESSAGES: dict[str, str] = {
     "csv_unreadable": "CSV로 해석할 수 없습니다.",
     "parquet_unreadable": "Parquet 파일 구조가 손상되었습니다.",
     "arrow_unreadable": "Arrow 파일 구조가 손상되었습니다.",
-    "schema_mismatch": "다른 레코드나 파일과 컬럼 구성이 달라 함께 읽을 수 없습니다.",
+    "schema_mismatch": "다른 레코드나 파일과 컬럼 구성 또는 값의 형식이 달라 함께 읽을 수 "
+    "없습니다.",
     "compressed_columnar": "압축된 Parquet/Arrow 파일은 지원하지 않습니다.",
     "compression_not_supported": "지원하지 않는 압축 형식입니다.",
     "parquet_filters": "row filter가 지정된 Parquet 설정은 지원하지 않습니다.",
