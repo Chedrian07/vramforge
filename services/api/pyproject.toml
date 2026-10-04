@@ -1,0 +1,28 @@
+[project]
+name = "vramforge-api"
+version = "0.1.0"
+description = "VRAMForge HTTP API: analyses, inspection, SSE progress, exports, access control"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "vramforge-estimator[analysis]",
+    "fastapi>=0.142",
+    "uvicorn[standard]>=0.54",
+    "sqlalchemy>=2.1,<2.2",
+    "psycopg[binary]>=3.3",
+    "alembic>=1.20",
+    "redis>=6",
+    "rq>=2.12",
+    "sse-starlette>=3.5",
+    "pydantic-settings>=2.15",
+    "python-multipart>=0.0.32",
+]
+
+[project.scripts]
+vramforge-api = "vramforge_api.__main__:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vramforge_api"]
