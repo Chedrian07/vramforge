@@ -190,8 +190,37 @@ def test_bnb_skip_semantics() -> None:
     assert not matching.bnb_skip_match("model.layers.3.mlp.gate_proj", ["lm_head"])
 
 
-@pytest.mark.parametrize("pattern", [r"(a+)+$", r"(.*)*x", r"(\w+\.)+q_proj", "x" * 600, "("])
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"(a+)+$",
+        r"(.*)*x",
+        r"(\w+\.)+q_proj",
+        r"(.|\w)*Z",  # overlapping alternation under a repeat: exponential
+        r"((a|a))*Z",  # the same hidden in a nested group
+        r"(a|b){2,}c",
+        r".*.*.*.*Z",  # four repeats: O(n^4) per failing name
+        r"\w+\.\d+\..*_proj.*",
+        "x" * 600,
+        "(",
+    ],
+)
 def test_unsafe_or_invalid_patterns_are_rejected(pattern: str) -> None:
     with pytest.raises(EstimatorError) as err:
         matching.peft_regex_match("model.layers.0.self_attn.q_proj", pattern)
     assert err.value.issue.code is ErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    ("pattern", "repeats"),
+    [
+        (r".*language_model.*\.(q|k|v|o)_proj", 2),
+        (r"model\.layers\.\d+\.(self_attn|mlp)\.\w+", 2),
+        (r"(.*\.)?(down_proj)$", 1),  # rank_pattern wrapper; "?" is bounded
+        (r"(^|.*\.)mlp($|\..*)", 2),  # modules_to_save wrapper
+        (r"[*+]\*\+x{2}", 1),  # class contents and escapes are literals; {2} counts
+    ],
+)
+def test_typical_patterns_are_accepted(pattern: str, repeats: int) -> None:
+    assert matching.pattern_complexity(pattern) == (repeats, False)
+    matching.compile_user_regex(pattern)

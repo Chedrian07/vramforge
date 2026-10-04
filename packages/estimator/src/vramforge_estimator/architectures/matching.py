@@ -2,8 +2,9 @@
 
 Every rule mirrors the cited source so that "which modules are adapted / quantized / saved" is
 decided exactly like the trainer will (docs/research/loading-quantization-peft.md §2.2, §5.4,
-§5.5). Patterns come from user requests, so regexes are size-limited and nested quantifiers are
-rejected before compiling (Python `re` has no timeout).
+§5.5). Patterns come from user requests and Python `re` has no timeout, so before compiling a
+pattern is size-limited, may hold at most 3 repeats, and may not repeat a group that itself repeats,
+alternates or nests a group (the catastrophic-backtracking shapes).
 """
 
 from __future__ import annotations
@@ -16,8 +17,60 @@ from vramforge_estimator.errors import EstimatorError, make_issue
 from vramforge_estimator.schemas import ErrorCode, Stage
 
 MAX_PATTERN_LENGTH = 512
-# `(...+)+`, `(...*)*`, `(...+){2,}` style nesting: classic catastrophic backtracking shapes.
-_NESTED_QUANTIFIER = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*[+*{]")
+# Each repeat (`*`, `+`, `{m,n}`) multiplies the split points a failing match backtracks over
+# (`.*.*.*.*X` is O(n^k) per name); with 3 a failing match over all module names stays in ms.
+MAX_REPEATS = 3
+_BRACE_QUANTIFIER = re.compile(r"\{\d*,?\d*\}")
+
+
+def _syntax(pattern: str) -> list[tuple[int, str]]:
+    """(index, char) of regex syntax outside character classes and escapes."""
+    out: list[tuple[int, str]] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            j = i + 1 + (pattern[i + 1 : i + 2] == "^")
+            j += pattern[j : j + 1] == "]"  # a leading "]" is a literal
+            while j < n and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            i = j + 1
+            continue
+        out.append((i, ch))
+        i += 1
+    return out
+
+
+def _is_repeat(pattern: str, i: int) -> bool:
+    return i < len(pattern) and (
+        pattern[i] in "*+"
+        or (pattern[i] == "{" and _BRACE_QUANTIFIER.match(pattern, i) is not None)
+    )
+
+
+def pattern_complexity(pattern: str) -> tuple[int, bool]:
+    """(number of repeats, whether a repeated group repeats, alternates or nests inside).
+
+    The second shape (`(a+)+`, `(\\w+\\.)+`, `(.|\\w)*`, `((a|a))*`) backtracks exponentially in
+    the name length; Python `re` has no timeout, so such patterns are refused up front.
+    """
+    repeats, dangerous = 0, False
+    stack: list[bool] = []  # per open group: its body repeats, alternates or nests a group
+    for i, ch in _syntax(pattern):
+        if _is_repeat(pattern, i):
+            repeats += 1
+        if ch == "(":
+            if stack:
+                stack[-1] = True
+            stack.append(False)
+        elif ch == ")" and stack:
+            dangerous |= stack.pop() and _is_repeat(pattern, i + 1)
+        elif stack and (ch == "|" or _is_repeat(pattern, i)):
+            stack[-1] = True
+    return repeats, dangerous
 
 
 def pattern_error(pattern: str, reason: str) -> EstimatorError:
@@ -36,8 +89,13 @@ def pattern_error(pattern: str, reason: str) -> EstimatorError:
 def compile_user_regex(pattern: str) -> re.Pattern[str]:
     if len(pattern) > MAX_PATTERN_LENGTH:
         raise pattern_error(pattern, f"{MAX_PATTERN_LENGTH}자를 넘습니다.")
-    if _NESTED_QUANTIFIER.search(pattern):
-        raise pattern_error(pattern, "중첩 반복(예: (a+)+)은 허용하지 않습니다.")
+    repeats, dangerous = pattern_complexity(pattern)
+    if dangerous:
+        raise pattern_error(
+            pattern, "반복되는 그룹 안의 반복·선택·그룹(예: (a+)+, (a|b)*)은 허용하지 않습니다."
+        )
+    if repeats > MAX_REPEATS:
+        raise pattern_error(pattern, f"반복 기호(*, +, {{m,n}})는 {MAX_REPEATS}개까지 허용합니다.")
     try:
         return re.compile(pattern)
     except re.error as exc:
