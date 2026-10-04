@@ -14,6 +14,10 @@ sampler order needs torch's RNG, so ``sampler_max`` is only filled when the orde
 the shape (one row per batch, all rows in one batch, or one unique prompt per GRPO generation);
 otherwise it stays None and a SAMPLER_ORDER_NOT_REPRODUCED info issue says the structural worst
 case is used.
+
+``batch_key`` chains the layers of plan §16.3: the table's ``preprocess_key`` (filled by
+``scan.load_lengths``) plus collator, sampler (including the planned row count N, which a sample
+scan of the same preprocessing changes), microbatch, padding, packing and distribution.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ from vramforge_estimator.units import round_up
 
 from .grpo import GrpoLayout, resolve_layout
 
-PLANNER_VERSION = "1"
+PLANNER_VERSION = "2"  # 2: batch_key from preprocess_key + N; sampler-order code
 CHUNKED_LM_HEAD_CHUNK = 256  # trl sft_trainer.py:87 (_CHUNKED_LM_HEAD_CHUNK_SIZE)
 
 
@@ -73,8 +77,8 @@ def _longest(values: Sequence[int | None], k: int) -> list[int]:
 
 
 def _lengths_digest(lengths: LengthTable) -> str:
-    """Content key of the length table. Stands in for preprocess_key, which the planner's
-    contract does not receive (reported as a change request)."""
+    """Content key of a table that does not carry a preprocess_key (built in memory rather than
+    loaded from a scan artifact); stands in for it in the batch key."""
     h = hashlib.sha256()
     for column in (
         lengths.prompt_tokens,
@@ -224,7 +228,7 @@ def _plan_pairs_or_samples(lengths: LengthTable, resolved: ResolvedConfig, seed:
         worst_case=worst,
         sampler_max=sampler_max,
         issues=issues,
-        batch_key=_batch_key(lengths, resolved, seed, collator, sampler, batch),
+        batch_key=_batch_key(lengths, resolved, seed, collator, sampler, batch, rows),
     )
 
 
@@ -340,7 +344,7 @@ def _plan_grpo(lengths: LengthTable, resolved: ResolvedConfig, seed: int) -> Bat
         grpo=plan_grpo,
         issues=issues,
         batch_key=_batch_key(
-            lengths, resolved, seed, "grpo_left_prompt_right_completion", sampler, b
+            lengths, resolved, seed, "grpo_left_prompt_right_completion", sampler, b, rows
         ),
     )
 
@@ -414,10 +418,14 @@ def _batch_key(
     collator: str,
     sampler: SamplerPlan,
     microbatch: int,
+    rows: int,
 ) -> str:
+    """plan §16.3: preprocess_key + collator + sampler + microbatch + padding + packing +
+    distribution. The sampler depends on N (tail batch, RepeatSampler drops), so N is part of it;
+    that also separates a sample scan from the full scan of the same preprocessing."""
     grpo = resolved.grpo.model_dump(mode="json") if resolved.grpo else None
     return keys.batch_key(
-        preprocess_key=_lengths_digest(lengths),
+        preprocess_key=lengths.preprocess_key or _lengths_digest(lengths),
         collator={
             "name": collator,
             "objective": resolved.objective.value,
@@ -426,7 +434,13 @@ def _batch_key(
             "trl": "1.14.1",
             "planner_version": PLANNER_VERSION,
         },
-        sampler={"kind": sampler.kind, "seed": seed, "drop_last": False, "grpo": grpo},
+        sampler={
+            "kind": sampler.kind,
+            "seed": seed,
+            "drop_last": False,
+            "rows": rows,
+            "grpo": grpo,
+        },
         microbatch=microbatch,
         pad_to_multiple_of=resolved.pad_to_multiple_of,
         packing=False,

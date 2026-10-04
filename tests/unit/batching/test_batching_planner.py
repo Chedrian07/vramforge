@@ -107,6 +107,29 @@ def test_batch_key_tracks_the_batch_layer(make_resolved, make_table) -> None:
     assert base not in others and len(others) == 4
 
 
+def test_batch_key_chains_the_preprocess_key(make_resolved, make_table) -> None:
+    """plan §16.3: batch_key = preprocess_key + batch-layer settings."""
+    config = make_resolved(SFT, microbatch=2)
+
+    def key(table, **cfg) -> str:
+        return plan_batches(table, cfg.get("resolved", config), seed=42).batch_key
+
+    scanned = make_table(sequence_tokens=[100, 300, 50])
+    scanned.preprocess_key = "pre_abc"
+    same_scan = make_table(sequence_tokens=[100, 300, 50])
+    same_scan.preprocess_key = "pre_abc"
+    assert key(scanned) == key(same_scan)
+    other_scan = make_table(sequence_tokens=[100, 300, 50])
+    other_scan.preprocess_key = "pre_def"  # e.g. another chat template, same lengths
+    assert key(other_scan) != key(scanned)
+    in_memory = make_table(sequence_tokens=[100, 300, 50])  # no preprocess key: content hash
+    assert key(in_memory) != key(scanned)
+    sample = make_table(sequence_tokens=[100, 300])  # a sample scan of the same preprocessing
+    sample.preprocess_key = "pre_abc"
+    assert key(sample) != key(scanned)
+    assert key(scanned, resolved=make_resolved(SFT, microbatch=1)) != key(scanned)
+
+
 # ---------------------------------------------------------------- GRPO
 
 

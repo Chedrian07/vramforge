@@ -176,6 +176,14 @@ def test_dpo_rejected_outlier_reaches_the_batch_shape(handle, make_stream, make_
     assert plan.worst_case.padded_length == longest
     assert plan.worst_case.token_slots == 4 * longest
     assert "train:1" in plan.worst_case.source_row_ids
+    # the batch key chains the scan's preprocess key (plan §16.3)
+    table = load_lengths(out.artifact_path)
+    assert table.preprocess_key == "pre_dpo"
+    renamed = load_lengths(out.artifact_path)
+    renamed.preprocess_key = "pre_other"
+    config = resolved(Objective.DPO, 2)
+    assert plan_batches(renamed, config, seed=42).batch_key != plan.batch_key
+    assert plan_batches(table, config, seed=42).batch_key == plan.batch_key
 
 
 def test_long_rows_are_kept_whole_and_flagged_against_a_small_context(
