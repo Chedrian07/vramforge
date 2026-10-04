@@ -129,6 +129,7 @@ def test_unknown_split_and_bad_eval_split() -> None:
     issue = unknown.issues[0]
     assert issue.code == ErrorCode.DATASET_SPLIT_REQUIRED
     assert issue.details["options"] == ["train", "test"]
+    assert [c.name for c in unknown.columns] == ["prompt", "completion"]  # still shown
     same = inspect(source, Objective.SFT, split="train", eval_split="train")
     assert codes(same) == [ErrorCode.DATASET_SPLIT_REQUIRED]
     assert same.issues[0].details["field"] == "dataset.eval_split"
@@ -294,3 +295,8 @@ def test_open_rows_contract_and_errors(tmp_path: Path) -> None:
     with pytest.raises(EstimatorError) as unsupported:
         open_rows(local_source(txt), config=None, split="train", access=SourceAccess())
     assert unsupported.value.issue.code == ErrorCode.DATASET_FORMAT_UNSUPPORTED
+
+
+def test_local_parquet_split_rows_come_from_footers() -> None:
+    result = inspect(local_source(FIXTURES / "prompt_completion.parquet"), Objective.SFT)
+    assert [(s.name, s.num_rows, s.num_bytes) for s in result.splits] == [("train", 5, None)]

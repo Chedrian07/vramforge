@@ -85,7 +85,7 @@ class DatasetRowStream:
         self.config: str | None = config.name
         self.shards = [data_file.shard_id for data_file in split.files]
         self.total_rows = (
-            split.num_rows if split.num_rows is not None else _footer_rows(files, split)
+            split.num_rows if split.num_rows is not None else footer_rows(files, split)
         )
         self.issues: list[Issue] = []
         self.file_formats: dict[str, str] = {}
@@ -295,7 +295,7 @@ def _issue(
     )
 
 
-def _footer_rows(files: SourceFiles, split: SplitLayout) -> int | None:
+def footer_rows(files: SourceFiles, split: SplitLayout) -> int | None:
     """Exact row count from local Parquet footers (cheap); None for anything else."""
     if files.kind == "hf" or not split.files:
         return None

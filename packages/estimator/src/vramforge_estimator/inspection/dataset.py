@@ -79,6 +79,7 @@ def inspect_dataset_details(
     from .dataset_layout import resolve_layout
     from .dataset_mapping import analyze_mapping
     from .dataset_schema import preview_columns, read_preview
+    from .dataset_stream import footer_rows
     from .readers import ReaderLimits
 
     limits = limits or ReaderLimits()
@@ -100,7 +101,13 @@ def inspect_dataset_details(
     preview = None
     if config is not None:
         splits = [
-            DatasetSplitInfo(name=split.name, num_rows=split.num_rows, num_bytes=split.num_bytes)
+            DatasetSplitInfo(
+                name=split.name,
+                num_rows=split.num_rows
+                if split.num_rows is not None
+                else footer_rows(files, split),
+                num_bytes=split.num_bytes,
+            )
             for split in config.splits
         ]
         selected_split, auto_selected, split_issue = _select_split(config, ref.split)
@@ -115,7 +122,7 @@ def inspect_dataset_details(
             # Columns come from the selected split; while the split is still undecided the first
             # split of the config stands in (datasets shares one schema across a config's splits).
             preview_split = config.split(selected_split) if selected_split else None
-            if preview_split is None and ref.split is None and config.splits:
+            if preview_split is None and config.splits:
                 preview_split = config.splits[0]
             if preview_split is not None:
                 preview = read_preview(
