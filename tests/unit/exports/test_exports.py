@@ -149,6 +149,7 @@ def test_trainer_config_for_ready_results(
         assert args["padding_free"] is False
     if obj is Objective.SFT:
         assert args["packing"] is False and args["eval_packing"] is False
+        assert args["loss_type"] == "chunked_nll"
     if obj is Objective.DPO:
         assert args["loss_type"] == ["sigmoid"] and args["precompute_ref_log_probs"] is False
     if obj is Objective.GRPO:
@@ -206,3 +207,38 @@ def test_unsupported_result_has_no_trainer_config(tmp_path: Path, monkeypatch) -
     with pytest.raises(EstimatorError):
         export_trainer_config(result)
     assert yaml.safe_load(export_plan_yaml(result).decode())["memory"] is None
+
+
+@pytest.mark.parametrize(
+    ("loss_path", "loss_type"), [("trl_chunked_nll", "chunked_nll"), ("hf_ce", "nll")]
+)
+def test_sft_loss_path_maps_to_trl_loss_type(
+    tmp_path: Path, monkeypatch, loss_path: str, loss_type: str
+) -> None:
+    result = build_result("sft", tmp_path, monkeypatch, resolved_overrides={"loss_path": loss_path})
+    args = yaml.safe_load(export_trainer_config(result))["trl"]["args"]
+    assert args["loss_type"] == loss_type
+
+
+def test_unmappable_sft_loss_path_is_refused(tmp_path: Path, monkeypatch) -> None:
+    result = build_result(
+        "sft", tmp_path, monkeypatch, resolved_overrides={"loss_path": "liger_fused"}
+    )
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(result)
+    assert "loss" in exc.value.issue.user_message
+
+
+def test_conditional_refusal_explains_with_report_warnings(tmp_path: Path, monkeypatch) -> None:
+    reward = fakes.issue(ErrorCode.GRPO_REWARD_UNSPECIFIED, "reward가 지정되지 않았습니다.")
+    result = build_result(
+        "grpo",
+        tmp_path,
+        monkeypatch,
+        readiness=TrainingReadiness.CONDITIONAL,
+        report_kwargs={"warnings": [reward.model_copy(update={"severity": Severity.WARNING})]},
+    )
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(result)
+    assert exc.value.issue.code is ErrorCode.GRPO_REWARD_UNSPECIFIED
+    assert "reward가 지정되지 않았습니다." in exc.value.issue.user_message

@@ -126,7 +126,14 @@ OPTIMIZERS = {
     "adamw_bnb_8bit": "adamw_bnb_8bit",
     "paged_adamw_8bit": "paged_adamw_8bit",
 }
-SFT_LOSS_TYPES = {"nll", "dft", "chunked_nll"}
+# Resolved SFT loss path (profile naming) -> SFTConfig.loss_type.
+SFT_LOSS_TYPES = {
+    "trl_chunked_nll": "chunked_nll",
+    "chunked_nll": "chunked_nll",
+    "hf_ce": "nll",
+    "nll": "nll",
+    "dft": "dft",
+}
 OUTPUT_COLUMNS = {
     Objective.SFT: ["prompt", "completion"],
     Objective.DPO: ["prompt", "chosen", "rejected"],
@@ -159,6 +166,8 @@ def check_ready(result: AnalysisResult) -> None:
         ]
         code = codes[0] if codes else ErrorCode.UNSUPPORTED_BACKEND_COMBINATION
         reasons = [i.user_message for i in (report.blockers if report else [])][:3]
+        if not reasons and report is not None:
+            reasons = [i.user_message for i in report.warnings][:3]
         if not reasons:
             reasons = ["학습 준비 상태를 확인하세요(데이터 보존, 호환성, 미지정 항목)."]
         raise _not_ready(result, reasons, code)
@@ -195,6 +204,12 @@ def check_ready(result: AnalysisResult) -> None:
                 )
     if resolved is not None and resolved.objective is Objective.DPO and resolved.dpo is None:
         problems.append("DPO 설정이 해석되지 않았습니다.")
+    if (
+        resolved is not None
+        and resolved.objective is Objective.SFT
+        and resolved.loss_path not in SFT_LOSS_TYPES
+    ):
+        problems.append("적용한 loss 경로를 TRL SFTConfig.loss_type으로 옮길 수 없습니다.")
     if problems:
         raise _not_ready(result, problems, ErrorCode.REQUESTED_OPTION_NOT_EFFECTIVE)
 
@@ -250,8 +265,7 @@ def build_trainer_config(result: AnalysisResult) -> dict[str, Any]:
                 "assistant_only_loss": False,
             }
         )
-        if resolved.loss_path in SFT_LOSS_TYPES:
-            args["loss_type"] = resolved.loss_path
+        args["loss_type"] = SFT_LOSS_TYPES[resolved.loss_path]
     elif objective is Objective.DPO:
         dpo = resolved.dpo
         assert dpo is not None
