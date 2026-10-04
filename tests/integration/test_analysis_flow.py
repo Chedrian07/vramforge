@@ -232,5 +232,5 @@ def test_stub_modules_give_an_honest_partial_result(
     client = client_factory(settings)
     status = _analyze(client, request_body())
     assert status["status"] == "PARTIAL"
-    assert status["error"]["details"]["reason"] == "not_implemented"
+    assert status["error"]["code"] == "NOT_IMPLEMENTED"
     assert status["result"]["memory"] is None and status["result"]["batch_plan"] is None

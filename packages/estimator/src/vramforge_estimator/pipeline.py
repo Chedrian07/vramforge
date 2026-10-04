@@ -6,13 +6,16 @@ later stages are not executed (no invented lengths or numbers).
 
 Stopping rules:
 
-- An `EstimatorError` or `NotImplementedError` from a stage halts the pipeline. The issue is
-  recorded in `result.errors` with ``details["pipeline_halted"] = True``; `terminal_status` turns
-  that into PARTIAL (something was verified) or FAILED (nothing was). Other exceptions propagate
-  to the worker, which marks the job FAILED with INTERNAL_ERROR.
+- An `EstimatorError` or `NotImplementedError` (NOT_IMPLEMENTED) from a stage halts the pipeline.
+  The issue is recorded in `result.errors` with ``details["pipeline_halted"] = True``;
+  `terminal_status` turns that into PARTIAL (something was verified) or FAILED (nothing was).
+  Other exceptions propagate to the worker, which marks the job FAILED with INTERNAL_ERROR.
 - Ambiguous config/split/mapping that the request leaves unspecified ends the job with
   `needs_input` (NEEDS_INPUT); conversational data whose model has no chat template ends it with
-  TEMPLATE_REQUIRED.
+  TEMPLATE_REQUIRED. A dataset-inspection error that no choice can fix (e.g. an unreadable file
+  format, denied access) halts with that issue instead of asking.
+- A split without rows (the reader's EMPTY_DATASET, or a scan that read to the end without a row)
+  halts with EMPTY_DATASET after the scan, before validation and batch planning.
 - An unsupported architecture/combination is a result, not a failure: the scan still runs (data
   statistics are useful), batch planning and memory estimation are skipped, and the estimate
   evidence is `metadata_only`.
@@ -261,13 +264,49 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _not_implemented(stage: Stage, component: str) -> Issue:
+def _not_implemented(stage: Stage, component: str, *, halts: bool) -> Issue:
+    message = (
+        "이 분석 단계는 현재 빌드에서 아직 구현되지 않아 이후 단계를 진행하지 않았습니다."
+        if halts
+        else "이 계산은 현재 빌드에서 아직 구현되지 않아 결과에 포함하지 않았습니다."
+    )
+    return make_issue(ErrorCode.NOT_IMPLEMENTED, message, stage=stage, component=component)
+
+
+def _blocking_dataset_issues(ds: DatasetInspection | None) -> list[Issue]:
+    """Errors of the dataset inspection that no config/split/mapping choice can resolve (e.g. an
+    unreadable file format, denied access, an internal error)."""
+    if ds is None:
+        return []
+    return [
+        issue
+        for issue in ds.issues
+        if issue.severity is Severity.ERROR and issue.code not in _NEEDS_INPUT_CODES
+    ]
+
+
+def _empty_split_issue(scan_result: DatasetScanResult, issues: list[Issue]) -> Issue | None:
+    """Why a scanned split gives nothing to plan, or None when it has rows.
+
+    The reader's own EMPTY_DATASET report wins; a split that was read to the end without a single
+    row is empty; a read that failed before the first row is reported with its own error rather
+    than claiming the split is empty."""
+    reported = next((i for i in issues if i.code is ErrorCode.EMPTY_DATASET), None)
+    if reported is not None:
+        return reported
+    if scan_result.rows_seen > 0:
+        return None
+    if scan_result.coverage is not ScanCoverage.COMPLETE:
+        failure = next((i for i in issues if i.severity is Severity.ERROR), None)
+        if failure is not None:
+            return failure
     return make_issue(
-        ErrorCode.INTERNAL_ERROR,
-        "이 분석 단계는 현재 빌드에서 아직 구현되지 않아 이후 단계를 진행하지 않았습니다.",
-        stage=stage,
-        component=component,
-        reason="not_implemented",
+        ErrorCode.EMPTY_DATASET,
+        "선택한 split에 row가 하나도 없어 batch 계획과 메모리 산정을 할 수 없습니다. "
+        "config와 split을 확인하세요.",
+        stage=Stage.TOKENIZING,
+        config=scan_result.config,
+        split=scan_result.split,
     )
 
 
@@ -318,6 +357,26 @@ def _needs_chat_template(
     kinds = {c.name: c.kind for c in ds.columns} if ds is not None else {}
     roles = (mapping.messages, mapping.prompt, mapping.chosen, mapping.rejected, mapping.completion)
     return any(col and kinds.get(col) == "messages" for col in roles)
+
+
+def _choice_from_issue(issue: Issue) -> NeedsInputChoice:
+    """The question an inspector's needs-input error asks (its options when it lists them)."""
+    default_field = {
+        ErrorCode.DATASET_CONFIG_REQUIRED: "dataset.config",
+        ErrorCode.DATASET_SPLIT_REQUIRED: "dataset.split",
+    }.get(issue.code, "dataset.mapping")
+    details = issue.details
+    field_name = details.get("field")
+    if not (isinstance(field_name, str) and field_name.startswith("dataset.")):
+        field_name = default_field
+    options = details.get("options")
+    suggested = details.get("suggested")
+    return NeedsInputChoice(
+        field=field_name,
+        options=[str(o) for o in options] if isinstance(options, list) else [],
+        suggested=suggested if isinstance(suggested, str) else None,
+        reason=issue.user_message,
+    )
 
 
 def _mapping_label(mapping: ColumnMapping) -> str:
@@ -451,15 +510,20 @@ class _Run:
     readiness: TrainingReadiness | None = None
     stage: Stage | None = None
     halted_status: JobStatus | None = None
-    _seen: set[tuple[str, str, str]] = field(default_factory=set)
+    _seen: set[tuple[str, str, str, str]] = field(default_factory=set)
 
     scan_issues: list[Issue] = field(default_factory=list)
     context_exceeded_budgets: list[int] = field(default_factory=list)
 
     # -- issue bookkeeping ---------------------------------------------------------
     @staticmethod
-    def _key(issue: Issue) -> tuple[str, str, str]:
-        return (issue.code.value, issue.user_message, str(issue.stage or ""))
+    def _key(issue: Issue) -> tuple[str, str, str, str]:
+        return (
+            issue.code.value,
+            issue.user_message,
+            str(issue.stage or ""),
+            issue.affected_component or "",
+        )
 
     def note(self, issue: Issue, *, live: bool = True) -> None:
         key = self._key(issue)
@@ -487,9 +551,17 @@ class _Run:
         raise _Halt
 
     def attempt(
-        self, component: str, fn: Callable[..., T], *args: Any, **kwargs: Any
+        self,
+        component: str,
+        fn: Callable[..., T],
+        *args: Any,
+        _halts: bool = True,
+        **kwargs: Any,
     ) -> tuple[T | None, Issue | None]:
-        """Run one library call; failures become an issue (cancellation always halts)."""
+        """Run one library call; failures become an issue (cancellation always halts).
+
+        `_halts=False` marks optional outputs whose failure does not stop the pipeline (it only
+        changes the wording of a NOT_IMPLEMENTED issue)."""
         stage = self.stage or Stage.REQUEST
         try:
             return fn(*args, **kwargs), None
@@ -501,7 +573,7 @@ class _Run:
                 issue = issue.model_copy(update={"stage": stage})
             return None, issue
         except NotImplementedError:
-            return None, _not_implemented(stage, component)
+            return None, _not_implemented(stage, component, halts=_halts)
         raise AssertionError("unreachable")  # pragma: no cover
 
     def call(self, component: str, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
@@ -587,6 +659,9 @@ class _Run:
                 needs_input = ds_issue
             else:
                 failures.append(ds_issue)
+        # e.g. an unreadable file or denied access: no config/split/mapping choice can fix it, so
+        # it stops the run instead of asking the user to choose from nothing.
+        failures.extend(_blocking_dataset_issues(ds))
         if inventory is not None:
             compat_issue = self.resolve_compatibility(halt=False)
             if compat_issue is not None:
@@ -642,18 +717,22 @@ class _Run:
         self.readiness = report.readiness
         return None
 
-    def ask_for_input(self, choices: list[NeedsInputChoice], extra_issue: Issue | None) -> None:
+    def ask_for_input(
+        self,
+        choices: list[NeedsInputChoice],
+        extra_issue: Issue | None,
+        *,
+        candidates: list[ColumnMapping] | None = None,
+    ) -> None:
         ds = self.ds_inspection
         if extra_issue is not None and not choices:
-            field_name = {
-                ErrorCode.DATASET_CONFIG_REQUIRED: "dataset.config",
-                ErrorCode.DATASET_SPLIT_REQUIRED: "dataset.split",
-            }.get(extra_issue.code, "dataset.mapping")
-            choices = [NeedsInputChoice(field=field_name, reason=extra_issue.user_message)]
+            choices = [_choice_from_issue(extra_issue)]
+        if candidates is None:
+            candidates = list(ds.mapping_candidates) if ds else []
         self.result.needs_input = NeedsInput(
             choices=choices,
             columns=[c.name for c in ds.columns] if ds else [],
-            mapping_candidates=list(ds.mapping_candidates) if ds else [],
+            mapping_candidates=candidates,
         )
         codes = {
             "dataset.config": ErrorCode.DATASET_CONFIG_REQUIRED,
@@ -875,6 +954,10 @@ class _Run:
         self.publish()
         if self.ctx.cancelled():
             self.halt(CancelledError(Stage.TOKENIZING).issue)
+        # A split without rows has no length to plan with: stop before validation and batching.
+        empty = _empty_split_issue(outcome_result, issues)
+        if empty is not None:
+            self.halt(empty)
 
     def scan_context(self) -> ScanContext:
         dataset = self.request.dataset
@@ -977,6 +1060,7 @@ class _Run:
                     tokenizer=self.tokenizer_manifest,
                     backend_verified_max=None,
                     extra_tokens=budget,
+                    _halts=False,
                 )
                 if per_budget is not None and per_budget.status == "exceeded":
                     exceeded.append(budget)
@@ -1199,6 +1283,7 @@ class _Run:
             self.inventory,
             self.resolved,
             manifests.model,
+            _halts=False,
         )
         self.result.host_ram_estimate = host
         if issue is not None:
@@ -1211,6 +1296,7 @@ class _Run:
             manifests.model,
             manifests.dataset,
             _artifact_bytes(self.lengths_path),
+            _halts=False,
         )
         self.result.disk_estimate = disk
         if issue is not None:
@@ -1221,6 +1307,7 @@ class _Run:
             memory.estimate_analysis_ram,
             scan_result.rows_seen if scan_result else None,
             self.tokenizer_bytes(),
+            _halts=False,
         )
         self.result.analysis_ram_estimate = analysis_ram
         if issue is not None:

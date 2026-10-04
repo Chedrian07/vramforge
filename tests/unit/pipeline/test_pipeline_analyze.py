@@ -86,7 +86,12 @@ def test_happy_path_runs_every_stage_and_fills_the_result(
     assert result.errors == []
     # host RAM / disk / analysis RAM are not implemented by the fakes: honest warnings only
     assert result.host_ram_estimate is None
-    assert {w.details.get("reason") for w in result.warnings} == {"not_implemented"}
+    assert {w.code for w in result.warnings} == {ErrorCode.NOT_IMPLEMENTED}
+    assert {w.affected_component for w in result.warnings} == {
+        "memory.estimate_host_ram",
+        "memory.estimate_disk",
+        "memory.estimate_analysis_ram",
+    }
     assert fakes.last_estimate_kwargs["readiness"] is TrainingReadiness.READY
 
     # artifacts for recompute: inventory, length artifact, manifest
@@ -124,10 +129,10 @@ def test_not_implemented_stage_halts_with_a_partial_result(
     assert terminal_status(result) is JobStatus.PARTIAL
     stopped = pipeline.halting_issue(result)
     assert stopped is not None
-    assert stopped.code is ErrorCode.INTERNAL_ERROR
+    assert stopped.code is ErrorCode.NOT_IMPLEMENTED
     assert stopped.stage is Stage.TOKENIZING
     assert stopped.affected_component == "scan.full_scan"
-    assert stopped.details["reason"] == "not_implemented"
+    assert "이후 단계를 진행하지 않았습니다" in stopped.user_message
     assert result.dataset_scan is None and result.batch_plan is None and result.memory is None
     assert result.model_inventory_summary is not None  # verified information is kept
     assert result.status.scan_coverage is ScanCoverage.FAILED
@@ -621,3 +626,149 @@ def test_a_cached_scan_that_cannot_be_adopted_is_scanned_again(
     assert "full_scan" in fakes.calls  # fell back to a real scan
     assert not (other_dir / "lengths" / "part-00007.parquet").exists()
     assert (other_dir / "lengths" / "part-00000.parquet").is_file()
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        ErrorCode.DATASET_FORMAT_UNSUPPORTED,
+        ErrorCode.SOURCE_ACCESS_DENIED,
+        ErrorCode.INTERNAL_ERROR,
+    ],
+)
+def test_blocking_dataset_inspection_errors_halt_instead_of_asking(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, code: ErrorCode
+) -> None:
+    """An inspection error no config/split/mapping choice can fix (unreadable file, denied access)
+    stops the run with that issue; it never becomes NEEDS_INPUT with nothing to choose from."""
+    unreadable = issue(code, "데이터 파일을 읽을 수 없습니다.", stage=Stage.INSPECTING)
+    fakes = FakeModules(
+        inspect_dataset=lambda *a, **k: dataset_inspection(
+            columns=[],
+            detected_format=None,
+            mapping_candidates=[],
+            suggested_mapping=None,
+            issues=[unreadable],
+        )
+    ).install(monkeypatch)
+    result = analyze(example_request(**{"dataset.mapping": None}), ctx)
+    assert terminal_status(result) is JobStatus.PARTIAL
+    assert result.needs_input is None
+    stopped = pipeline.halting_issue(result)
+    assert stopped is not None and stopped.code is code
+    assert stopped.user_message == unreadable.user_message
+    assert [e.code for e in result.errors] == [code]  # reported once, as the halting issue
+    assert "open_rows" not in fakes.calls and "full_scan" not in fakes.calls
+
+
+def test_needs_input_issues_and_warnings_do_not_halt(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vramforge_estimator.schemas import Severity
+
+    preview_note = issue(ErrorCode.SCAN_FAILED_ROWS, "미리보기에서 읽지 못한 레코드가 있습니다.")
+    preview_note = preview_note.model_copy(update={"severity": Severity.WARNING})
+    FakeModules(inspect_dataset=lambda *a, **k: dataset_inspection(issues=[preview_note])).install(
+        monkeypatch
+    )
+    result = analyze(example_request(), ctx)
+    assert terminal_status(result) is JobStatus.COMPLETED
+    assert preview_note.user_message in {w.user_message for w in result.warnings}
+
+
+def test_raised_needs_input_issue_keeps_its_options(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules(
+        inspect_dataset=raising(
+            issue(
+                ErrorCode.DATASET_CONFIG_REQUIRED,
+                "config를 선택해야 합니다.",
+                field="dataset.config",
+                options=["en", "ko"],
+                suggested="en",
+            )
+        )
+    ).install(monkeypatch)
+    result = analyze(example_request(), ctx)
+    assert terminal_status(result) is JobStatus.NEEDS_INPUT
+    (choice,) = result.needs_input.choices
+    assert (choice.field, choice.options, choice.suggested) == (
+        "dataset.config",
+        ["en", "ko"],
+        "en",
+    )
+
+
+def _scan_with(**changes):
+    """A full_scan fake whose result/issues are modified (e.g. zero rows)."""
+    from pipeline_fakes import FakeModules as Modules
+
+    base = Modules()._full_scan
+    extra_issues = changes.pop("issues", [])
+
+    def scan(stream, adapter, scan_ctx, **kwargs):
+        outcome = base(stream, adapter, scan_ctx, **kwargs)
+        outcome.result = outcome.result.model_copy(update=changes)
+        outcome.issues.extend(extra_issues)
+        return outcome
+
+    return scan
+
+
+def test_empty_split_halts_before_batching(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fakes = FakeModules(
+        full_scan=_scan_with(rows_seen=0, rows_ok=0, rows_expected=0, branches=[])
+    ).install(monkeypatch)
+    result = analyze(example_request(), ctx)
+    assert terminal_status(result) is JobStatus.PARTIAL
+    stopped = pipeline.halting_issue(result)
+    assert stopped.code is ErrorCode.EMPTY_DATASET
+    assert stopped.stage is Stage.TOKENIZING
+    assert stopped.details["split"] == "train"
+    assert result.dataset_scan is not None and result.dataset_scan.rows_seen == 0
+    assert result.batch_plan is None and result.memory is None
+    for name in ("validate_context", "plan_batches", "estimate_memory"):
+        assert name not in fakes.calls
+
+
+def test_reader_reported_empty_dataset_is_the_halting_issue(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vramforge_estimator.schemas import Severity
+
+    empty = issue(
+        ErrorCode.EMPTY_DATASET, "선택한 split에 row가 없습니다.", reason="no_rows"
+    ).model_copy(update={"severity": Severity.WARNING, "stage": Stage.TOKENIZING})
+    fakes = FakeModules(
+        full_scan=_scan_with(rows_seen=0, rows_ok=0, branches=[], issues=[empty])
+    ).install(monkeypatch)
+    result = analyze(example_request(), ctx)
+    stopped = pipeline.halting_issue(result)
+    assert stopped.code is ErrorCode.EMPTY_DATASET
+    assert stopped.details["reason"] == "no_rows"
+    assert stopped.severity.value == "error"  # a halt is always an error
+    assert "plan_batches" not in fakes.calls
+
+
+def test_unreadable_split_is_not_called_empty(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero rows because the first read failed: the read error explains it, not EMPTY_DATASET."""
+    read_error = issue(ErrorCode.SCAN_PARTIAL, "데이터를 읽는 중 오류가 발생했습니다.")
+    FakeModules(
+        full_scan=_scan_with(
+            rows_seen=0,
+            rows_ok=0,
+            branches=[],
+            coverage=ScanCoverage.FAILED,
+            issues=[read_error],
+        )
+    ).install(monkeypatch)
+    result = analyze(example_request(), ctx)
+    stopped = pipeline.halting_issue(result)
+    assert stopped.code is ErrorCode.SCAN_PARTIAL
+    assert stopped.user_message == read_error.user_message
+    assert result.status.scan_coverage is ScanCoverage.FAILED

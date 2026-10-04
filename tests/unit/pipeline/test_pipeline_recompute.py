@@ -15,7 +15,12 @@ from pipeline_fakes import (
 )
 
 from vramforge_estimator.pipeline import analyze, reanalysis_reasons, recompute
-from vramforge_estimator.schemas import AnalysisResult, ScanCoverage, TrainingReadiness
+from vramforge_estimator.schemas import (
+    AnalysisResult,
+    ErrorCode,
+    ScanCoverage,
+    TrainingReadiness,
+)
 
 
 @pytest.fixture
@@ -161,7 +166,7 @@ def test_recompute_reports_module_failures_as_a_partial_result(
     response = recompute(result, example_request(**{"training.lora.r": 8}), artifact_dir)
     assert response.requires_reanalysis is False
     assert response.result is not None and response.result.memory is None
-    assert response.result.errors[-1].details["reason"] == "not_implemented"
+    assert response.result.errors[-1].code is ErrorCode.NOT_IMPLEMENTED
 
 
 def test_recompute_can_newly_support_a_combination(
