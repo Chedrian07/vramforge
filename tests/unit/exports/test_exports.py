@@ -369,3 +369,43 @@ def test_report_keeps_unknown_excluded_and_conditional_apart(
     assert "조건부 결과입니다" in text
     assert "계획용 권장 용량 (조건부)" in text
     assert "- 경고 \\[GRPO_REWARD_UNSPECIFIED\\]" in text  # severity is spelled out
+
+
+def test_refusals_name_the_real_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A conditional result without compatibility issues (e.g. a CPU reward left out of the GPU
+    scope) and a NEEDS_INPUT result must not be refused as an unsupported combination."""
+    from vramforge_estimator.schemas import ExcludedComponent
+
+    cpu_reward = "CPU reward 함수는 학습 GPU를 쓰지 않는 것으로 계산했습니다."
+    conditional = build_result(
+        "grpo", tmp_path, monkeypatch, readiness=TrainingReadiness.CONDITIONAL
+    ).model_copy(
+        update={
+            "excluded_components": [
+                ExcludedComponent(name="EVALUATION", reason="평가 단계는 범위에서 제외했습니다."),
+                ExcludedComponent(name="REWARD", reason=cpu_reward),
+            ]
+        }
+    )
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(conditional)
+    issue = exc.value.issue
+    assert issue.code is ErrorCode.PROFILE_SCOPE_INCOMPLETE
+    assert issue.details["reasons"] == [cpu_reward]  # the default eval exclusion is no reason
+
+    from vramforge_estimator.pipeline import analyze
+
+    fakes.FakeModules(
+        inspect_dataset=lambda *a, **k: fakes.dataset_inspection(mapping_ambiguous=True)
+    ).install(monkeypatch)
+    artifact_dir = tmp_path / "needs-input"
+    artifact_dir.mkdir()
+    needs_input = analyze(
+        fakes.example_request(**{"dataset.mapping": None}),
+        fakes.FakeContext(artifact_dir=artifact_dir),
+    )
+    assert needs_input.needs_input is not None
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(needs_input)
+    assert exc.value.issue.code is ErrorCode.COLUMN_MAPPING_REQUIRED
+    assert needs_input.needs_input.choices[0].reason in exc.value.issue.user_message

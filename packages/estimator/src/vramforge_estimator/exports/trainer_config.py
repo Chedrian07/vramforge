@@ -32,6 +32,7 @@ from vramforge_estimator.schemas import (
     DatasetFormat,
     ErrorCode,
     Objective,
+    Phase,
     ReferenceStrategy,
     ResolvedConfig,
     RewardKind,
@@ -160,22 +161,49 @@ def _not_ready(result: AnalysisResult, reasons: list[str], code: ErrorCode) -> E
     )
 
 
+def _conditional_reasons(result: AnalysisResult) -> list[str]:
+    """Why a result without compatibility issues is conditional. The evaluation/checkpoint
+    phases the requested scope leaves out do not make a result conditional and are skipped."""
+    scope = result.requested_config.scope
+    by_scope = set()
+    if not scope.include_evaluation:
+        by_scope.add(Phase.EVALUATION.value)
+    if not scope.include_checkpoint_save:
+        by_scope.add(Phase.CHECKPOINT_SAVE_OR_CONSOLIDATE.value)
+    reasons = [x.reason for x in result.excluded_components if x.name not in by_scope]
+    audit = result.preservation_audit
+    if audit is None or audit.status is not DataPreservation.VERIFIED:
+        reasons.append("데이터 보존 검사가 검증 상태가 아닙니다.")
+    return reasons
+
+
 def check_ready(result: AnalysisResult) -> None:
     """Raise `EstimatorError` with the reason unless the result can be executed as-is."""
     stopped = halting_issue(result)
     if stopped is not None:
         # A PARTIAL/FAILED/CANCELLED run never verified the setup it would describe.
         raise _not_ready(result, [stopped.user_message], stopped.code)
+    if result.needs_input is not None:
+        # The dataset selection (config/split/mapping) is not settled yet.
+        reasons = [choice.reason for choice in result.needs_input.choices][:3]
+        code = result.errors[0].code if result.errors else ErrorCode.COLUMN_MAPPING_REQUIRED
+        raise _not_ready(result, reasons or ["데이터셋 설정을 선택해야 합니다."], code)
     report = result.compatibility_report
     readiness = result.status.training_readiness
     if readiness is not TrainingReadiness.READY:
-        codes = [i.code for i in (report.blockers if report else [])] + [
-            i.code for i in (report.warnings if report else [])
-        ]
-        code = codes[0] if codes else ErrorCode.UNSUPPORTED_BACKEND_COMBINATION
-        reasons = [i.user_message for i in (report.blockers if report else [])][:3]
-        if not reasons and report is not None:
-            reasons = [i.user_message for i in report.warnings][:3]
+        blockers = list(report.blockers) if report else []
+        warnings = list(report.warnings) if report else []
+        if blockers or warnings:
+            code = (blockers or warnings)[0].code
+            reasons = [i.user_message for i in (blockers or warnings)][:3]
+        elif readiness is TrainingReadiness.CONDITIONAL:
+            # No compatibility issue: something is outside the computed scope (e.g. a CPU or
+            # remote reward) or a data check is not verified. Never call that "unsupported".
+            code = ErrorCode.PROFILE_SCOPE_INCOMPLETE
+            reasons = _conditional_reasons(result)[:3]
+        else:
+            code = ErrorCode.UNSUPPORTED_BACKEND_COMBINATION
+            reasons = []
         if not reasons:
             reasons = ["학습 준비 상태를 확인하세요(데이터 보존, 호환성, 미지정 항목)."]
         raise _not_ready(result, reasons, code)
