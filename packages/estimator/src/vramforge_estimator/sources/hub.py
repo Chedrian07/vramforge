@@ -19,10 +19,11 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from vramforge_estimator import __version__
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ErrorCode, FileEntry, Stage
 
 from .base import SourceAccess
+from .issues import blocking_error
 from .references import Kind, configured_hf_endpoint, is_commit_sha
 
 logger = logging.getLogger(__name__)
@@ -168,14 +169,12 @@ def _checked_endpoint(access: SourceAccess) -> str:
     if parts.scheme != "https" and not access.allow_private_network:
         private = True
     if not host or (private and not access.allow_private_network):
-        raise EstimatorError(
-            make_issue(
-                ErrorCode.SOURCE_URL_NOT_ALLOWED,
-                "서버에 설정된 Hugging Face endpoint가 허용되지 않습니다"
-                "(https가 아니거나 사설 주소). 관리자 설정을 확인하세요.",
-                stage=Stage.RESOLVING,
-                reason="endpoint_not_allowed",
-            )
+        raise blocking_error(
+            ErrorCode.SOURCE_URL_NOT_ALLOWED,
+            "서버에 설정된 Hugging Face endpoint가 허용되지 않습니다"
+            "(https가 아니거나 사설 주소). 관리자 설정을 확인하세요.",
+            stage=Stage.RESOLVING,
+            details={"reason": "endpoint_not_allowed"},
         )
     return endpoint
 
@@ -196,16 +195,13 @@ def metadata_error(
     message: str | None = None,
     **details: object,
 ) -> EstimatorError:
-    return EstimatorError(
-        make_issue(
-            ErrorCode.MODEL_METADATA_UNAVAILABLE,
-            message or f"Hugging Face에서 {_label(kind)} 메타데이터를 가져오지 못했습니다.",
-            stage=stage,
-            retryable=retryable,
-            component=kind,
-            reason=reason,
-            **details,
-        )
+    return blocking_error(
+        ErrorCode.MODEL_METADATA_UNAVAILABLE,
+        message or f"Hugging Face에서 {_label(kind)} 메타데이터를 가져오지 못했습니다.",
+        stage=stage,
+        retryable=retryable,
+        component=kind,
+        details={"reason": reason, **details},
     )
 
 
@@ -223,16 +219,13 @@ def hub_error(exc: BaseException, *, kind: Kind, stage: Stage = Stage.RESOLVING)
     def issue(
         code: ErrorCode, message: str, reason: str, retryable: bool = False
     ) -> EstimatorError:
-        return EstimatorError(
-            make_issue(
-                code,
-                message,
-                stage=stage,
-                retryable=retryable,
-                component=kind,
-                reason=reason,
-                **details,
-            )
+        return blocking_error(
+            code,
+            message,
+            stage=stage,
+            retryable=retryable,
+            component=kind,
+            details={"reason": reason, **details},
         )
 
     if isinstance(exc, hf_errors.GatedRepoError):

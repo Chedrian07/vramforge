@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import (
     DatasetSourceRef,
     ErrorCode,
@@ -23,6 +23,8 @@ from vramforge_estimator.schemas import (
     SourceType,
     Stage,
 )
+
+from .issues import blocking_error
 
 Kind = Literal["model", "dataset"]
 
@@ -140,9 +142,7 @@ def is_commit_sha(revision: str | None) -> bool:
 
 
 def _error(code: ErrorCode, message: str, kind: Kind, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.RESOLVING, component=kind, **details)
-    )
+    return blocking_error(code, message, stage=Stage.RESOLVING, component=kind, details=details)
 
 
 def _normalize(

@@ -16,11 +16,12 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.keys import source_key, stable_hash
 from vramforge_estimator.schemas import ErrorCode, FileEntry, SourceManifest, SourceType, Stage
 
 from .base import ResolvedSource, SourceAccess
+from .issues import blocking_error
 from .references import Kind, NormalizedReference
 from .safetensors_frame import HeaderFrameError, read_header_frame
 
@@ -58,9 +59,7 @@ class LocalFile:
 
 
 def _error(code: ErrorCode, message: str, kind: Kind, **details: object) -> EstimatorError:
-    return EstimatorError(
-        make_issue(code, message, stage=Stage.RESOLVING, component=kind, **details)
-    )
+    return blocking_error(code, message, stage=Stage.RESOLVING, component=kind, details=details)
 
 
 def _escape(kind: Kind, reason: str) -> EstimatorError:
@@ -296,16 +295,13 @@ def build_local_source(norm: NormalizedReference, access: SourceAccess) -> Resol
             "changed_during_walk",
         ) from None
     except OSError as exc:
-        raise EstimatorError(
-            make_issue(
-                ErrorCode.MODEL_METADATA_UNAVAILABLE,
-                "로컬 파일을 읽는 중 입출력 오류가 났습니다. 잠시 후 다시 시도하세요.",
-                stage=Stage.RESOLVING,
-                retryable=True,
-                component=kind,
-                reason="io_error",
-                error_type=type(exc).__name__,
-            )
+        raise blocking_error(
+            ErrorCode.MODEL_METADATA_UNAVAILABLE,
+            "로컬 파일을 읽는 중 입출력 오류가 났습니다. 잠시 후 다시 시도하세요.",
+            stage=Stage.RESOLVING,
+            retryable=True,
+            component=kind,
+            details={"reason": "io_error", "error_type": type(exc).__name__},
         ) from None
     resolved = local_identity(kind, identity)
     if norm.revision is not None and norm.revision != resolved:

@@ -9,7 +9,7 @@ dataset inspector reads them with ``sources.references.normalize_dataset_referen
 
 from __future__ import annotations
 
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.keys import source_key
 from vramforge_estimator.schemas import (
     DatasetSourceRef,
@@ -22,6 +22,7 @@ from vramforge_estimator.schemas import (
 
 from . import hub
 from .base import ResolvedSource, SourceAccess
+from .issues import blocking_error
 from .local import build_local_source
 from .references import (
     NormalizedReference,
@@ -100,15 +101,13 @@ def _check_gated_access(
 ) -> None:
     """Gated repos expose metadata to everyone; probe one file to fail early without access."""
     if access.hf_token is None:
-        raise EstimatorError(
-            make_issue(
-                ErrorCode.SOURCE_ACCESS_DENIED,
-                "접근 승인이 필요한 저장소(gated)입니다. "
-                "승인받은 계정의 Hugging Face 토큰을 입력하세요.",
-                stage=Stage.RESOLVING,
-                component=norm.kind,
-                reason="gated_without_token",
-            )
+        raise blocking_error(
+            ErrorCode.SOURCE_ACCESS_DENIED,
+            "접근 승인이 필요한 저장소(gated)입니다. "
+            "승인받은 계정의 Hugging Face 토큰을 입력하세요.",
+            stage=Stage.RESOLVING,
+            component=norm.kind,
+            details={"reason": "gated_without_token"},
         )
     # README.md stays public on gated repos, so probe something else.
     probe = next(
