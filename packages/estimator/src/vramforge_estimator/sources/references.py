@@ -446,7 +446,7 @@ def _hf_url(
             for name, value in (("config", config_hint), ("split", split_hint))
             if value is not None
         )
-        notes.append(f"데이터셋 viewer 주소에서 {selected} 선택을 가져왔습니다.")
+        notes.append(f"데이터셋 viewer 주소의 경로에 {selected}이(가) 들어 있습니다.")
 
     return _hf(
         kind,
