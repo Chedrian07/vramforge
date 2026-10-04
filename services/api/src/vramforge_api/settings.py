@@ -23,6 +23,8 @@ class Settings(BaseSettings):
         env_prefix="VRAMFORGE_",
         extra="ignore",
         populate_by_name=True,
+        # compose passes "VAR=" through when a .env line is empty: treat it as unset.
+        env_ignore_empty=True,
     )
 
     database_url: str = "postgresql+psycopg://vramforge:vramforge@postgres:5432/vramforge"

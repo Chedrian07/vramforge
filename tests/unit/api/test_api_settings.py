@@ -70,3 +70,11 @@ def test_local_roots_parsing() -> None:
             parse_local_roots(bad)
     with pytest.raises(ValidationError):
         Settings(local_roots="bad entry")
+
+
+def test_empty_env_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("VRAMFORGE_MAX_UPLOAD_BYTES", "")
+    monkeypatch.setenv("VRAMFORGE_RETENTION_DAYS", "")
+    s = Settings()
+    assert s.max_upload_bytes == 2 * 1024**3 and s.retention_days == 7

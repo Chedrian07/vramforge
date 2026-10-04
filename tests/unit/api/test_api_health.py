@@ -26,3 +26,22 @@ def test_health_reports_components(client: TestClient, fake_redis: fakeredis.Fak
     body = client.get("/api/v1/health").json()
     assert body["components"]["worker"] == "ok"
     assert body["status"] == "ok"
+
+
+def test_health_survives_unreachable_dependencies(tmp_path) -> None:
+    from vramforge_api.app import create_app
+    from vramforge_api.settings import Settings
+
+    broken = Settings(
+        database_url="postgresql+psycopg://x:y@127.0.0.1:1/none",
+        redis_url="redis://127.0.0.1:1/0",
+        data_dir=tmp_path,
+    )
+    with TestClient(create_app(broken)) as client:
+        resp = client.get("/api/v1/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["components"]["db"] in ("error", "timeout")
+    assert body["components"]["redis"] in ("error", "timeout")
+    assert body["components"]["worker"] == "unknown"
