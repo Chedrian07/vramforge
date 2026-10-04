@@ -71,6 +71,9 @@ function unknownReason(unknown: UnknownComponent[]): string {
 }
 
 function memoryMissingReason(result: AnalysisResult): string {
+  if (result.needs_input) {
+    return "데이터셋 설정(config·split·컬럼 매핑)을 골라야 분석을 이어 갈 수 있어 메모리를 산정하지 않았습니다.";
+  }
   const blocker = result.compatibility_report?.blockers?.[0];
   if (blocker) return blocker.user_message;
   const coverage = result.dataset_scan?.coverage ?? result.status?.scan_coverage;

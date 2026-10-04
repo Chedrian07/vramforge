@@ -4,7 +4,7 @@ import { hardwareSelected, scenarioById, summarize } from "@/lib/result/summary"
 
 import { dpoResult, sftResult } from "../fixtures/analysis-dpo-sft";
 import { BUDGETS, grpoExplicitBudgetResult, grpoResult } from "../fixtures/analysis-grpo";
-import { partialResult, unknownPeakResult } from "../fixtures/analysis-states";
+import { needsInputResult, partialResult, unknownPeakResult } from "../fixtures/analysis-states";
 
 describe("summarize", () => {
   it("lists every completion budget when no explicit budget was given", () => {
@@ -52,6 +52,12 @@ describe("summarize", () => {
     const s = summarize(partialResult);
     expect(s.kind).toBe("unavailable");
     expect(s.peakNullReason).toBe("전체 데이터 스캔이 끝나지 않아 메모리를 산정하지 않았습니다.");
+  });
+
+  it("says an analysis waiting for input stopped for a choice, not for a short scan", () => {
+    const s = summarize(needsInputResult);
+    expect(s.kind).toBe("unavailable");
+    expect(s.peakNullReason).toContain("골라야 분석을 이어 갈 수 있어");
   });
 
   it("reports hardware fit only when hardware was requested", () => {
