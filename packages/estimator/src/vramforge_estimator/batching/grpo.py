@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vramforge_estimator.errors import EstimatorError, make_issue
-from vramforge_estimator.schemas import ErrorCode, GrpoResolved, Stage
+from vramforge_estimator.errors import EstimatorError
+from vramforge_estimator.schemas import ErrorCode, GrpoResolved, Issue, Severity, Stage
 
 
 @dataclass(frozen=True)
@@ -33,8 +33,12 @@ class GrpoLayout:
 
 def _constraint(message: str, **details: object) -> EstimatorError:
     return EstimatorError(
-        make_issue(
-            ErrorCode.TRAINER_BATCH_CONSTRAINT, message, stage=Stage.PLANNING_BATCHES, **details
+        Issue(
+            code=ErrorCode.TRAINER_BATCH_CONSTRAINT,
+            severity=Severity.ERROR,
+            stage=Stage.PLANNING_BATCHES,
+            user_message=message,
+            details=dict(details),
         )
     )
 

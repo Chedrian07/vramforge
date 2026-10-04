@@ -512,7 +512,13 @@ def _branch_stats(state: _State, objective: Objective) -> list[BranchStats]:
 
 
 def _issue(code: ErrorCode, severity: Severity, message: str, **details: object) -> Issue:
-    return make_issue(code, message, severity=severity, stage=Stage.TOKENIZING, **details)
+    return Issue(
+        code=code,
+        severity=severity,
+        stage=Stage.TOKENIZING,
+        user_message=message,
+        details=dict(details),
+    )
 
 
 def _issues(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from vramforge_estimator.errors import make_issue
 from vramforge_estimator.schemas import (
     BatchPlan,
     BranchStats,
@@ -131,8 +130,12 @@ class _Check:
 
 
 def _issue(code: ErrorCode, message: str, **details: object) -> Issue:
-    return make_issue(
-        code, message, severity=Severity.ERROR, stage=Stage.VALIDATING_DATA, **details
+    return Issue(
+        code=code,
+        severity=Severity.ERROR,
+        stage=Stage.VALIDATING_DATA,
+        user_message=message,
+        details=dict(details),
     )
 
 

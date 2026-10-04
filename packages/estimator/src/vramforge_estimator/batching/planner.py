@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from heapq import nlargest
 
 from vramforge_estimator import keys
-from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.scan import LengthTable
 from vramforge_estimator.schemas import (
     BatchPlan,
@@ -46,7 +46,13 @@ CHUNKED_LM_HEAD_CHUNK = 256  # trl sft_trainer.py:87 (_CHUNKED_LM_HEAD_CHUNK_SIZ
 
 
 def _issue(code: ErrorCode, severity: Severity, message: str, **details: object) -> Issue:
-    return make_issue(code, message, severity=severity, stage=Stage.PLANNING_BATCHES, **details)
+    return Issue(
+        code=code,
+        severity=severity,
+        stage=Stage.PLANNING_BATCHES,
+        user_message=message,
+        details=dict(details),
+    )
 
 
 def _no_lengths() -> EstimatorError:
