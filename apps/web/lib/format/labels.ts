@@ -286,7 +286,7 @@ export const MICROBATCH_UNIT: Record<Objective, string> = {
 
 /** How each objective transforms the mapped columns (plan.md §7.2). */
 export const OBJECTIVE_TRANSFORMATION: Record<Objective, string> = {
-  sft: "SFT: chosen 응답만 학습합니다. rejected는 사용하지 않습니다 (선택한 데이터 변환이며 truncation이 아님).",
+  sft: "SFT: preference 데이터는 prompt + chosen만 학습하고 rejected는 사용하지 않습니다 (선택한 데이터 변환이며 truncation이 아님). prompt-completion·messages·text 데이터는 매핑한 내용을 그대로 학습합니다.",
   dpo: "DPO: prompt + chosen, prompt + rejected 두 branch를 각각 그대로 사용합니다.",
   grpo: "GRPO: prompt만 사용합니다. 응답 길이는 completion budget 시나리오로 따로 계산합니다.",
 };

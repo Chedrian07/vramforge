@@ -51,6 +51,13 @@ describe("method section", () => {
     expect(screen.getByText(/전략: Full/)).toBeInTheDocument();
   });
 
+  it("limits the SFT 'chosen only' transformation to preference data", () => {
+    renderForm(<MethodSection />, { objective: "sft" });
+    const note = screen.getByText(/^SFT:/);
+    expect(note).toHaveTextContent("preference 데이터는 prompt + chosen만 학습하고 rejected는 사용하지 않습니다");
+    expect(note).toHaveTextContent("prompt-completion·messages·text 데이터는 매핑한 내용을 그대로 학습합니다");
+  });
+
   it("states the read-only full-scan policy", () => {
     renderForm(<MethodSection />);
     expect(screen.getByText("전체 데이터 분석 · Truncation 없음")).toBeInTheDocument();
