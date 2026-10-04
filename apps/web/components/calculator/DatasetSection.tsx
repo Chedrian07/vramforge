@@ -11,7 +11,7 @@ import { useApi } from "@/lib/api/context";
 import type { DatasetInspection, UploadResponse } from "@/lib/api/types";
 import { formatCount, formatSize, shortDigest } from "@/lib/format/bytes";
 import { DATASET_FORMAT_LABEL } from "@/lib/format/labels";
-import { datasetInspectCall, referenceOfKey } from "@/lib/form/inspect";
+import { configOfKey, datasetInspectCall, referenceOfKey } from "@/lib/form/inspect";
 import { mappedColumns } from "@/lib/form/mapping";
 import { hasViewerRowParam } from "@/lib/form/references";
 import type { FormValues } from "@/lib/form/values";
@@ -70,6 +70,16 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
     dropAutoAppliedMapping(setValue, getValues);
     const inspected = referenceOfKey(inspectedKey);
     if (inspected != null && inspected === getValues("datasetReference").trim()) trigger(false);
+  });
+
+  // A config chosen outside this section (the NEEDS_INPUT answer in the progress panel) asks again
+  // for that config, so the splits, columns and "config required" issue of the earlier answer do
+  // not stay on screen.
+  useEffect(() => {
+    const inspectedConfig = configOfKey(inspectedKey);
+    const inspected = referenceOfKey(inspectedKey);
+    if (inspectedConfig == null || inspected == null || inspectedConfig === config.trim()) return;
+    if (inspected === getValues("datasetReference").trim()) trigger(false);
   });
 
   const onFile = async (file: File | undefined) => {

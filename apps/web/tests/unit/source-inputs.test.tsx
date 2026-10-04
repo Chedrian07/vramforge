@@ -238,6 +238,22 @@ describe("dataset input and mapping editor", () => {
     expect(form().getValues("mappingEnabled")).toBe(true);
   });
 
+  it("asks again when a config is chosen outside the section (needs-input answer)", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: ambiguousDatasetInspection }));
+    const { form } = renderSection(<DatasetHost />, { inspect });
+    await user.type(screen.getByLabelText("Dataset"), DATASET_REF);
+    await user.tab();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    expect(inspect.mock.calls[0]![0]).toMatchObject({ dataset: { config: null } });
+    act(() => form().setValue("datasetConfig", "extended"));
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(inspect.mock.calls[1]![0]).toMatchObject({ dataset: { config: "extended" } });
+    // Settled: the answer for the chosen config does not trigger another request.
+    await waitFor(() => expect(screen.getByLabelText("Config")).toHaveValue("extended"));
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
   it("starts again from auto-detection when the dataset changes", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn<ApiClient["inspect"]>(async (body) => ({

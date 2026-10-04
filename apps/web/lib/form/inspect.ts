@@ -55,10 +55,19 @@ export function datasetInspectCall(
 
 /** The inspected reference string of an inspection key. */
 export function referenceOfKey(key: string | null): string | null {
+  return keyPart(key, 0);
+}
+
+/** The config a dataset inspection key asked for ("" when it named none). */
+export function configOfKey(key: string | null): string | null {
+  return keyPart(key, 2);
+}
+
+function keyPart(key: string | null, index: number): string | null {
   if (!key) return null;
   try {
     const parsed: unknown = JSON.parse(key);
-    return Array.isArray(parsed) && typeof parsed[0] === "string" ? parsed[0] : null;
+    return Array.isArray(parsed) && typeof parsed[index] === "string" ? parsed[index] : null;
   } catch {
     return null;
   }
