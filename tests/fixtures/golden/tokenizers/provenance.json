@@ -1,0 +1,29 @@
+{
+  "mimo_chat_template.jinja": {
+    "source_repo": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+    "revision": "2367e865d009c13ac81713a2878291d33ab28177",
+    "file": "chat_template.jinja",
+    "sha256": "59a64ebb4df6d1489d09a91267cf3ceb106162d4a893c4f84833cfb8c897ff63",
+    "bytes": 3916,
+    "license": "MIT (model card)",
+    "reference": "docs/research/example-model-dataset.md §1.1, §2"
+  },
+  "mimo_bytelevel": {
+    "generator": "tests/fixtures/golden/make_tiny_tokenizers.py (build_mimo)",
+    "description": "byte-level BPE without merges + MiMo special tokens + the MiMo chat template above",
+    "transformers": "5.18.0",
+    "tokenizers": "0.23.2"
+  },
+  "bos_bytelevel": {
+    "generator": "tests/fixtures/golden/make_tiny_tokenizers.py (build_bos)",
+    "description": "byte-level BPE; post-processor prepends <s>; template renders bos_token",
+    "transformers": "5.18.0",
+    "tokenizers": "0.23.2"
+  },
+  "plain_bytelevel": {
+    "generator": "tests/fixtures/golden/make_tiny_tokenizers.py (build_plain)",
+    "description": "byte-level BPE without chat template (TRL non-conversational path)",
+    "transformers": "5.18.0",
+    "tokenizers": "0.23.2"
+  }
+}
