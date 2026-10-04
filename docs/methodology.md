@@ -134,7 +134,7 @@ bnb 8-bit (adamw_8bit, paged_adamw_8bit): tensor별  n ≥ 4096이고 nn.Embeddi
 <a id="lm-head-input"></a>
 ## 6. LM head와 loss
 
-lm_head가 학습되면(full FT, `modules_to_save`에 lm_head) 입력(최종 norm 출력)을 weight gradient용으로 저장합니다: `positions × H × bytes(residual)`. frozen lm_head는 입력을 저장하지 않습니다(architecture-memory §10.1 행 27). GRPO는 `logits_to_keep`이 hidden의 view라 `(B, P+L, H)` 전체 storage가 남습니다.
+lm_head가 학습되면(full FT, `modules_to_save`에 lm_head) 입력(최종 norm 출력)을 weight gradient용으로 저장합니다: `positions × H × bytes(residual)`. 이 tensor는 architecture adapter가 보고하는 최종 hidden state(storage alias `policy.final_hidden`)와 같은 storage이므로 같은 alias로 한 번만 셉니다. frozen lm_head는 입력을 저장하지 않습니다(architecture-memory §10.1 행 27). GRPO는 `logits_to_keep`이 hidden의 view라 `(B, P+L, H)` 전체 storage가 남습니다.
 
 residual dtype = load dtype입니다(embedding은 autocast 대상이 아니고 Linear4bit는 입력 dtype으로 되돌림, loading-quantization-peft §Q9.3).
 

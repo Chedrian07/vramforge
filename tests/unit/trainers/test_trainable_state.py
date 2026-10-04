@@ -29,6 +29,7 @@ from vramforge_estimator.schemas import (
     Strategy,
 )
 from vramforge_estimator.trainers import get_trainer
+from vramforge_estimator.trainers.ledger import alive_by_timepoint, contributions
 from vramforge_estimator.trainers.trainable import executed_slices, lora_rank
 
 STEP = "OPTIMIZER_STEP:step"
@@ -125,6 +126,23 @@ def test_modules_to_save_copy_trains_and_saves_lm_head_input() -> None:
     assert by_name(sched, "grad.modules_to_save").bytes_high == V * H * 2
     # chunked_nll with a trainable lm_head accumulates [V, H] weight gradients
     assert "loss.chunked_nll.lm_head_grad_accumulation" in names(sched)
+
+
+def test_trainable_lm_head_input_is_the_final_hidden_storage() -> None:
+    # The architecture ledger already reports the final-norm output (= lm_head input) under the
+    # "policy.final_hidden" alias; the trainable lm_head saves that same tensor.
+    inv = make_inventory()
+    cfg = make_cfg(Objective.SFT, Strategy.FULL, inventory=inv, loss_path="hf_ce")
+    sched = build(cfg, inv, FakeArch(final_hidden=True))
+    head = by_name(sched, "lm_head.input")
+    hidden = by_name(sched, "policy.final_hidden")
+    assert head.storage_alias_group == hidden.storage_alias_group == "policy.final_hidden"
+    loss = "POLICY_FORWARD_BACKWARD:loss"
+    alive = alive_by_timepoint(sched.timepoints, sched.allocations)[loss]
+    shared = [
+        c for c in contributions(alive) if c.spec.storage_alias_group == "policy.final_hidden"
+    ]
+    assert len(shared) == 1 and shared[0].bytes_high == head.bytes_high == hidden.bytes_high
 
 
 def test_full_finetune_vision_tower_gets_no_gradient() -> None:

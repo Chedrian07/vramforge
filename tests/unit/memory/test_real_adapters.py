@@ -145,3 +145,13 @@ def test_sft_chunked_loss_peak(mimo) -> None:
     chunk = alloc(scenario, "loss.chunked_nll.chunk_backward")
     assert chunk.bytes_high == 18 * 256 * V  # conservative 18 B per element (≈ 1.07 GiB)
     assert scenario.devices[0].scenario_high_bytes is not None
+
+
+def test_trainable_lm_head_input_shares_the_final_hidden_storage(mimo) -> None:
+    full = {"strategy": "full", "quantization": {"enabled": False}}
+    _, est = estimate(mimo, request(objective="dpo", **full), [shape(Objective.DPO, 2, 2272)])
+    (scenario,) = est.scenarios
+    head = alloc(scenario, "lm_head.input")
+    hidden = alloc(scenario, "policy.act.final_hidden")
+    assert head.storage_alias_group == hidden.storage_alias_group is not None
+    assert head.bytes_high == hidden.bytes_high == 2 * 2272 * 4096 * 2  # 2B x T x H, bf16

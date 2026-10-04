@@ -47,6 +47,10 @@ DEVICE_MAP_BUDGET = {"quantized": Fraction(81, 100), "dense": Fraction(9, 10)}
 MIN_BLOCK_BYTES = 512
 # bitsandbytes 8-bit optimizers share two 256-entry fp32 quantization maps per optimizer.
 BNB_QMAP_BYTES = 2 * 256 * 4
+# Storage alias of the final-norm output (= LM-head input) in the architecture adapters' train-step
+# ledger (`architectures/ledger.py`: "<prefix>.final_hidden"; trainers pass the prefix "policy").
+# A trainable lm_head saves that same tensor, so it shares the alias and is counted once.
+FINAL_HIDDEN_ALIAS = "policy.final_hidden"
 
 
 def ref(anchor: str) -> str:
@@ -72,6 +76,7 @@ def spec(
     dims: dict[str, int] | None = None,
     dtype: str | None = None,
     saved: bool = False,
+    alias: str | None = None,
 ) -> AllocationSpec:
     """A ledger entry; `high` defaults to `low` (deterministic size)."""
     return AllocationSpec(
@@ -84,6 +89,7 @@ def spec(
         bytes_high=low if high is None else high,
         live_at=list(live_at),
         saved_for_backward=saved,
+        storage_alias_group=alias,
         evidence=evidence,
         formula_ref=ref(formula),
         note=note,
@@ -475,7 +481,8 @@ def lm_head_input_saved(
     b: ScheduleBuilder, cfg: ResolvedConfig, positions: int, hidden: int, live_at: list[str]
 ) -> None:
     """A trainable lm_head saves its input (the final-norm output) for its weight gradient; a
-    frozen one does not (docs/research/architecture-memory.md §10.1 row 27)."""
+    frozen one does not (docs/research/architecture-memory.md §10.1 row 27). It is the same
+    storage as the architecture ledger's final hidden state, so both share one alias."""
     if not lm_head_trainable(cfg):
         return
     res = residual_dtype(cfg)
@@ -490,6 +497,7 @@ def lm_head_input_saved(
             dims={"positions": positions, "hidden": hidden},
             dtype=res,
             saved=True,
+            alias=FINAL_HIDDEN_ALIAS,
             note="학습되는 lm_head가 weight gradient를 위해 입력(최종 norm 출력)을 저장합니다.",
         )
     )
@@ -638,6 +646,7 @@ def common_assumptions(b: ScheduleBuilder, cfg: ResolvedConfig) -> None:
 
 __all__ = [
     "DEVICE_MAP_BUDGET",
+    "FINAL_HIDDEN_ALIAS",
     "LoadedModel",
     "ScheduleBuilder",
     "add_model_weights",

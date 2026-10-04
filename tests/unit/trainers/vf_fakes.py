@@ -431,6 +431,7 @@ class FakeArch:
     vision_lora_group: bool = False  # split LoRA into text + vision groups
     flagged_groups: bool = False  # per-shape groups with receives_grad (repository adapters)
     load_budget: int | None = None  # S_load reported by `loading_budget_bytes` (None: absent)
+    final_hidden: bool = False  # emit the final-norm output under the "<prefix>.final_hidden" alias
 
     def supports(self, facts: ArchitectureFacts) -> bool:
         return True
@@ -546,7 +547,19 @@ class FakeArch:
     def train_step_ledger(self, inventory, cfg, shape: SequenceShape, tps: StepTimepoints, prefix):
         tokens = shape.batch * shape.seq_len
         saved = None if self.unknown_activations else 10 * tokens
+        extra = []
+        if self.final_hidden:
+            hidden = _alloc(
+                f"{prefix}.final_hidden",
+                AllocationCategory.SAVED_ACTIVATIONS,
+                tokens * H * 2,
+                [tps.forward, tps.loss],
+            )
+            extra.append(
+                hidden.model_copy(update={"storage_alias_group": f"{prefix}.final_hidden"})
+            )
         return [
+            *extra,
             _alloc(
                 f"{prefix}.saved",
                 AllocationCategory.SAVED_ACTIVATIONS,
