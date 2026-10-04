@@ -220,14 +220,18 @@ def test_prequantized_checkpoint_is_blocked(adapter) -> None:
 def test_reward_placement_drives_readiness(adapter) -> None:
     inv = hybrid_inventory()
     local = {"kind": "local_model", "model_reference": "org/rm"}
-    ready = resolve(request(grpo__reward=local), inv, None)[1]
-    assert ready.readiness is TrainingReadiness.READY
+    # the reward model is not inspected yet: its footprint is unknown, never a ready result
+    on_gpu = resolve(request(grpo__reward=local), inv, None)[1]
+    assert on_gpu.readiness is TrainingReadiness.CONDITIONAL
+    warning = next(w for w in on_gpu.warnings if w.affected_component == "grpo.reward")
+    assert warning.code is ErrorCode.UNKNOWN_MEMORY_COMPONENT
     elsewhere = resolve(request(grpo__reward={**local, "on_training_gpu": False}), inv, None)[1]
     assert elsewhere.readiness is TrainingReadiness.CONDITIONAL
+    assert not any(w.affected_component == "grpo.reward" for w in elsewhere.warnings)
     for kind in ("cpu_rule", "remote"):
-        assert resolve(request(grpo__reward={"kind": kind}), inv, None)[1].readiness is (
-            TrainingReadiness.CONDITIONAL
-        )
+        report = resolve(request(grpo__reward={"kind": kind}), inv, None)[1]
+        assert report.readiness is TrainingReadiness.CONDITIONAL
+        assert not any(w.affected_component == "grpo.reward" for w in report.warnings)
 
 
 def test_grpo_explicit_budget_and_max_live_sequences(adapter) -> None:

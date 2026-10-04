@@ -31,6 +31,7 @@ from vramforge_estimator.schemas import (
     HardwareMode,
     MarginPolicy,
     Objective,
+    RewardKind,
     ScopeConfig,
     Severity,
     Strategy,
@@ -304,3 +305,21 @@ def test_no_load_budget_check_without_capacity_or_s_load() -> None:
     )
     assert unsized.issues == []  # the adapter did not size S_load: no load-failure claim
     assert unsized.scenarios[0].hardware_fit.reason != "load_budget_insufficient"
+
+
+def test_local_reward_model_footprint_is_an_unknown_component() -> None:
+    cfg = make_cfg(Objective.GRPO, inventory=INV, accumulation=4, reward=RewardKind.LOCAL_MODEL)
+    roomy = HardwareConfig(mode=HardwareMode.CUSTOM, device_total_bytes=80 * GiB)
+    est = estimate_with(
+        FakeArch(),
+        INV,
+        cfg,
+        make_plan(cfg, [grpo_shape(prompt=272, budget=1024)]),
+        **{**KW, "hardware": roomy, "readiness": TrainingReadiness.CONDITIONAL},
+    )
+    (scenario,) = est.scenarios
+    unknown = {u.name: u for u in scenario.devices[0].unknown_components}
+    assert unknown["reward_model.forward"].phase == "REWARD"
+    assert "reward_model.weights" in unknown
+    assert scenario.devices[0].scenario_high_bytes is None
+    assert scenario.hardware_fit.status is HardwareFit.UNKNOWN

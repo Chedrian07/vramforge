@@ -748,7 +748,20 @@ def _readiness(
                 )
             )
             readiness = TrainingReadiness.CONDITIONAL
-        elif reward.kind in (RewardKind.CPU_RULE, RewardKind.REMOTE) or not reward.on_training_gpu:
+        elif reward.kind is RewardKind.LOCAL_MODEL and reward.on_training_gpu:
+            # No reward-model inventory is analyzed yet: its resident weights and forward on the
+            # training GPU are unknown components, so the result is never ready.
+            res.warnings.append(
+                _warning(
+                    ErrorCode.UNKNOWN_MEMORY_COMPONENT,
+                    "local reward 모델은 아직 분석하지 않아 학습 GPU에 올라가는 reward 가중치와 "
+                    "forward 메모리를 알 수 없습니다. 이 부분은 미상 항목으로 남고 결과는 "
+                    "조건부입니다.",
+                    "grpo.reward",
+                )
+            )
+            readiness = TrainingReadiness.CONDITIONAL
+        else:  # CPU rule, remote server or a reward model on another device: outside this GPU
             readiness = TrainingReadiness.CONDITIONAL
     if request.dataset.eval_split and not request.scope.include_evaluation:
         # Training will run an evaluation phase whose memory is outside the computed scope.
