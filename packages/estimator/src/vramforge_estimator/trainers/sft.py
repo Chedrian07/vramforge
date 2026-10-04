@@ -20,6 +20,7 @@ from vramforge_estimator.schemas import (
     ResolvedConfig,
     ScopeConfig,
     SequenceShape,
+    Strategy,
 )
 from vramforge_estimator.units import dtype_bytes, tensor_bytes
 
@@ -115,6 +116,16 @@ def add_sft_loss(
                 )
             )
         if lm_head_trainable(cfg):
+            if cfg.strategy is not Strategy.FULL:
+                b.assume(
+                    "chunked_nll_modules_to_save_lm_head",
+                    "modules_to_save=lm_head와 chunked_nll: TRL 1.14.1은 PEFT tuner layer가 감싼 "
+                    "lm_head만 거부하므로 이 조합은 실행되고, chunk 계산은 학습 사본의 weight를 "
+                    "읽습니다. chunk별 [V,H] weight-grad 누적은 full FT에서 CPU로 확인한 구조를 "
+                    "적용한 추론입니다.",
+                    "trl sft_trainer.py:1338-1359; peft utils/other.py:303, 392-414, 598-630; "
+                    "docs/research/architecture-memory.md §6.3",
+                )
             vh = vocab * hidden
             grad = tensor_bytes(vh, lm_head_param_dtype(cfg))
             b.add(

@@ -126,6 +126,9 @@ def test_modules_to_save_copy_trains_and_saves_lm_head_input() -> None:
     assert by_name(sched, "grad.modules_to_save").bytes_high == V * H * 2
     # chunked_nll with a trainable lm_head accumulates [V, H] weight gradients
     assert "loss.chunked_nll.lm_head_grad_accumulation" in names(sched)
+    assert any(a.id == "chunked_nll_modules_to_save_lm_head" for a in sched.assumptions)
+    full = build(make_cfg(Objective.SFT, Strategy.FULL, inventory=inv), inv)
+    assert not any(a.id == "chunked_nll_modules_to_save_lm_head" for a in full.assumptions)
 
 
 def test_trainable_lm_head_input_is_the_final_hidden_storage() -> None:

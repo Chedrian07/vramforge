@@ -96,12 +96,11 @@ def test_sft_chunked_loss_rejects_lora_on_lm_head() -> None:
         )
     )
     assert ErrorCode.CONFLICTING_OPTIONS in codes(issues)
+    # A modules_to_save copy is not a PEFT tuner layer, so TRL runs chunked_nll with it.
     mts = validate_request(
         request(training__objective="sft", training__lora={"modules_to_save": ["lm_head"]})
     )
-    assert codes(mts) == set() and ErrorCode.UNKNOWN_MEMORY_COMPONENT in codes(
-        mts, Severity.WARNING
-    )
+    assert codes(mts) == set() and codes(mts, Severity.WARNING) == set()
 
 
 @pytest.mark.parametrize(

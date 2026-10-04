@@ -192,15 +192,8 @@ def _lm_head_issues(request: AnalysisRequest) -> list[Issue]:
                 "training.lora.target_modules",
             )
         )
-    if any(m.endswith("lm_head") for m in t.lora.modules_to_save):
-        issues.append(
-            _warn(
-                ErrorCode.UNKNOWN_MEMORY_COMPONENT,
-                "SFT chunked_nll과 modules_to_save=lm_head 조합을 TRL이 허용하는지는 확인되지 "
-                "않았습니다. 학습되는 lm_head의 weight-grad 누적으로 계산합니다.",
-                "training.lora.modules_to_save",
-            )
-        )
+    # modules_to_save=lm_head is allowed: TRL rejects only a BaseTunerLayer head and PEFT's
+    # ModulesToSaveWrapper is not one (the schedule records the inferred memory path).
     return issues
 
 

@@ -154,6 +154,7 @@ lm_head를 256개 valid 위치씩 checkpoint 안에서 계산하므로 `(B, T, V
 | lm_head weight bf16 사본 (fp32 로드) | V·H·2 | `loss`, `loss_backward` |
 
 - 학습되는 lm_head는 chunk마다 `[V, H]` weight grad가 out-of-place로 누적되어 3벌이 공존합니다(CPU 검증, 예시 5.75 GiB). accumulation 창의 두 번째 micro-step부터는 기존 `.grad`가 따로 있으므로 3벌 전부를 임시값으로 둡니다.
+- `modules_to_save=["lm_head"]`도 chunked_nll로 실행됩니다. TRL은 PEFT tuner layer(`BaseTunerLayer`)가 감싼 lm_head만 거부하고(sft_trainer.py:1349-1358), `ModulesToSaveWrapper`는 tuner layer가 아니며 `weight`를 학습 사본으로 넘깁니다(peft `utils/other.py`). 같은 weight-grad 누적 구조를 적용하되, CPU 검증은 full FT 경로라 schedule 가정으로 표시합니다.
 - 계수는 CPU 측정값(15.0–16.7, 16.0–17.7)과 문서의 보수 상한 18입니다. CUDA 커널 workspace는 §8의 가정에 포함됩니다.
 
 <a id="sft-nll"></a>
