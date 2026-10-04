@@ -185,9 +185,7 @@ class ModelStructure:
         self.tensors: tuple[TensorInfo, ...] = tuple(inventory.tensors)
         self.linear_modules: tuple[LinearModule, ...] = self._all_linears()
         self.linear_by_name: dict[str, LinearModule] = {m.name: m for m in self.linear_modules}
-        self.output_embedding: str | None = next(
-            (t.module for t in self.tensors if t.role is TensorRole.LM_HEAD), None
-        ) or next((m.name for m in self.linear_modules if m.kind == "lm_head"), None)
+        self.output_embedding: str | None = self._output_embedding()
         self.tied_skip: frozenset[str] = self._tied_skip()
         self.module_names: frozenset[str] = frozenset(
             a for t in self.tensors for a in module_ancestors(t.module)
@@ -221,6 +219,24 @@ class ModelStructure:
                 )
                 known.add(t.module)
         return tuple(linears)
+
+    def _output_embedding(self) -> str | None:
+        """Module name of the LM head. A tied head is often not serialized; the CausalLM classes
+        still own an `lm_head` module that shares the embedding (PEFT can wrap it)."""
+        for t in self.tensors:
+            if t.role is TensorRole.LM_HEAD:
+                return t.module
+        for m in self.linear_modules:
+            if m.kind == "lm_head":
+                return m.name
+        if self.facts.tie_word_embeddings:
+            present = {t.name for t in self.tensors}
+            for group in self.inventory.tied_groups:
+                for name in group:
+                    if name not in present and name.removesuffix(".weight").endswith("lm_head"):
+                        return name.removesuffix(".weight")
+            return "lm_head"
+        return None
 
     def _tied_skip(self) -> frozenset[str]:
         """Tensor names that alias an earlier member of a tied group (counted once)."""
