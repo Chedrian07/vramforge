@@ -37,11 +37,14 @@ CMD ["node", "server.js"]   # ENV HOSTNAME=0.0.0.0 PORT=3000 필수
 
 - REST 타입은 `lib/api/schema.d.ts`(OpenAPI 생성물)에서 온다. 요청 본문은 `lib/form/request-schema.ts`의 strict Zod mirror로 검증하며, 생성 타입과 key가 어긋나면 typecheck가 실패한다.
 - 같은 출처 `/api/v1`만 호출한다. 소유자는 `vf_owner` cookie로 식별하고, POST/DELETE에는 `X-VramForge-Request: 1`을 보낸다. 분석 생성은 클릭마다 새 `Idempotency-Key`를 쓴다.
-- SSE(`/analyses/{id}/events`) payload는 OpenAPI에 없으므로 `lib/api/events.ts`에서 `schemas/events.py`를 Zod로 옮겨 검증한다. 종료 이벤트를 받으면 `GET /analyses/{id}`로 최종 상태를 읽고, `?analysis=<id>`로 새로고침 후 재연결한다.
+- 소유자 cookie 경합 방지: API는 cookie 없이 온 요청마다 새 `vf_owner`를 발급하므로, HTTP client는 첫 요청 전에 `GET /api/v1/session`을 한 번 순차로 보내고 나머지 요청은 그 응답을 기다린다. API에 닿지 못한 경우(네트워크, 프록시 5xx)에만 다음 요청에서 다시 시도한다. 응답이 토큰을 요구하면 접근 토큰 창을 연다.
+- SSE(`/analyses/{id}/events`) 타입은 생성 스키마의 `AnalysisEvent`·`EventType`이고, 받은 payload는 `lib/api/events.ts`의 Zod mirror로 검증한다(key·출력 타입이 생성 타입과 다르면 typecheck 실패). 종료는 이벤트 type이 아니라 status로 판단한다(`failed` 이벤트가 PARTIAL을 담을 수 있다). 종료 이벤트 뒤에는 `GET /analyses/{id}`로 저장된 최종 상태를 읽어 화면을 정하고, 그 응답이 아직 실행 중이면 마지막 이벤트 다음부터 다시 따라간다.
+- `?analysis=<id>`로 새로고침하면 재연결하고, `AnalysisStatus.request`로 입력 폼을 복원한다(결과가 생기기 전에도). 폼이 이미 편집됐으면 덮어쓰지 않는다. 이전 실행의 늦은 응답은 새 실행을 대신하지 않는다.
 - 401이면 접근 토큰 입력 창을 띄우고 `POST /api/v1/session` `{ "token": "…" }`으로 보낸다. 서버는 httpOnly cookie를 발급하고, 토큰은 브라우저 저장소에 남기지 않는다.
-- 컬럼 매핑: 매핑을 지정하지 않으면 `mapping: null`(서버 자동 감지, 빈 system 생략)을 보낸다. 직접 지정한 매핑은 서버가 그대로 쓰므로 형식과 필수 역할을 갖춰야 하고, 선택한 형식의 역할만 보낸다. 데이터셋을 바꾸면 config·split·revision·매핑을 자동 선택으로 되돌린다.
-- 내보내기 파일은 서버에 저장된 기준 분석으로 만들어진다. 화면이 재계산 결과나 바뀐 입력을 보여 주는 동안에는 내보내기 메뉴가 그 사실을 알린다.
-- 메모리 수식은 복제하지 않는다. 화면은 서버 결과(정수 bytes)를 표시만 하고, 모르는 값은 `산정 불가`와 사유로 보여 준다.
+- 메타데이터 조회는 응답이 없을 때·429·5xx에만 한 번 재시도한다. 4xx 응답은 바로 표시한다.
+- 컬럼 매핑: 매핑을 지정하지 않으면 `mapping: null`(서버 자동 감지, 빈 system 생략)을 보낸다. 직접 지정한 매핑은 서버가 그대로 쓰므로 형식과 필수 역할을 갖춰야 하고, 선택한 형식의 역할만 보내고 요약에도 그 역할만 보인다. 조회 결과의 명백한 제안은 자동 적용하되(`mappingAutoApplied`), 자동 적용한 매핑은 이후 조회(학습 방식·config 변경 시 다시 조회)를 따라 바뀌거나 자동 감지로 돌아간다. 사용자가 고르거나 고친 매핑은 컬럼이 남아 있는 한 유지한다. 데이터셋을 바꾸면 config·split·revision·매핑을, config를 바꾸면 split을 자동 선택으로 되돌린다.
+- 내보내기: 화면에 재계산 시나리오가 표시되면 `POST /analyses/{id}/scenarios/export` `{request, format}`으로 그 시나리오의 요청을 보내 파일을 받고, 아니면 저장된 분석을 `GET /export`로 받는다. 메뉴는 어떤 결과를 내보내는지 항상 밝히고, 결과 보관 기한(`AnalysisStatus.expires_at`)을 내보내기 버튼 아래와 메뉴에 보여 준다.
+- 메모리 수식은 복제하지 않는다. 화면은 서버 결과(정수 bytes)를 표시만 하고, 모르는 값은 `산정 불가`와 사유로 보여 준다. context 상한을 모르면 초과 row 수도 `산정 불가 (context 상한 미상)`, 하한이면 `N개 이상`, 실패 row가 있는 스캔은 `전체 완료` 대신 `읽음 N · 실패 M`으로 표시한다.
 
 ## Mock 정책
 
