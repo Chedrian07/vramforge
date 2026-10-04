@@ -393,3 +393,16 @@ def test_mount_boundary_is_checked(
         roots,
         "mount_boundary",
     )
+
+
+def test_symlinked_single_file_keeps_its_referenced_name(
+    access: SourceAccess, roots: dict[str, Path]
+) -> None:
+    blobs = roots["data"] / "blobs"
+    blobs.mkdir()
+    (blobs / "0a1b2c").write_text('{"q": "z"}\n', encoding="utf-8")
+    (roots["data"] / "train.jsonl").symlink_to(Path("blobs") / "0a1b2c")
+    source = resolve_dataset(DatasetSourceRef(reference="local:data/train.jsonl"), access)
+    assert [f.path for f in source.manifest.files] == ["train.jsonl"]
+    assert source.local_path is not None and source.local_path.name == "train.jsonl"
+    assert source.local_path.read_text(encoding="utf-8") == '{"q": "z"}\n'

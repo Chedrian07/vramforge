@@ -78,7 +78,11 @@ def _not_found(kind: Kind, message: str, reason: str) -> EstimatorError:
 
 
 def resolve_local_target(norm: NormalizedReference, access: SourceAccess) -> tuple[Path, Path]:
-    """(root, target) as real paths for a ``local:<root>/<relative>`` reference."""
+    """(real root, logical target) for ``local:<root>/<relative>``.
+
+    The logical target keeps the referenced names (a symlinked file keeps its own name and
+    extension) and is verified to resolve inside the root.
+    """
     kind = norm.kind
     assert norm.local_root is not None and norm.local_relative is not None
     root = access.local_roots.get(norm.local_root)
@@ -94,11 +98,12 @@ def resolve_local_target(norm: NormalizedReference, access: SourceAccess) -> tup
     target = (
         root_real.joinpath(*norm.local_relative.split("/")) if norm.local_relative else root_real
     )
-    return root_real, _confined(target, root_real, kind)
+    _confined(target, root_real, kind)
+    return root_real, target
 
 
 def resolve_upload_target(norm: NormalizedReference, access: SourceAccess) -> tuple[Path, Path]:
-    """(uploads dir, target) as real paths for ``upload:<id>``.
+    """(real uploads dir, logical target) for ``upload:<id>``.
 
     `access.uploads_dir` must already be scoped to the requesting owner (the API decides).
     """
@@ -113,7 +118,7 @@ def resolve_upload_target(norm: NormalizedReference, access: SourceAccess) -> tu
         )
     root_real = _real_root(access.uploads_dir, kind)
     try:
-        return root_real, _confined(root_real / norm.upload_id, root_real, kind)
+        _confined(root_real / norm.upload_id, root_real, kind)
     except EstimatorError as exc:
         if exc.issue.code is ErrorCode.SOURCE_NOT_FOUND:
             raise _not_found(
@@ -122,6 +127,7 @@ def resolve_upload_target(norm: NormalizedReference, access: SourceAccess) -> tu
                 "upload_missing",
             ) from None
         raise
+    return root_real, root_real / norm.upload_id
 
 
 def _real_root(root: Path, kind: Kind) -> Path:
@@ -150,12 +156,13 @@ def _confined(target: Path, root_real: Path, kind: Kind) -> Path:
     return real
 
 
-def walk_local_files(root_real: Path, target_real: Path, kind: Kind) -> list[LocalFile]:
-    """Every regular file under `target_real` (or the file itself), sorted by relative path."""
+def walk_local_files(root_real: Path, target: Path, kind: Kind) -> list[LocalFile]:
+    """Every regular file under `target` (or the file itself), sorted by relative path."""
     root_dev = os.stat(root_real).st_dev
+    target_real = target.resolve(strict=True)
     target_info = target_real.stat()
     if stat.S_ISREG(target_info.st_mode):
-        return [LocalFile(target_real.name, target_real, target_info.st_size)]
+        return [LocalFile(target.name, target_real, target_info.st_size)]
     if not stat.S_ISDIR(target_info.st_mode):
         raise _escape(kind, "special_file")
     files: list[LocalFile] = []
@@ -260,10 +267,10 @@ def local_identity(kind: Kind, identity: list[tuple[str, int, str]]) -> str:
 def build_local_source(norm: NormalizedReference, access: SourceAccess) -> ResolvedSource:
     kind = norm.kind
     if norm.source_type is SourceType.UPLOAD:
-        root_real, target_real = resolve_upload_target(norm, access)
+        root_real, target = resolve_upload_target(norm, access)
     else:
-        root_real, target_real = resolve_local_target(norm, access)
-    if kind == "model" and not target_real.is_dir():
+        root_real, target = resolve_local_target(norm, access)
+    if kind == "model" and not target.is_dir():
         raise _error(
             ErrorCode.INVALID_REQUEST,
             "모델 경로는 config.json과 가중치가 들어 있는 디렉터리여야 합니다.",
@@ -271,7 +278,7 @@ def build_local_source(norm: NormalizedReference, access: SourceAccess) -> Resol
             reason="model_path_not_directory",
         )
     try:
-        files = walk_local_files(root_real, target_real, kind)
+        files = walk_local_files(root_real, target, kind)
         entries, identity, notes = content_entries(
             files, kind, max_metadata_bytes=access.max_metadata_bytes
         )
@@ -320,4 +327,4 @@ def build_local_source(norm: NormalizedReference, access: SourceAccess) -> Resol
         fingerprint=source_key(norm.source_type.value, f"{kind}:{resolved}"),
         notes=[*norm.notes, *notes],
     )
-    return ResolvedSource(kind=kind, manifest=manifest, local_path=target_real)
+    return ResolvedSource(kind=kind, manifest=manifest, local_path=target)
