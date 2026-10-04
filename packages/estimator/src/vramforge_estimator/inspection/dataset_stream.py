@@ -252,6 +252,22 @@ class DatasetRowStream:
             )
         except EstimatorError as exc:
             self._stop(exc.issue)
+        except (_StopStream, GeneratorExit):
+            raise
+        except Exception as exc:  # unexpected library error: partial, never a crash mid-scan
+            logger.error("unexpected %s while reading shard %s", type(exc).__name__, shard_id)
+            self._stop(
+                make_issue(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"데이터 파일 {shard_id}을(를) 읽는 중 예기치 못한 오류가 발생해 중단했습니다.",
+                    stage=Stage.TOKENIZING,
+                    component="dataset",
+                    reason="unexpected_error",
+                    error_type=type(exc).__name__,
+                    shard_id=shard_id,
+                    rows_read=self.rows_seen,
+                )
+            )
 
     def _stop(self, issue: Issue) -> None:
         self.issues.append(issue)

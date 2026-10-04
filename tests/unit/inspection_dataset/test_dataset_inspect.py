@@ -329,3 +329,16 @@ def test_hub_parquet_preview_falls_back_to_the_schema(
     tiny = inspect_dataset(source, ref(), SourceAccess(max_metadata_bytes=1_000), None)
     assert tiny.columns == [] and tiny.suggested_mapping is None
     assert codes(tiny) == [ErrorCode.SCAN_QUOTA_EXCEEDED]
+
+
+def test_unexpected_preview_errors_become_issues(monkeypatch: pytest.MonkeyPatch) -> None:
+    import vramforge_estimator.inspection.dataset_schema as schema_module
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("library bug")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(schema_module, "iter_file", boom)
+    result = inspect(local_source(FIXTURES / "preference.jsonl"), Objective.DPO)
+    assert codes(result) == [ErrorCode.INTERNAL_ERROR]
+    assert result.columns == [] and result.suggested_mapping is None

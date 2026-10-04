@@ -292,3 +292,22 @@ def test_parquet_files_with_different_columns_stop_with_schema_mismatch(tmp_path
     assert [r.row["prompt"] for r in stream] == ["a"]
     assert stream.issues[-1].code == ErrorCode.SCAN_PARTIAL
     assert stream.issues[-1].details["reason"] == "schema_mismatch"
+
+
+def test_unexpected_reader_errors_end_the_stream_as_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import vramforge_estimator.inspection.dataset_stream as stream_module
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        yield {"prompt": "first"}
+        raise RuntimeError("library bug with secret row text")
+
+    monkeypatch.setattr(stream_module, "iter_file", boom)
+    stream = stream_for(local_source(sharded_dir(tmp_path / "ds")))
+    assert [r.row for r in stream] == [{"prompt": "first"}]
+    issue = stream.issues[-1]
+    assert issue.code == ErrorCode.INTERNAL_ERROR
+    assert issue.details["error_type"] == "RuntimeError"
+    assert "secret" not in issue.model_dump_json()
+    assert not stream.complete

@@ -11,6 +11,7 @@ string and a coarse kind used for mapping detection:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from datasets import Features
 
+logger = logging.getLogger(__name__)
 _PREVIEW_FILES = 4  # files tried when the first ones have no rows (one shared byte budget)
 
 
@@ -88,6 +90,20 @@ def read_preview(
             break
         except EstimatorError as exc:
             preview.issues.append(exc.issue)
+            break
+        except Exception as exc:  # unexpected library error: report, keep the inspection alive
+            logger.error("unexpected %s in preview of %s", type(exc).__name__, data_file.shard_id)
+            preview.issues.append(
+                make_issue(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"데이터 파일 {data_file.shard_id}을(를) 미리보기로 읽는 중 예기치 못한 오류가 "
+                    "발생했습니다.",
+                    stage=Stage.INSPECTING,
+                    component="dataset",
+                    error_type=type(exc).__name__,
+                    shard_id=data_file.shard_id,
+                )
+            )
             break
         finally:
             if info.file_format is not None:
