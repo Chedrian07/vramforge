@@ -62,6 +62,13 @@ CANCEL_CHECK_ROWS = 16
 clock: Callable[[], float] = time.monotonic
 
 _DIAGNOSTICS = ("template_loss", "prefix_mismatch", "special_token", "system_omitted")
+_FINAL_MESSAGES = {
+    ScanCoverage.COMPLETE: "데이터셋 전체 토큰화를 마쳤습니다.",
+    ScanCoverage.PARTIAL: "데이터셋을 끝까지 확인하지 못했습니다. 통계는 처리한 row까지의 값이며 "
+    "전체 최대 길이가 아닙니다.",
+    ScanCoverage.FAILED: "데이터를 읽지 못해 토큰화한 row가 없습니다.",
+    ScanCoverage.NOT_STARTED: "데이터셋 토큰화를 시작하지 않았습니다.",
+}
 _WINDOWS_ABS = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -255,17 +262,23 @@ def full_scan(
     def elapsed() -> float:
         return elapsed_before + (clock() - started)
 
-    def report(*, final: bool = False, coverage: ScanCoverage | None = None) -> None:
+    def report(*, coverage: ScanCoverage | None = None) -> None:
+        """Progress while scanning; the final report (coverage given) never calls a partial or
+        failed scan finished (plan §7.7, §19.2)."""
         nonlocal last_report
         last_report = clock()
         partial: dict[str, Any] = {
-            "status": coverage.value if final and coverage else "partial",
+            "status": coverage.value if coverage else "partial",
             "rows_ok": state.rows_ok,
             "rows_failed": state.rows_failed,
         }
         for branch, acc in state.accumulators.items():
             if acc.max_value is not None:
                 partial[f"max_{branch.value}"] = acc.max_value
+        if coverage is None:
+            code, message = "scan_progress", "데이터셋 전체를 토큰화하는 중입니다."
+        else:
+            code, message = f"scan_{coverage.value}", _FINAL_MESSAGES[coverage]
         ctx.report(
             JobProgress(
                 stage=JobStatus.TOKENIZING,
@@ -274,10 +287,8 @@ def full_scan(
                 shard_progress=ShardProgress(
                     completed=stream.shards_completed, total=len(stream.shards) or None
                 ),
-                message_code="scan_final" if final else "scan_progress",
-                message="데이터셋 전체 토큰화를 마쳤습니다."
-                if final
-                else "데이터셋 전체를 토큰화하는 중입니다.",
+                message_code=code,
+                message=message,
             ),
             partial,
         )
@@ -358,7 +369,7 @@ def full_scan(
             "coverage": coverage.value,
         },
     )
-    report(final=True, coverage=coverage)
+    report(coverage=coverage)
 
     issues = _issues(state, stream, coverage, stop_reason, read_error, manifest_mismatch, limits)
     mapping = getattr(adapter, "mapping", None)
@@ -577,7 +588,12 @@ def _issues(
             )
         )
     if read_error is not None:
-        cause = read_error.issue.code.value if isinstance(read_error, EstimatorError) else None
+        cause = None
+        if isinstance(read_error, EstimatorError):
+            # The reader's own issue is display-safe (errors.py) and says what went wrong.
+            cause = read_error.issue.code.value
+            if read_error.issue not in issues:
+                issues.append(read_error.issue)
         issues.append(
             _issue(
                 ErrorCode.SCAN_PARTIAL,

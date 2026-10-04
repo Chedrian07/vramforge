@@ -193,6 +193,42 @@ def test_progress_is_throttled_and_flags_partial_maxima(
     assert final_partial["status"] == "complete" and final_partial["max_sequence"] == 40
 
 
+@pytest.mark.parametrize(
+    ("stream_kwargs", "coverage"),
+    [({"stop_early_at": 4}, "partial"), ({"fail_at": 0}, "failed"), ({}, "complete")],
+)
+def test_final_report_states_the_real_coverage(
+    make_stream, adapter, ctx, stream_kwargs, coverage
+) -> None:
+    scan(make_stream(rows(), **stream_kwargs), adapter, ctx)
+    final, final_partial = ctx.reports[-1]
+    assert final.message_code == f"scan_{coverage}" and final_partial["status"] == coverage
+    finished_all = "데이터셋 전체 토큰화를 마쳤습니다" in (final.message or "")
+    assert finished_all is (coverage == "complete")  # partial maxima never sold as complete
+
+
+def test_reader_estimator_error_keeps_its_own_issue(make_stream, adapter, ctx) -> None:
+    from vramforge_estimator.errors import EstimatorError, make_issue
+
+    reader_issue = make_issue(ErrorCode.SOURCE_REVISION_CHANGED, "데이터 파일이 바뀌었습니다.")
+
+    class ChangedStream(make_stream):
+        def __iter__(self):
+            for i, source_row in enumerate(super().__iter__()):
+                if i == 3:  # e.g. the file changed under the reader
+                    raise EstimatorError(reader_issue)
+                yield source_row
+
+    out = scan(ChangedStream(rows()), adapter, ctx)
+    assert out.result.coverage is ScanCoverage.PARTIAL and out.result.rows_seen == 3
+    assert [i.code for i in out.issues] == [
+        ErrorCode.SOURCE_REVISION_CHANGED,
+        ErrorCode.SCAN_PARTIAL,
+    ]
+    assert out.issues[0] == reader_issue
+    assert out.issues[1].details["cause_code"] == "SOURCE_REVISION_CHANGED"
+
+
 def test_unknown_total_never_invents_a_percentage(make_stream, adapter, ctx) -> None:
     scan(make_stream(rows(), total_rows=None), adapter, ctx)
     assert all(p.total_rows is None for p, _ in ctx.reports)
