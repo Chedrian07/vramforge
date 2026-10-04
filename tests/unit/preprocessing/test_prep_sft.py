@@ -238,6 +238,38 @@ def test_template_errors_are_reported_without_row_text(make_handle) -> None:
     assert ROW["question"] not in rec.error_message
 
 
+@pytest.mark.parametrize(
+    ("template", "secret"),
+    [
+        (  # a template that quotes a tool-call argument in its error message
+            "{% for m in messages %}{% if m.tool_calls is defined %}{{ raise_exception("
+            "'bad tool call: ' ~ m.tool_calls[0].function.arguments.query) }}{% endif %}"
+            "{{ m.content }}{% endfor %}",
+            "SECRET customer 4111-1111",
+        ),
+        ("{{ raise_exception('Unknown role: ' ~ messages[0].role) }}", "internal_audit_note"),
+        ("{{ raise_exception('Bad content: ' ~ messages[0].content[:12]) }}", "confidential"),
+    ],
+)
+def test_template_errors_built_from_row_values_are_not_echoed(
+    make_handle, template, secret
+) -> None:
+    conv = [
+        {"role": "internal_audit_note", "content": "confidential case notes"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"type": "function", "function": {"name": "s", "arguments": {"query": secret}}}
+            ],
+        },
+    ]
+    handle = make_handle("mimo_bytelevel", chat_template=template)
+    rec = get_adapter(Objective.SFT, handle, ColumnMapping(messages="m")).process({"m": conv}, "r")
+    assert not rec.ok and rec.error_code is ErrorCode.DATASET_FORMAT_UNSUPPORTED
+    assert secret not in rec.error_message and "TemplateError" in rec.error_message
+
+
 def test_template_kwargs_reach_the_template(mimo) -> None:
     adapter = get_adapter(Objective.SFT, mimo, PREF, template_kwargs={"enable_thinking": False})
     base = get_adapter(Objective.SFT, mimo, PREF).process(ROW, "r")

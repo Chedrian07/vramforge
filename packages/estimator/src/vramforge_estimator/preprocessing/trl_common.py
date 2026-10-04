@@ -38,7 +38,7 @@ from .mapping import (
 )
 
 TRL_VERSION = "1.14.1"
-_MIN_LEAK_CHECK_CHARS = 4
+_MAX_REASON_CHARS = 300
 
 
 def check_template_kwargs(template_kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -81,8 +81,20 @@ def mapping_error(message: str, **details: object) -> EstimatorError:
     )
 
 
-def _safe_reason(exc: BaseException, texts: Sequence[str]) -> str:
-    """Exception type, plus the template's own message when it carries no row text."""
+def _template_source(tokenizer: Any) -> str:
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, Mapping):  # named templates
+        return "\n".join(str(v) for v in template.values())
+    return template if isinstance(template, str) else ""
+
+
+def _safe_reason(exc: BaseException, template_source: str) -> str:
+    """Exception type, plus the template's own message only when it is literal template text.
+
+    Templates build messages from row values too (e.g. ``'Unknown role: ' ~ message.role`` or
+    tool-call arguments), and failed-row messages end up in results and exports, so anything that
+    is not verbatim template text is dropped rather than scanned for leaks.
+    """
     name = type(exc).__name__
     try:
         from jinja2 import TemplateError
@@ -90,8 +102,7 @@ def _safe_reason(exc: BaseException, texts: Sequence[str]) -> str:
         return name
     if isinstance(exc, TemplateError):
         detail = str(exc).strip()
-        leaks = any(len(t) >= _MIN_LEAK_CHECK_CHARS and t in detail for t in texts)
-        if detail and len(detail) <= 300 and not leaks:
+        if detail and len(detail) <= _MAX_REASON_CHARS and detail in template_source:
             return f"{name}: {detail}"
     return name
 
@@ -201,11 +212,7 @@ class TrlAdapterBase:
                 **self.template_kwargs,
             )
         except Exception as exc:
-            texts = [t for m in messages for t in text_parts(m.get("content"))]
-            raise RowError(
-                ErrorCode.DATASET_FORMAT_UNSUPPORTED,
-                f"chat template 렌더링에 실패했습니다 ({_safe_reason(exc, texts)}).",
-            ) from exc
+            raise self._template_failure(exc) from exc
         if not isinstance(text, str):  # pragma: no cover - defensive
             raise RowError(ErrorCode.INTERNAL_ERROR, "chat template 결과가 문자열이 아닙니다.")
         return text
@@ -243,12 +250,15 @@ class TrlAdapterBase:
                 **self.template_kwargs,
             )
         except Exception as exc:
-            texts = [t for m in messages for t in text_parts(m.get("content"))]
-            raise RowError(
-                ErrorCode.DATASET_FORMAT_UNSUPPORTED,
-                f"chat template 렌더링에 실패했습니다 ({_safe_reason(exc, texts)}).",
-            ) from exc
+            raise self._template_failure(exc) from exc
         return list(out["input_ids"]), list(out["assistant_masks"])
+
+    def _template_failure(self, exc: BaseException) -> RowError:
+        reason = _safe_reason(exc, _template_source(self.tokenizer))
+        return RowError(
+            ErrorCode.DATASET_FORMAT_UNSUPPORTED,
+            f"chat template 렌더링에 실패했습니다 ({reason}).",
+        )
 
     def add_eos(self, text: str) -> str:
         """TRL appends the EOS string to non-conversational text/completions that lack it."""
