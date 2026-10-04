@@ -50,7 +50,8 @@ def test_conversational_prompt_completion_matches_trl(mimo) -> None:
     # MiMo layout: <think></think> + content + <|im_end|> (example-model-dataset.md §5.4)
     assert rec.completion_tokens == len(ROW["chosen"].encode()) + 3
     assert rec.template_preserved is True and rec.template_issue is None
-    assert rec.extras == {"system_omitted": 1}
+    assert set(rec.extras) == {"system_omitted", "token_digest"}
+    assert rec.extras["system_omitted"] == 1
 
 
 def test_prompt_masked_tokens_stay_in_the_sequence_length(mimo) -> None:

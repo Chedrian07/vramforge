@@ -8,10 +8,15 @@ Tokenizer calls mirror what TRL 1.14.1 does through transformers 5.18 (no torch)
   tokenizer call, which yields identical ids and gives us the rendered text for the content check.
 * plain strings: ``processing_class(text=...)`` with the tokenizer defaults (trl data_utils.py
   ``_tokenize``); no max_length is ever passed, so nothing is truncated.
+
+Every successful record carries ``extras["token_digest"]`` (see `token_digest`): a hash of the
+token ids the trainer feeds to the model for that row, so GPU validation can confirm that a
+re-read row tokenizes identically without the ids ever being stored (plan §7.6).
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -39,6 +44,24 @@ from .mapping import (
 
 TRL_VERSION = "1.14.1"
 _MAX_REASON_CHARS = 300
+
+
+def token_digest(sequences: Mapping[str, Sequence[int]]) -> str:
+    """sha256 (hex) of the token ids one row feeds to the model, combined over its sequences.
+
+    Encoding, so any tool can recompute it from the trainer's own tensors: for each sequence in
+    sorted name order, the ASCII bytes of ``"<name>:" + ",".join(str(i) for i in ids) + "\\n"``.
+    Names are the TRL 1.14.1 model inputs of one row: SFT ``input_ids`` (the tokenized dataset
+    column); DPO ``chosen_input_ids`` and ``rejected_input_ids`` (``prompt_ids + chosen_ids`` and
+    ``prompt_ids + rejected_ids``, exactly as the collator concatenates them); GRPO
+    ``prompt_ids`` (``_tokenize_prompts``).
+    """
+    h = hashlib.sha256()
+    for name in sorted(sequences):
+        h.update(f"{name}:".encode("ascii"))
+        h.update(",".join(map(str, sequences[name])).encode("ascii"))
+        h.update(b"\n")
+    return h.hexdigest()
 
 
 def check_template_kwargs(template_kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -331,4 +354,5 @@ __all__ = [
     "check_template_kwargs",
     "loss_positions",
     "mapping_error",
+    "token_digest",
 ]

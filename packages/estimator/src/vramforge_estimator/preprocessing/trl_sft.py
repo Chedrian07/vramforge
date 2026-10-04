@@ -32,7 +32,7 @@ from vramforge_estimator.schemas import (
 
 from .base import TokenizedRecord
 from .mapping import RowError, content_digest
-from .trl_common import TRL_VERSION, TrlAdapterBase, loss_positions, mapping_error
+from .trl_common import TRL_VERSION, TrlAdapterBase, loss_positions, mapping_error, token_digest
 
 SftLayout = Literal["prompt_completion", "messages", "text"]
 
@@ -70,7 +70,7 @@ def resolve_sft_layout(mapping: ColumnMapping) -> tuple[SftLayout, str | None]:
 
 class TrlSftAdapter(TrlAdapterBase):
     name = f"trl-{TRL_VERSION}-sft"
-    version = "1"
+    version = "2"  # 2: records carry token digests
     objective = Objective.SFT
 
     def __init__(
@@ -270,7 +270,7 @@ class TrlSftAdapter(TrlAdapterBase):
             # completion_only_loss (default for prompt-completion) it gates the labels.
             completion = max(0, total - prompt_len)
             masks = [[0] * prompt_len + [1] * completion, *masks]
-        extras: dict[str, Any] = {}
+        extras: dict[str, Any] = {"token_digest": token_digest({"input_ids": ids})}
         if omitted:
             extras["system_omitted"] = omitted
         if prefix_ok is False:
