@@ -64,6 +64,9 @@ services:
       # API upload limit (VRAMFORGE_MAX_UPLOAD_BYTES, default 2 GiB) + 1 MiB of multipart framing.
       VRAMFORGE_PROXY_MAX_BODY_SIZE: ${VRAMFORGE_PROXY_MAX_BODY_SIZE:-2049MiB}
     read_only: true
+    # The only network-facing container runs Caddy as root (to bind :80); keep only that capability.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
     tmpfs:
       - /config
       - /data
