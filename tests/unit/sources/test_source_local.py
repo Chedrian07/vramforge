@@ -247,6 +247,32 @@ def test_upload_reference(access: SourceAccess) -> None:
     assert [f.path for f in source.manifest.files] == ["upload.jsonl"]
 
 
+def test_upload_of_another_owner_is_unreachable(roots: dict[str, Path]) -> None:
+    # plan §19.4: the API scopes uploads_dir per owner (<uploads>/<owner>/<id>/)
+    owner_a = roots["uploads"] / "owner-a"
+    owner_b = roots["uploads"] / "owner-b"
+    (owner_a / UPLOAD_ID).mkdir(parents=True)
+    (owner_a / UPLOAD_ID / "private.jsonl").write_text('{"q": "a"}\n', encoding="utf-8")
+    owner_b.mkdir()
+    ref = DatasetSourceRef(reference=f"upload:{UPLOAD_ID}")
+    assert resolve_dataset(ref, SourceAccess(uploads_dir=owner_a)).manifest.files
+    _expect(
+        ErrorCode.SOURCE_NOT_FOUND,
+        lambda: resolve_dataset(ref, SourceAccess(uploads_dir=owner_b)),
+        roots,
+        "upload_missing",
+    )
+    _expect(
+        ErrorCode.LOCAL_PATH_NOT_ALLOWED,
+        lambda: resolve_dataset(
+            DatasetSourceRef(reference=f"upload:../owner-a/{UPLOAD_ID}"),
+            SourceAccess(uploads_dir=owner_b),
+        ),
+        roots,
+        "invalid_upload_id",
+    )
+
+
 def _expect(code: ErrorCode, fn, roots: dict[str, Path], reason: str | None = None) -> None:
     with pytest.raises(EstimatorError) as exc:
         fn()
