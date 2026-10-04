@@ -308,3 +308,28 @@ def test_unregistered_local_root_is_rejected(client: TestClient) -> None:
     )
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "LOCAL_PATH_NOT_ALLOWED"
+
+
+def test_sse_of_a_finished_analysis_never_waits_for_more(client: TestClient) -> None:
+    """A finished analysis whose cursor is past its terminal event (e.g. a late event landed after
+    it) must close the stream instead of polling until sse_max_duration_s."""
+    import time
+
+    aid = _create(client)["analysis_id"]
+    terminal_id = _add_events(client, aid, terminal=True)[-1]
+    with session_scope(_sessions(client)) as db:
+        late = store.append_event(
+            db,
+            analysis_id=aid,
+            fingerprint="req_x",
+            event_type=EventType.WARNING,
+            status=JobStatus.TOKENIZING,
+        )
+    started = time.monotonic()
+    with client.stream(
+        "GET", f"/api/v1/analyses/{aid}/events", headers={"Last-Event-ID": str(terminal_id)}
+    ) as resp:
+        assert resp.status_code == 200
+        events = _read_sse(resp)
+    assert [int(e["id"]) for e in events] == [late]
+    assert time.monotonic() - started < 2  # sse_max_duration_s is 5 s in these tests
