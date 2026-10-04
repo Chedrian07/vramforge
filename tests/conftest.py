@@ -21,7 +21,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     run_network = os.environ.get("VRAMFORGE_NETWORK_TESTS") == "1"
     parity_ok = _parity_available()
     skip_network = pytest.mark.skip(reason="set VRAMFORGE_NETWORK_TESTS=1 to run network tests")
-    skip_parity = pytest.mark.skip(reason="install the 'parity' dependency group (uv sync --all-groups)")
+    skip_parity = pytest.mark.skip(
+        reason="install the 'parity' dependency group (uv sync --all-groups)"
+    )
     for item in items:
         if "network" in item.keywords and not run_network:
             item.add_marker(skip_network)

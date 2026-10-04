@@ -18,6 +18,8 @@ MODULES = [
     "vramforge_estimator.compatibility",
     "vramforge_estimator.exports",
     "vramforge_api.app",
+    "vramforge_worker.main",
+    "vramforge_worker.tasks",
 ]
 
 
