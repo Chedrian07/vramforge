@@ -4,12 +4,16 @@
 #   docker compose up -d --build --wait
 #   infra/scripts/smoke-test.sh [base-url]        # default http://127.0.0.1:${VRAMFORGE_PORT:-8080}
 #
-# Checks: proxy liveness, API health through /api, web root, and the proxy security headers.
+# Checks: proxy liveness, API health through /api with the database, Redis and a worker heartbeat
+# all "ok", web root, and the proxy security headers.
 # Needs only POSIX sh and curl. Exit code 0 means every check passed.
 set -eu
 
 BASE_URL="${1:-http://127.0.0.1:${VRAMFORGE_PORT:-8080}}"
 BASE_URL="${BASE_URL%/}"
+# /api/v1/health always answers 200 (it is the liveness probe); its top-level "status" is "ok"
+# only when db, redis and worker are all ok. Poll up to this many seconds for that state.
+HEALTH_WAIT_S="${SMOKE_HEALTH_WAIT_S:-60}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
@@ -28,13 +32,21 @@ result="$(fetch /healthz)"
 [ "${result%% *}" = "200" ] || fail "GET /healthz: expected 200, got $result"
 echo "smoke: ok   GET /healthz -> $result"
 
-result="$(fetch /api/v1/health)"
-[ "${result%% *}" = "200" ] || fail "GET /api/v1/health: expected 200, got $result"
-case "$result" in
-*application/json*) ;;
-*) fail "GET /api/v1/health: expected application/json, got $result" ;;
-esac
-grep -q '"status"' "$TMP/body" || fail "GET /api/v1/health: body has no status field"
+waited=0
+while :; do
+	result="$(fetch /api/v1/health)"
+	[ "${result%% *}" = "200" ] || fail "GET /api/v1/health: expected 200, got $result"
+	case "$result" in
+	*application/json*) ;;
+	*) fail "GET /api/v1/health: expected application/json, got $result" ;;
+	esac
+	grep -q '"status"' "$TMP/body" || fail "GET /api/v1/health: no status field: $(cat "$TMP/body")"
+	grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$TMP/body" && break
+	[ "$waited" -lt "$HEALTH_WAIT_S" ] ||
+		fail "GET /api/v1/health: not ok after ${HEALTH_WAIT_S}s: $(cat "$TMP/body")"
+	sleep 2
+	waited=$((waited + 2))
+done
 echo "smoke: ok   GET /api/v1/health -> $result $(cat "$TMP/body")"
 
 result="$(fetch /)"
