@@ -29,6 +29,9 @@ from .readers import FileSource, ReaderLimits
 
 SourceKind = Literal["hf", "local_dir", "local_file"]
 _HASH_BLOCK = 4 << 20
+# Hub files up to this size are downloaded for the preview (the scan reuses the cached copy);
+# larger ones are previewed with ranged reads so inspection stays fast.
+PREVIEW_DOWNLOAD_MAX = 16 << 20
 
 
 @dataclass(frozen=True)
@@ -190,7 +193,7 @@ class SourceFiles:
             path = Path(data_file.location)
             self.check_inside(path, data_file.shard_id)
             return FileSource(data_file.shard_id, path=path, size=_size(path), byte_budget=budget)
-        if data_file.size is not None and data_file.size <= budget:
+        if data_file.size is not None and data_file.size <= min(budget, PREVIEW_DOWNLOAD_MAX):
             path = self._download(data_file.location)
             return FileSource(data_file.shard_id, path=path, size=_size(path), byte_budget=budget)
         return FileSource(

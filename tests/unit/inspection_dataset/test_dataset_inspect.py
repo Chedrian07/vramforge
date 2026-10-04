@@ -342,3 +342,20 @@ def test_unexpected_preview_errors_become_issues(monkeypatch: pytest.MonkeyPatch
     result = inspect(local_source(FIXTURES / "preference.jsonl"), Objective.DPO)
     assert codes(result) == [ErrorCode.INTERNAL_ERROR]
     assert result.columns == [] and result.suggested_mapping is None
+
+
+def test_hub_preview_downloads_only_small_files(
+    tmp_path: Path, fake_hub: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import vramforge_estimator.inspection.dataset_files as files_module
+
+    root = tmp_path / "repo"
+    write_jsonl(root / "train.jsonl", [{"text": "t" * 100} for _ in range(100)])
+    source = hf_source(root)
+    fake_hub[source.repo_id] = root
+    inspect_dataset(source, ref(), SourceAccess(), None)
+    assert fake_hub["__log__"] == ["download:train.jsonl"]  # small: cached for the scan
+    fake_hub["__log__"].clear()
+    monkeypatch.setattr(files_module, "PREVIEW_DOWNLOAD_MAX", 1024)
+    inspect_dataset(source, ref(), SourceAccess(), None)
+    assert fake_hub["__log__"] == ["open:train.jsonl"]  # above the threshold: ranged reads
