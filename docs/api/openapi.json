@@ -3514,6 +3514,27 @@
         "title": "LengthStats",
         "type": "object"
       },
+      "LinearAttentionKernel": {
+        "description": "Kernel path of linear-attention (e.g. Gated DeltaNet) layers in the training environment.\n\nThe path is chosen at import time by what is installed (docs/research/architecture-memory.md):\n`torch_fallback` (no flash-linear-attention / causal-conv1d) upcasts to fp32 and saves every\nchunk state; `fla` uses the fused kernels. AUTO = the environment profile's installed set.",
+        "enum": [
+          "auto",
+          "torch_fallback",
+          "fla"
+        ],
+        "title": "LinearAttentionKernel",
+        "type": "string"
+      },
+      "LoadDtype": {
+        "description": "dtype passed when the trainer loads the model (TRL `model_init_kwargs[\"dtype\"]`).\n\nTRL 1.14.1 loads string model ids in float32 unless a dtype is given\n(docs/research/loading-quantization-peft.md). AUTO = the profile preset, which the exported\ntrainer config pins explicitly.",
+        "enum": [
+          "auto",
+          "bfloat16",
+          "float16",
+          "float32"
+        ],
+        "title": "LoadDtype",
+        "type": "string"
+      },
       "LoadingScope": {
         "enum": [
           "auto_verified",
@@ -4642,6 +4663,10 @@
               }
             ]
           },
+          "load_dtype": {
+            "title": "Load Dtype",
+            "type": "string"
+          },
           "loading_scope": {
             "enum": [
               "full_checkpoint",
@@ -4695,6 +4720,15 @@
               }
             ],
             "title": "Preprocessing Adapter"
+          },
+          "processing_class": {
+            "default": "tokenizer",
+            "enum": [
+              "tokenizer",
+              "processor"
+            ],
+            "title": "Processing Class",
+            "type": "string"
           },
           "profile_id": {
             "anyOf": [
@@ -4774,6 +4808,7 @@
           "objective",
           "strategy",
           "loading_scope",
+          "load_dtype",
           "effective_dtypes",
           "quantization",
           "optimizer",
@@ -5650,6 +5685,14 @@
             "default": true,
             "title": "Gradient Checkpointing",
             "type": "boolean"
+          },
+          "linear_attention_kernel": {
+            "$ref": "#/components/schemas/LinearAttentionKernel",
+            "default": "auto"
+          },
+          "load_dtype": {
+            "$ref": "#/components/schemas/LoadDtype",
+            "default": "auto"
           },
           "lora": {
             "$ref": "#/components/schemas/LoraConfig"
