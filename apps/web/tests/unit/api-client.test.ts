@@ -10,17 +10,26 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function setup(response: Response | (() => Promise<Response>)) {
-  const fetchImpl = vi.fn<typeof fetch>(async () =>
-    typeof response === "function" ? response() : response.clone(),
-  );
+const SESSION_URL = "/api/v1/session";
+const OPEN_SESSION = { auth_required: false, authenticated: true };
+
+const isSessionCheck = (url: unknown, init?: RequestInit) => String(url) === SESSION_URL && (init?.method ?? "GET") === "GET";
+
+/** `response` answers every call except the owner bootstrap (GET /session); `call(i)` skips it. */
+function setup(response: Response | (() => Promise<Response>), session: () => Promise<Response> = async () => jsonResponse(200, OPEN_SESSION)) {
+  const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+    if (isSessionCheck(url, init)) return session();
+    return typeof response === "function" ? response() : response.clone();
+  });
   const onUnauthorized = vi.fn();
   const api = createHttpClient({ fetchImpl, onUnauthorized });
+  const calls = () => fetchImpl.mock.calls.filter(([url, init]) => !isSessionCheck(url, init));
   const call = (i = 0) => {
-    const [url, init] = fetchImpl.mock.calls[i] ?? [];
+    const [url, init] = calls()[i] ?? [];
     return { url: String(url), init: init ?? {}, headers: (init?.headers ?? {}) as Record<string, string> };
   };
-  return { api, fetchImpl, onUnauthorized, call };
+  const sessionChecks = () => fetchImpl.mock.calls.filter(([url, init]) => isSessionCheck(url, init)).length;
+  return { api, fetchImpl, onUnauthorized, call, sessionChecks };
 }
 
 const request = {
@@ -145,6 +154,59 @@ describe("http client", () => {
     expect(api.eventsUrl("a1", 42)).toBe("/api/v1/analyses/a1/events?after=42");
     expect(api.eventsUrl("a1", null)).toBe("/api/v1/analyses/a1/events");
     expect(api.exportUrl("a1", "trainer-config")).toBe("/api/v1/analyses/a1/export?format=trainer-config");
+  });
+});
+
+describe("owner cookie bootstrap", () => {
+  it("sends one GET /session before any other request and holds parallel calls until it answers", async () => {
+    let answer: (response: Response) => void = () => {};
+    const { api, fetchImpl, call, sessionChecks } = setup(
+      jsonResponse(200, { roots: [] }),
+      () => new Promise<Response>((resolve) => (answer = resolve)),
+    );
+    // A fresh page: profiles, local roots and a resumed analysis all start at once.
+    const pending = Promise.all([api.localRoots(), api.backendProfiles(), api.getAnalysis("a1")]);
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe(SESSION_URL);
+    expect(fetchImpl.mock.calls[0]![1]?.method).toBe("GET");
+    expect(fetchImpl.mock.calls[0]![1]?.credentials).toBe("same-origin");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // nothing else went out without the cookie
+
+    answer(jsonResponse(200, OPEN_SESSION));
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect([call(0).url, call(1).url, call(2).url].sort()).toEqual(["/api/v1/analyses/a1", "/api/v1/backend-profiles", "/api/v1/local-roots"]);
+    await api.localRoots();
+    expect(sessionChecks()).toBe(1);
+  });
+
+  it("does not block requests when the bootstrap fails and tries again on the next request", async () => {
+    let failures = 1;
+    const { api, sessionChecks } = setup(jsonResponse(200, { roots: [] }), async () => {
+      if (failures-- > 0) throw new TypeError("Failed to fetch");
+      return jsonResponse(200, OPEN_SESSION);
+    });
+    await expect(api.localRoots()).resolves.toEqual({ roots: [] });
+    await api.localRoots();
+    expect(sessionChecks()).toBe(2);
+    await api.localRoots();
+    expect(sessionChecks()).toBe(2);
+  });
+
+  it("keeps the owner after an API error answer (the cookie came with it)", async () => {
+    const { api, sessionChecks } = setup(jsonResponse(200, { roots: [] }), async () => jsonResponse(404, { detail: "Not Found" }));
+    await api.localRoots();
+    await api.localRoots();
+    expect(sessionChecks()).toBe(1);
+  });
+
+  it("asks for the access token when the session says one is required", async () => {
+    const { api, onUnauthorized } = setup(jsonResponse(200, { roots: [] }), async () =>
+      jsonResponse(200, { auth_required: true, authenticated: false }),
+    );
+    await api.localRoots();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -15,6 +15,7 @@ export type InspectResponse = Schemas["InspectResponse"];
 export type ModelInspection = Schemas["ModelInspection"];
 export type DatasetInspection = Schemas["DatasetInspection"];
 export type UploadResponse = Schemas["UploadResponse"];
+export type SessionStatus = Schemas["SessionStatus"];
 export type BackendProfilesResponse = Schemas["BackendProfilesResponse"];
 export type GpuPreset = Schemas["GpuPreset"];
 export type LocalRootsResponse = Schemas["LocalRootsResponse"];

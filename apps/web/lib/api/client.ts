@@ -1,6 +1,11 @@
 // Same-origin REST client for the VRAMForge API (docs/architecture.md §6).
 // Ownership is the httpOnly `vf_owner` cookie (same-origin fetch sends it); state-changing
 // requests carry the CSRF header. Error bodies are `ErrorResponse { error: Issue }`.
+//
+// The API mints a new `vf_owner` cookie for every request that arrives without one. A fresh
+// browser fires several requests at once (profiles, local roots, a resumed analysis), each would
+// get a different owner and the last Set-Cookie would win, hiding analyses created under the
+// others. So one GET /session runs first and every other request waits for it.
 import type { paths } from "./schema";
 import type {
   AnalysisCreated,
@@ -15,6 +20,7 @@ import type {
   LocalRootsResponse,
   ScenarioRequest,
   ScenarioResponse,
+  SessionStatus,
   UploadResponse,
 } from "./types";
 
@@ -132,14 +138,19 @@ async function errorFrom(response: Response): Promise<ApiError> {
   return new ApiError(response.status, fallbackIssue(response.status));
 }
 
+type Method = "GET" | "POST" | "DELETE";
+
+interface SendOptions {
+  json?: unknown;
+  body?: BodyInit;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
   const doFetch: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
 
-  async function request<T>(
-    method: "GET" | "POST" | "DELETE",
-    url: string,
-    init: { json?: unknown; body?: BodyInit; headers?: Record<string, string>; signal?: AbortSignal } = {},
-  ): Promise<T> {
+  async function send<T>(method: Method, url: string, init: SendOptions = {}): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json", ...init.headers };
     if (method !== "GET") headers[CSRF_HEADER] = "1";
     let body = init.body;
@@ -174,6 +185,28 @@ export function createHttpClient(options: HttpClientOptions = {}): ApiClient {
     } catch {
       throw unreadableBody(response.status);
     }
+  }
+
+  // One owner bootstrap per client (GET /session is exempt from the access token, so it also says
+  // whether the token prompt is needed). Any API answer, even an error status, carries the cookie;
+  // when the API was not reached (network, proxy 5xx) the next request tries again. A failed
+  // attempt never blocks the waiting request, which then reports its own error.
+  let ownerReady: Promise<void> | null = null;
+  function ensureOwner(): Promise<void> {
+    ownerReady ??= send<SessionStatus | undefined>("GET", apiPath("/api/v1/session")).then(
+      (status) => {
+        if (status?.auth_required && !status.authenticated) options.onUnauthorized?.();
+      },
+      (error: unknown) => {
+        if (!(error instanceof ApiError) || error.status === 0 || error.status >= 500) ownerReady = null;
+      },
+    );
+    return ownerReady;
+  }
+
+  async function request<T>(method: Method, url: string, init: SendOptions = {}): Promise<T> {
+    await ensureOwner();
+    return send<T>(method, url, init);
   }
 
   const analysisPath = (analysisId: string) =>
