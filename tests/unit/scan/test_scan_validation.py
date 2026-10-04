@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vramforge_estimator.scan import audit_preservation, validate_context
+from vramforge_estimator.scan import LengthTable, audit_preservation, validate_context
 from vramforge_estimator.scan.stats import LengthAccumulator, primary_branch
 from vramforge_estimator.schemas import (
     BatchPlan,
@@ -113,6 +113,18 @@ def test_sentinel_tokenizer_limit_is_never_a_context() -> None:
     )
     assert ctx.tokenizer_limit_is_sentinel and ctx.effective_limit is None
     assert ctx.status == "unknown"
+    assert ctx.exceeded_rows is None and ctx.exceeded_rows_exact is False  # unknown, not 0
+
+
+def test_no_row_length_leaves_the_exceeded_count_unknown() -> None:
+    ctx = validate_context(
+        scan_result([], coverage=ScanCoverage.PARTIAL, rows_failed=2),
+        model_declared_max=4096,
+        tokenizer=None,
+        backend_verified_max=None,
+    )
+    assert ctx.effective_limit == 4096 and ctx.max_observed_length is None
+    assert ctx.exceeded_rows is None and ctx.status == "unknown"
 
 
 def test_tokenizer_limit_is_only_a_fallback_and_backend_can_be_tighter() -> None:
@@ -140,6 +152,7 @@ def test_exceeded_rows_are_counted() -> None:
         backend_verified_max=None,
     )
     assert ctx.status == "exceeded" and ctx.exceeded_rows == 2 and ctx.max_observed_length == 5000
+    assert ctx.exceeded_rows_exact  # both rows are among the longest rows kept
 
 
 def test_grpo_budget_is_added_to_the_longest_prompt() -> None:
@@ -173,6 +186,83 @@ def test_exceeded_count_is_exact_on_power_of_two_thresholds() -> None:
             extra_tokens=budget,
         )
         assert ctx.exceeded_rows == sum(1 for n in lengths if n + budget > limit)
+        assert ctx.exceeded_rows_exact
+
+
+def table_of(lengths: list[int], *, key: str | None = "pre_x") -> LengthTable:
+    return LengthTable(
+        row_ids=[f"train:{i}" for i in range(len(lengths))],
+        prompt_tokens=list(lengths),
+        completion_tokens=[None] * len(lengths),
+        sequence_tokens=list(lengths),
+        loss_token_count=[None] * len(lengths),
+        chosen_total_tokens=[None] * len(lengths),
+        rejected_total_tokens=[None] * len(lengths),
+        preprocess_key=key,
+    )
+
+
+def test_threshold_inside_a_bin_is_a_lower_bound_unless_the_table_is_given() -> None:
+    lengths = list(range(1, 1001))
+    truth = sum(1 for n in lengths if n > 700)
+    kwargs = {"model_declared_max": 700, "tokenizer": None, "backend_verified_max": None}
+    bound = validate_context(scan_result(lengths), **kwargs)
+    assert bound.status == "exceeded" and not bound.exceeded_rows_exact
+    assert 10 <= bound.exceeded_rows < truth  # proven rows only, never more than the truth
+    exact = validate_context(scan_result(lengths), lengths=table_of(lengths), **kwargs)
+    assert exact.exceeded_rows == truth and exact.exceeded_rows_exact
+    for foreign in (table_of(lengths, key="pre_other"), table_of(lengths[:-1], key=None)):
+        ignored = validate_context(scan_result(lengths), lengths=foreign, **kwargs)
+        assert ignored.exceeded_rows == bound.exceeded_rows and not ignored.exceeded_rows_exact
+    unkeyed = validate_context(scan_result(lengths), lengths=table_of(lengths, key=None), **kwargs)
+    assert unkeyed.exceeded_rows == truth and unkeyed.exceeded_rows_exact
+
+
+def test_dpo_table_count_uses_the_longer_branch() -> None:
+    pairs = [(10 * i, 1000 - 10 * i) for i in range(1, 100)]
+    longest = [max(c, r) for c, r in pairs]
+    table = table_of(longest)
+    table.chosen_total_tokens = [c for c, _ in pairs]
+    table.rejected_total_tokens = [r for _, r in pairs]
+    scan = scan_result(longest, objective=Objective.DPO)
+    kwargs = {"model_declared_max": 700, "tokenizer": None, "backend_verified_max": None}
+    assert not validate_context(scan, **kwargs).exceeded_rows_exact  # 700 falls inside a bin
+    ctx = validate_context(scan, lengths=table, **kwargs)
+    assert ctx.exceeded_rows == sum(1 for n in longest if n > 700) and ctx.exceeded_rows_exact
+
+
+def test_the_scan_artifact_table_makes_the_count_exact(make_stream, adapter, ctx) -> None:
+    from vramforge_estimator.scan import full_scan, load_lengths
+
+    lengths = [(i * 37) % 1000 + 1 for i in range(400)]
+    out = full_scan(
+        make_stream([{"len": n} for n in lengths]),
+        adapter,
+        ctx,
+        objective=Objective.SFT,
+        preprocess_key="pre_scan",
+        tokenizer_fingerprint="t",
+        template_fingerprint=None,
+        context_limit=700,
+    )
+    kwargs = {"model_declared_max": 700, "tokenizer": None, "backend_verified_max": None}
+    truth = sum(1 for n in lengths if n > 700)
+    assert out.result.context_exceeded_rows == truth  # the scanner counts exactly per row
+    table = load_lengths(out.artifact_path)
+    exact = validate_context(out.result, lengths=table, **kwargs)
+    assert exact.exceeded_rows == truth and exact.exceeded_rows_exact
+
+
+def test_partial_or_failed_counts_are_lower_bounds() -> None:
+    for result in (
+        scan_result([100, 9000], coverage=ScanCoverage.PARTIAL),
+        scan_result([100, 9000], coverage=ScanCoverage.PARTIAL, rows_failed=1, rows_unprocessed=0),
+    ):
+        ctx = validate_context(
+            result, model_declared_max=4096, tokenizer=None, backend_verified_max=None
+        )
+        assert ctx.status == "exceeded" and ctx.exceeded_rows == 1
+        assert not ctx.exceeded_rows_exact  # unread or failed rows may exceed too
 
 
 def test_partial_or_failed_scans_cannot_prove_ok() -> None:
@@ -275,6 +365,10 @@ def test_context_exceeded_is_a_violation_without_truncation_advice() -> None:
     issue = next(i for i in result.violations if i.code is ErrorCode.CONTEXT_EXCEEDED)
     assert "하지 않으며" in issue.user_message and "GPU 메모리를 늘려도" in issue.user_message
     assert issue.details["effective_limit"] == 4096
+    assert "초과 row 1개)" in issue.user_message and issue.details["exceeded_rows_exact"]
+    partial = audit(scan_result([100, 9000], coverage=ScanCoverage.PARTIAL), limit=4096)
+    bound = next(i for i in partial.violations if i.code is ErrorCode.CONTEXT_EXCEEDED)
+    assert "초과 row 1개 이상" in bound.user_message
 
 
 def test_sampler_dropping_rows_is_a_violation() -> None:

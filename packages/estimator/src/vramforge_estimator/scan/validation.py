@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +14,7 @@ from vramforge_estimator.schemas import (
     DatasetScanResult,
     ErrorCode,
     Issue,
+    Objective,
     PreservationAudit,
     PreservationCheck,
     PreservationCheckName,
@@ -23,6 +25,7 @@ from vramforge_estimator.schemas import (
     TokenizerManifest,
 )
 
+from .base import LengthTable
 from .stats import primary_branch
 
 # transformers stores "no limit" as LARGE_INTEGER/VERY_LARGE_INTEGER (1e20/1e30) in
@@ -36,20 +39,49 @@ def _model_input_stats(scan: DatasetScanResult) -> BranchStats | None:
     return next((b for b in scan.branches if b.branch is target), None)
 
 
-def _rows_above(branch: BranchStats, threshold: int) -> int:
-    """Rows longer than `threshold`. Exact unless more than len(top_rows) rows are above and
-    the threshold falls inside a histogram bin; then the exact lower bound is returned."""
+def _rows_above(branch: BranchStats, threshold: int) -> tuple[int, bool]:
+    """Rows (with a known length) longer than `threshold`, and whether the count is exact.
+
+    Exact when the threshold is outside [min, max), when the longest rows kept in `top_rows`
+    already reach below it, or when ``threshold + 1`` starts a histogram bin (the power-of-two
+    bins of stats.LengthAccumulator make typical context thresholds land there). Otherwise the
+    threshold falls inside a bin and the largest provable lower bound is returned."""
     stats = branch.stats
     if stats.max is None or threshold >= stats.max:
-        return 0
+        return 0, True
     if stats.min is not None and threshold < stats.min:
-        return stats.count
+        return stats.count, True
     from_top = sum(1 for r in branch.top_rows if r.length > threshold)
     if from_top < len(branch.top_rows) or len(branch.top_rows) >= stats.count:
-        return from_top
+        return from_top, True
     first_exceeding = threshold + 1
     full_bins = sum(b.count for b in stats.histogram if b.lo >= first_exceeding)
-    return max(from_top, full_bins)
+    aligned = any(b.lo == first_exceeding for b in stats.histogram)
+    return max(from_top, full_bins), aligned
+
+
+def _model_input_lengths(objective: Objective, table: LengthTable) -> Iterator[int | None]:
+    """Per-row length of the primary branch (what the model sees), from the length table."""
+    if objective is Objective.SFT:
+        yield from table.sequence_tokens
+    elif objective is Objective.DPO:
+        for chosen, rejected in zip(
+            table.chosen_total_tokens, table.rejected_total_tokens, strict=True
+        ):
+            present = [v for v in (chosen, rejected) if v is not None]
+            yield max(present) if present else None
+    else:
+        yield from table.prompt_tokens
+
+
+def _counted_rows_above(scan: DatasetScanResult, table: LengthTable, threshold: int) -> int | None:
+    """Exact count from the loaded length table, or None when the table is not this scan's."""
+    if len(table) != scan.rows_ok:
+        return None
+    if table.preprocess_key is not None and table.preprocess_key != scan.preprocess_key:
+        return None
+    lengths = _model_input_lengths(scan.objective, table)
+    return sum(1 for v in lengths if v is not None and v > threshold)
 
 
 def validate_context(
@@ -59,6 +91,7 @@ def validate_context(
     tokenizer: TokenizerManifest | None,
     backend_verified_max: int | None,
     extra_tokens: int = 0,
+    lengths: LengthTable | None = None,
 ) -> ContextValidation:
     """Compare the longest sequence (+ `extra_tokens`, e.g. a GRPO completion budget) with the
     limits, keeping model/tokenizer/backend limits separate (plan §7.5).
@@ -66,7 +99,13 @@ def validate_context(
     The effective limit is the smallest of the model's declared maximum and the backend-verified
     maximum; the tokenizer's ``model_max_length`` is only a fallback when neither is known and is
     never used when it is a sentinel. A partial scan or failed rows can prove "exceeded" but never
-    "ok" (status "unknown")."""
+    "ok" (status "unknown").
+
+    ``exceeded_rows`` is None when no limit (or no row length) is known, never 0. It is counted
+    from the scan statistics; when those only bound it (threshold inside a histogram bin) and the
+    scan's own `lengths` table (``scan.load_lengths``) is given, it is counted exactly from the
+    table. ``exceeded_rows_exact`` is False whenever the number is a lower bound: also for a
+    partial scan or failed rows, whose unknown lengths may exceed the limit too."""
     tok_max = tokenizer.model_max_length if tokenizer else None
     sentinel = bool(
         tokenizer
@@ -90,12 +129,20 @@ def validate_context(
     longest = branch.stats.max if branch else None
     observed = longest + extra_tokens if longest is not None else None
     status: Literal["ok", "exceeded", "unknown"] = "unknown"
-    exceeded_rows = 0
+    exceeded_rows: int | None = None
+    exact = False
     if limit is not None and observed is not None and branch is not None:
-        exceeded_rows = _rows_above(branch, limit - extra_tokens)
+        threshold = limit - extra_tokens
+        exceeded_rows, exact = _rows_above(branch, threshold)
+        if not exact and lengths is not None:
+            counted = _counted_rows_above(scan, lengths, threshold)
+            if counted is not None:
+                exceeded_rows, exact = counted, True
+        every_row_known = scan.coverage is ScanCoverage.COMPLETE and scan.rows_failed == 0
+        exact = exact and every_row_known
         if observed > limit:
             status = "exceeded"
-        elif scan.coverage is ScanCoverage.COMPLETE and scan.rows_failed == 0:
+        elif every_row_known:
             status = "ok"
     return ContextValidation(
         model_declared_max=model_declared_max,
@@ -106,6 +153,7 @@ def validate_context(
         limit_source=source,
         max_observed_length=observed,
         exceeded_rows=exceeded_rows,
+        exceeded_rows_exact=exact,
         status=status,
     )
 
@@ -251,11 +299,17 @@ def _context(context: ContextValidation) -> _Check:
             f"{context.effective_limit:,}({context.limit_source}) 이내입니다.",
         )
     if context.status == "exceeded":
+        if context.exceeded_rows is None:
+            rows = "초과 row 수 미확인"
+        elif context.exceeded_rows_exact:
+            rows = f"초과 row {context.exceeded_rows:,}개"
+        else:
+            rows = f"초과 row {context.exceeded_rows:,}개 이상"
         detail = (
             f"최대 길이 {context.max_observed_length:,} 토큰이 context 상한 "
-            f"{context.effective_limit:,}({context.limit_source})을 넘습니다"
-            f"(초과 row {context.exceeded_rows:,}개 이상). 자동 절단·분할·row 제외를 하지 않으며, "
-            "GPU 메모리를 늘려도 모델의 context 제약은 해결되지 않습니다."
+            f"{context.effective_limit:,}({context.limit_source})을 넘습니다({rows}). "
+            "자동 절단·분할·row 제외를 하지 않으며, GPU 메모리를 늘려도 모델의 context 제약은 "
+            "해결되지 않습니다."
         )
         return _Check(
             name,
@@ -268,6 +322,7 @@ def _context(context: ContextValidation) -> _Check:
                 effective_limit=context.effective_limit,
                 limit_source=context.limit_source,
                 exceeded_rows=context.exceeded_rows,
+                exceeded_rows_exact=context.exceeded_rows_exact,
             ),
         )
     if context.effective_limit is None:
