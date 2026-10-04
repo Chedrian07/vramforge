@@ -1,8 +1,10 @@
-"""Scenario estimates (plan.md §9, §10, §12.3).
+"""Scenario estimates (plan.md §9, §10, §11.4, §12.3).
 
 One `ScenarioEstimate` per batch-plan scenario: SFT/DPO use the structural worst-case shape; GRPO
 without an explicit completion budget gets one scenario per candidate budget and no primary
-scenario (plan §5.4), with an explicit budget exactly one.
+scenario (plan §5.4), with an explicit budget exactly one. The evidence level is the profile's
+support grade for the objective x strategy, schedule issues and the device-map load budget become
+estimate issues, and stated assumptions stay assumptions.
 """
 
 from __future__ import annotations
@@ -16,9 +18,9 @@ from vramforge_estimator.schemas import (
     BatchPlan,
     BatchShape,
     ErrorCode,
-    Evidence,
     EvidenceLevel,
     HardwareConfig,
+    Issue,
     MarginPolicy,
     MemoryEstimate,
     ModelInventory,
@@ -69,24 +71,62 @@ def scenario_shapes(
     return out
 
 
-def _assumptions(schedules: list[TrainingSchedule]) -> list[Assumption]:
+EVIDENCE_NOTES = {
+    EvidenceLevel.METADATA_ONLY: (
+        "이 조합은 구조·가중치·학습 파라미터 수준까지만 지원되어 전체 VRAM 적합 판정을 하지 "
+        "않습니다."
+    ),
+    EvidenceLevel.ANALYTIC: (
+        "보정(calibration)·실측 값이 아니라 명시적 allocation과 workspace 가정을 가진 정적 "
+        "추정입니다."
+    ),
+    EvidenceLevel.CALIBRATED: "등록된 GPU·소프트웨어 영역에서 보정된 정적 추정입니다.",
+    EvidenceLevel.MEASURED: "이 job에서 관측한 단계별 peak입니다.",
+}
+
+
+def evidence_level(cfg: ResolvedConfig) -> tuple[EvidenceLevel, Assumption]:
+    """The profile's support grade for the objective x strategy (plan §11.4) and the assumption
+    that states it. A profile that is no longer registered, or a combination it does not support,
+    vouches for nothing beyond the inventory: metadata_only."""
+    from vramforge_estimator.compatibility.profiles import load_registry
+
+    profile = load_registry().analytic.get(cfg.profile_id) if cfg.profile_id else None
+    rule = profile.support_rule(cfg.objective, cfg.strategy) if profile else None
+    if profile is None or rule is None or rule.grade is None:
+        level = EvidenceLevel.METADATA_ONLY
+        combo = f"{cfg.objective.value}/{cfg.strategy.value}"
+        why = (
+            f"등록된 profile({cfg.profile_id})을 찾을 수 없어"
+            if profile is None
+            else f"profile {profile.id}이 {combo}을 지원하지 않아"
+        )
+        text = f"근거 등급 metadata_only: {why} {EVIDENCE_NOTES[level]}"
+    else:
+        level = rule.grade
+        text = (
+            f"근거 등급 {level.value}: profile {profile.id}@{profile.version}의 "
+            f"{cfg.objective.value}/{cfg.strategy.value} 지원 등급입니다. {EVIDENCE_NOTES[level]}"
+        )
+    return level, Assumption(id="evidence_level", text=text, source="docs/support-matrix.md")
+
+
+def _assumptions(schedules: list[TrainingSchedule], evidence: Assumption) -> list[Assumption]:
     seen: dict[str, Assumption] = {}
     for sched in schedules:
         for a in sched.assumptions:
             seen.setdefault(a.id, a)
-        for issue in sched.issues:
-            key = f"issue:{issue.code.value}:{issue.affected_component or ''}"
-            seen.setdefault(
-                key, Assumption(id=key, text=issue.user_message, evidence=Evidence.UNKNOWN)
-            )
-    seen.setdefault(
-        "evidence_analytic",
-        Assumption(
-            id="evidence_analytic",
-            text="보정(calibration)·실측 profile이 없어 모든 수치는 analytic 추정입니다.",
-            source="profiles/calibrated/README.md",
-        ),
-    )
+    seen.setdefault(evidence.id, evidence)
+    return list(seen.values())
+
+
+def _issues(schedules: list[TrainingSchedule], extra: list[Issue | None]) -> list[Issue]:
+    """Schedule issues (the same issue from several scenarios once) plus estimate-level ones."""
+    seen: dict[tuple[str, str | None, str], Issue] = {}
+    for issue in [*(i for sched in schedules for i in sched.issues), *extra]:
+        if issue is not None:
+            key = (issue.code.value, issue.affected_component, issue.user_message)
+            seen.setdefault(key, issue)
     return list(seen.values())
 
 
@@ -103,6 +143,7 @@ def estimate_with(
 ) -> MemoryEstimate:
     """`estimate_memory` with an explicit architecture adapter."""
     trainer = get_trainer(cfg.objective)
+    level, evidence_note = evidence_level(cfg)
     scenarios: list[ScenarioEstimate] = []
     schedules: list[TrainingSchedule] = []
     for sid, label, params, shape in scenario_shapes(cfg, plan):
@@ -110,6 +151,7 @@ def estimate_with(
         schedules.append(sched)
         device = evaluate(sched, DEVICE)
         rec = recommend(device, margin_policy, hardware.external_reserved_bytes)
+        fit = assess_fit(device, rec, hardware, readiness, evidence=level)
         scenarios.append(
             ScenarioEstimate(
                 scenario_id=sid,
@@ -118,7 +160,7 @@ def estimate_with(
                 batch_shape=shape,
                 devices=[device],
                 recommendation=rec,
-                hardware_fit=assess_fit(device, rec, hardware, readiness),
+                hardware_fit=fit,
                 excluded_components=list(sched.excluded),
                 timepoints=list(sched.timepoints),
                 allocations=list(sched.allocations),
@@ -131,10 +173,11 @@ def estimate_with(
         and len(scenarios) > 1
     )
     return MemoryEstimate(
-        evidence_level=EvidenceLevel.ANALYTIC,
+        evidence_level=level,
         scenarios=scenarios,
         primary_scenario_id=None if multi_budget or not scenarios else scenarios[0].scenario_id,
-        assumptions=_assumptions(schedules),
+        assumptions=_assumptions(schedules, evidence_note),
+        issues=_issues(schedules, []),
     )
 
 
@@ -170,4 +213,9 @@ def estimate_memory(
     )
 
 
-__all__ = ["estimate_memory", "estimate_with", "scenario_shapes"]
+__all__ = [
+    "estimate_memory",
+    "estimate_with",
+    "evidence_level",
+    "scenario_shapes",
+]

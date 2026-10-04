@@ -18,6 +18,7 @@ from vramforge_estimator.schemas import (
     BreakdownItem,
     CapacityRecommendation,
     DeviceEstimate,
+    EvidenceLevel,
     HardwareConfig,
     HardwareFit,
     HardwareFitResult,
@@ -243,8 +244,12 @@ def assess_fit(
     recommendation: CapacityRecommendation | None,
     hardware: HardwareConfig,
     readiness: TrainingReadiness,
+    *,
+    evidence: EvidenceLevel = EvidenceLevel.ANALYTIC,
 ) -> HardwareFitResult:
-    """The six outcomes of plan §10.3 (incl. not_evaluated when no hardware is selected)."""
+    """The outcomes of plan §10.3 (incl. not_evaluated when no hardware is selected) and the
+    metadata-only grade, which allows no full VRAM verdict (plan §11.4;
+    docs/methodology.md#hardware-fit)."""
     if hardware.mode is HardwareMode.CAPACITY_ONLY:
         return HardwareFitResult(
             status=HardwareFit.NOT_EVALUATED,
@@ -278,6 +283,16 @@ def assess_fit(
             message=(
                 f"확정된 상주 메모리({_gib(estimate.known_floor_bytes)})만으로 "
                 f"가용 용량({_gib(capacity)})을 초과합니다."
+            ),
+            **base,
+        )
+    if evidence is EvidenceLevel.METADATA_ONLY:
+        return HardwareFitResult(
+            status=HardwareFit.UNKNOWN,
+            reason="unsupported",
+            message=(
+                "이 조합의 근거 등급이 metadata_only라 전체 VRAM 적합 판정을 하지 않습니다 "
+                "(구조·가중치·학습 파라미터까지만 지원)."
             ),
             **base,
         )

@@ -265,8 +265,9 @@ def make_cfg(
             accumulation=accumulation,
         )
     return ResolvedConfig(
-        profile_id="fake-profile",
-        profile_version="0",
+        # a registered profile: the estimate's evidence level is its support grade
+        profile_id="dense-decoder",
+        profile_version="test",
         environment_id="cuda-trl-1.14.1",
         architecture_adapter="fake",
         trainer_adapter=f"trl-1.14.1-{objective.value}",
