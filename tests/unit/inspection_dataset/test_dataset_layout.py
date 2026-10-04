@@ -247,3 +247,96 @@ def test_hub_source_without_revision_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(EstimatorError) as excinfo:
         SourceFiles(unpinned, SourceAccess(), ReaderLimits())
     assert excinfo.value.issue.code == ErrorCode.SOURCE_REVISION_CHANGED
+
+
+@pytest.fixture
+def http_hits() -> Any:
+    """A local HTTP server that records every request (to prove nothing was fetched)."""
+    import http.server
+    import threading
+
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "9")
+            self.end_headers()
+            self.wfile.write(b'{"a": 1}\n')
+
+        do_HEAD = do_GET
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1], hits
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "data_files:\n  - split: train\n    path: {outside}/*.jsonl",
+        "data_files: ../outside/*.jsonl",
+        "data_dir: {outside}",
+        "data_dir: ../outside",
+        "data_files: hf://datasets/acme/other-private-set/*.jsonl",
+        "data_files: http://127.0.0.1:{port}/meta-data/x.jsonl",
+        "data_files: zip://*.jsonl::archive.zip",
+    ],
+)
+@pytest.mark.parametrize("hub", [False, True])
+def test_readme_configs_must_stay_inside_the_dataset(
+    tmp_path: Path,
+    config: str,
+    hub: bool,
+    fake_hub: dict[str, Any],
+    http_hits: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import huggingface_hub
+
+    def no_hub_listing(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("another Hub repo was listed")
+
+    monkeypatch.setattr(huggingface_hub.HfFileSystem, "glob", no_hub_listing)
+    port, hits = http_hits
+    outside = make_tree(tmp_path / "outside", {"host-only.jsonl": '{"secret": 1}\n'})
+    entry = config.format(outside=outside, port=port)
+    readme = f"---\nconfigs:\n- config_name: default\n  {entry}\n---\n"
+    root = make_tree(tmp_path / "ds", {"README.md": readme, "train.jsonl": '{"a": 1}\n'})
+    if hub:
+        source = hf_source(root)
+        fake_hub[source.repo_id] = root
+    else:
+        source = local_source(root)
+    with pytest.raises(EstimatorError) as excinfo:
+        layout_of(source)
+    issue = excinfo.value.issue
+    assert issue.code == ErrorCode.DATASET_FORMAT_UNSUPPORTED
+    assert issue.details["reason"] == "data_files_outside_dataset"
+    assert str(tmp_path) not in issue.model_dump_json()
+    assert hits == []  # no request left the worker
+
+
+def test_unexpected_datasets_errors_become_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import datasets.data_files
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise TypeError("library bug quoting /secret/path")
+
+    monkeypatch.setattr(datasets.data_files, "get_data_patterns", broken)
+    root = make_tree(tmp_path / "ds", {"train.jsonl": '{"a": 1}\n'})
+    with pytest.raises(EstimatorError) as excinfo:
+        layout_of(local_source(root))
+    issue = excinfo.value.issue
+    assert issue.code == ErrorCode.INTERNAL_ERROR
+    assert issue.details == {"reason": "layout_unexpected_error", "error_type": "TypeError"}
+    assert "/secret/path" not in issue.model_dump_json()

@@ -11,11 +11,17 @@ For Hub repos the directory listing comes from the pinned manifest (the resolver
 through an in-memory fsspec filesystem, so resolution is offline and deterministic. Only card files
 (README.md, .huggingface.yaml, dataset_infos.json) are downloaded here. Repos that ship a loading
 script are rejected, like datasets 5 does; no code from the dataset is ever executed.
+
+README `configs` may only point inside the dataset (plan §18): datasets would follow absolute
+paths, `..`, URLs and other repos (`hf://`) in `data_files` / `data_dir`, which here would glob the
+worker's filesystem, reach arbitrary hosts or list other Hub repos with the server's credentials.
+Such configs are refused before anything is resolved.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import uuid
@@ -38,6 +44,7 @@ if TYPE_CHECKING:
     from datasets import DownloadConfig
     from huggingface_hub import DatasetCardData
 
+logger = logging.getLogger(__name__)
 _PROTOCOL = "vfmanifest"
 _ROOT = "repo"
 _TREES: dict[str, dict[str, int]] = {}
@@ -143,6 +150,8 @@ class _Listing:
     base_path: str
     download_config: DownloadConfig | None
     to_rel: Callable[[str], str]
+    # Whether a resolved URL lies in the pinned listing (local paths are checked on disk).
+    inside: Callable[[str], bool] = lambda url: True
 
 
 @contextmanager
@@ -159,6 +168,7 @@ def _listing(files: SourceFiles) -> Iterator[_Listing]:
                 base_path=f"{_PROTOCOL}://{_ROOT}",
                 download_config=DownloadConfig(storage_options={_PROTOCOL: {"tree": key}}),
                 to_rel=lambda url: url.removeprefix(prefix),
+                inside=lambda url: url.startswith(prefix),
             )
         finally:
             _TREES.pop(key, None)
@@ -174,12 +184,25 @@ def _listing(files: SourceFiles) -> Iterator[_Listing]:
 
 def resolve_layout(files: SourceFiles) -> DatasetLayout:
     """Configs → splits → ordered data files. Raises `EstimatorError` when nothing is loadable."""
-    if files.kind == "local_file":
-        return _single_file_layout(files)
-    _reject_loading_script(files)
-    card_data = _load_card(files)
-    with _listing(files) as listing:
-        return _module_layout(files, listing, card_data)
+    try:
+        if files.kind == "local_file":
+            return _single_file_layout(files)
+        _reject_loading_script(files)
+        card_data = _load_card(files)
+        with _listing(files) as listing:
+            return _module_layout(files, listing, card_data)
+    except EstimatorError:
+        raise
+    except Exception as exc:  # a datasets helper failed in an unexpected way: never a raw error
+        logger.error("unexpected %s while resolving the dataset layout", type(exc).__name__)
+        raise EstimatorError(
+            _issue(
+                ErrorCode.INTERNAL_ERROR,
+                "데이터셋 구성(config·split)을 확인하는 중 예기치 못한 오류가 발생했습니다.",
+                reason="layout_unexpected_error",
+                error_type=type(exc).__name__,
+            )
+        ) from exc
 
 
 def _module_layout(
@@ -204,6 +227,7 @@ def _module_layout(
     try:
         metadata_configs = MetadataConfigs.from_dataset_card_data(card_data)
         dataset_infos = DatasetInfosDict.from_dataset_card_data(card_data)
+        _check_configs_stay_inside(metadata_configs)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise EstimatorError(_unsupported("readme_configs_invalid")) from exc
     try:
@@ -331,12 +355,44 @@ def _data_file(files: SourceFiles, listing: _Listing, url: str) -> DataFile:
     shard_id = listing.to_rel(url)
     entry = files.index.find(shard_id)
     if files.kind == "hf":
+        if not listing.inside(url) or not files.has_repo_file(shard_id):
+            raise EstimatorError(_unsupported("data_files_outside_dataset"))
         return DataFile(
             shard_id=shard_id, location=shard_id, size=entry.size if entry else None, entry=entry
         )
     path = Path(url)
     files.check_inside(path, shard_id)
     return DataFile(shard_id=shard_id, location=str(path), size=path.stat().st_size, entry=entry)
+
+
+def _check_configs_stay_inside(metadata_configs: Mapping[str, Mapping[str, Any]]) -> None:
+    """Refuse README `configs` whose `data_files` / `data_dir` leave the dataset (module doc)."""
+    from datasets.data_files import sanitize_patterns
+
+    for params in metadata_configs.values():
+        values: list[Any] = [params.get("data_dir")]
+        if params.get("data_files") is not None:
+            for patterns in sanitize_patterns(params["data_files"]).values():
+                values.extend(patterns)
+        if not all(_inside_dataset(value) for value in values):
+            raise EstimatorError(_unsupported("data_files_outside_dataset"))
+
+
+def _inside_dataset(value: Any) -> bool:
+    """A dataset-relative path or glob: no scheme or fsspec hop, not absolute, no `..`."""
+    from datasets.utils.file_utils import is_relative_path
+
+    if value is None or value == "":
+        return True  # datasets falls back to the dataset root
+    if not isinstance(value, str):
+        return False
+    text = value.replace("\\", "/")
+    return (
+        is_relative_path(value)
+        and "::" not in text
+        and not text.startswith("/")
+        and ".." not in text.split("/")
+    )
 
 
 def _resolve_patterns(
@@ -373,7 +429,11 @@ def _resolve_builder_config_files(builder_config: Any, listing: _Listing) -> dic
     if not isinstance(data_files, DataFilesPatternsDict):
         return {str(split): list(urls) for split, urls in (data_files or {}).items()}
     base = xjoin(listing.base_path, builder_config.data_dir) if builder_config.data_dir else None
-    scoped = listing if base is None else _Listing(base, listing.download_config, listing.to_rel)
+    scoped = (
+        listing
+        if base is None
+        else _Listing(base, listing.download_config, listing.to_rel, listing.inside)
+    )
     return {
         str(split): _resolve_patterns(list(patterns), list(patterns.allowed_extensions), scoped)
         for split, patterns in data_files.items()
@@ -546,6 +606,8 @@ _UNSUPPORTED_MESSAGES = {
     "readme_yaml_invalid": "README 메타데이터(YAML)를 해석할 수 없습니다.",
     "dataset_infos_invalid": "dataset_infos.json을 해석할 수 없습니다.",
     "data_files_unresolvable": "데이터 파일 목록을 확정할 수 없습니다.",
+    "data_files_outside_dataset": "README의 configs가 데이터셋 밖(절대 경로·상위 경로·URL·다른 "
+    "저장소)을 가리켜 읽지 않았습니다. 데이터셋 안의 상대 경로만 지원합니다.",
     "module_inference_failed": "데이터 파일 형식을 판별할 수 없거나 split마다 형식이 다릅니다.",
     "module_not_supported": "지원하지 않는 데이터 형식입니다. JSON/JSONL/Parquet/Arrow/CSV만 "
     "분석할 수 있습니다.",
