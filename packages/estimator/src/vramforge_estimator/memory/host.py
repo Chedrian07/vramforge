@@ -55,6 +55,23 @@ def _baseline() -> EstimateItem:
     )
 
 
+def _dataloader() -> EstimateItem:
+    """plan §10.1: worker count, prefetch, fork/spawn copies and pinned memory stay stated
+    assumptions."""
+    return EstimateItem(
+        name="dataloader",
+        bytes_low=None,
+        bytes_high=None,
+        evidence=Evidence.UNKNOWN,
+        note=(
+            "가정: dataloader_num_workers=0(TrainingArguments 기본, worker 프로세스 복제 없음), "
+            "Trainer가 accumulation 창의 batch(정수 id·mask)를 미리 가져오고 "
+            "pin_memory=True(기본)는 그 batch만 고정, CPU offload 없음(요청 단계에서 차단). "
+            "batch shape가 이 계산에 전달되지 않아 크기는 산정하지 않았습니다."
+        ),
+    )
+
+
 def estimate_host_ram(
     inventory: ModelInventory, cfg: ResolvedConfig, model_source: SourceManifest | None
 ) -> HostRamEstimate:
@@ -97,6 +114,7 @@ def estimate_host_ram(
                 )
             )
             phase_lows.append(fingerprint)
+    items.append(_dataloader())
     items.append(_baseline())
     _ = model_source  # mmap'd checkpoint pages are reclaimable page cache, not counted
     return HostRamEstimate(

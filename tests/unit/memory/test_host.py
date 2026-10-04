@@ -59,6 +59,10 @@ def test_host_ram_reports_a_lower_bound_without_runtime_baseline() -> None:
     assert staging.bytes_low == staging.bytes_high == EMBED_BF16
     baseline = item(est, "runtime_baseline")
     assert baseline.bytes_low is None and baseline.note
+    # plan §10.1: worker/prefetch/pinned-memory assumptions are stated, not sized as 0
+    loader = item(est, "dataloader")
+    assert loader.bytes_low is None and loader.bytes_high is None
+    assert loader.note is not None and "dataloader_num_workers=0" in loader.note
 
 
 def test_fp32_load_may_convert_on_the_host() -> None:
