@@ -8,9 +8,10 @@ objective (`dataset_mapping`).
 
 `open_rows` returns a `DatasetRowStream` over every record of one split. Failure signal and stop
 contract (see `dataset_stream`): undecodable records arrive as `FailedSourceRow` (a `SourceRow`
-with an empty `row`, `error_code`, `reason`, Korean `message` and its line/element position);
-quotas, broken shards, manifest mismatches and download failures end the stream with an entry in
-`stream.issues`; `stream.complete` is True only after a clean EOF of every shard.
+with an empty `row`, `error_code`, `reason`, Korean `message` and its line/element position;
+import it from the dependency-free `dataset_rows` module); quotas, broken shards, manifest
+mismatches and download failures end the stream with an entry in `stream.issues`;
+`stream.complete` is True only after a clean EOF of every shard with no failed record.
 
 Heavy libraries (datasets, pyarrow, pandas, huggingface_hub) are imported lazily so that importing
 the package stays cheap and works without the `analysis` extra.

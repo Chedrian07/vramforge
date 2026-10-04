@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 
 from vramforge_estimator.errors import EstimatorError, make_issue
@@ -32,6 +31,7 @@ from vramforge_estimator.schemas import ErrorCode, Issue, Severity, Stage
 from .base import SourceRow
 from .dataset_files import DataFile, SourceFiles
 from .dataset_layout import ConfigLayout, SplitLayout
+from .dataset_rows import FailedSourceRow, is_failed_row
 from .readers import (
     FileSpec,
     QuotaExceeded,
@@ -46,6 +46,8 @@ from .readers import (
     reason_message,
 )
 
+__all__ = ["DatasetRowStream", "FailedSourceRow", "footer_rows", "is_failed_row"]
+
 logger = logging.getLogger(__name__)
 _FAILED_SAMPLE = 20
 
@@ -55,21 +57,6 @@ _ROW_MESSAGES = {
     "schema_mismatch": "다른 row와 컬럼 형식이 맞지 않는 레코드입니다",
     "invalid_utf8": "UTF-8로 해석할 수 없는 레코드입니다",
 }
-
-
-@dataclass(frozen=True)
-class FailedSourceRow(SourceRow):
-    """A record that could not be decoded. `row` is empty; position fields locate it."""
-
-    error_code: ErrorCode = ErrorCode.SCAN_FAILED_ROWS
-    reason: str = "json_parse"
-    message: str = ""  # Korean, display-safe (no raw data)
-    line: int | None = None  # 1-based line in the (decompressed) shard
-    element: int | None = None  # 0-based element index in a JSON array shard
-
-
-def is_failed_row(source_row: SourceRow) -> bool:
-    return isinstance(source_row, FailedSourceRow)
 
 
 class DatasetRowStream:
