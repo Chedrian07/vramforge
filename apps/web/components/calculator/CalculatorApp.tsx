@@ -7,7 +7,7 @@ import { FormProvider, useForm, useWatch } from "react-hook-form";
 import { TokenPrompt } from "@/components/layout/TokenPrompt";
 import { DeleteAnalysis } from "@/components/results/DeleteAnalysis";
 import { DetailTabs } from "@/components/results/DetailTabs";
-import { ExportMenu } from "@/components/results/ExportMenu";
+import { ExportMenu, RetentionNote, type ExportTarget } from "@/components/results/ExportMenu";
 import { SummaryCard } from "@/components/results/SummaryCard";
 import { useApiEnvironment } from "@/lib/api/context";
 import type { GpuPreset } from "@/lib/api/types";
@@ -135,10 +135,33 @@ export function CalculatorApp() {
     }
   };
 
+  // Exports follow what the summary shows: a recomputed scenario is exported with the request it
+  // was computed for; otherwise the stored analysis. The slot is memoized so the memoized summary
+  // card does not re-render on every keystroke.
+  const expiresAt = runState.status?.expires_at ?? null;
+  const exportTarget = useMemo<ExportTarget>(
+    () =>
+      recompute.scenario && recompute.display
+        ? { kind: "scenario", result: recompute.display, request: recompute.scenario.request, changes: recompute.scenario.changes, stale: recompute.stale }
+        : { kind: "stored", result: terminalResult, jobStatus: runState.jobStatus, formDiffers: baseResult != null && recompute.stale },
+    [recompute.scenario, recompute.display, recompute.stale, terminalResult, runState.jobStatus, baseResult],
+  );
+  const resetRun = run.reset;
+  const running = isRunActive(runState);
+  const exportSlot = useMemo(
+    () => (
+      <>
+        <ExportMenu api={env.api} analysisId={runState.analysisId} target={exportTarget} expiresAt={expiresAt} />
+        <DeleteAnalysis api={env.api} analysisId={runState.analysisId} disabled={running} onDeleted={resetRun} />
+        <RetentionNote expiresAt={expiresAt} className="w-full text-[12px] leading-snug text-muted" />
+      </>
+    ),
+    [env.api, runState.analysisId, exportTarget, expiresAt, running, resetRun],
+  );
+
   const hydrated = useHydrated();
   const summaryRef = useRef<HTMLDivElement>(null);
   const summaryFits = useFitsViewport(summaryRef);
-  const running = isRunActive(runState);
   const shown = recompute.display ?? runState.status?.result ?? null;
   const invalidCount = Object.keys(form.formState.errors).length;
   const datasetData = datasetInspection.state.status === "done" ? datasetInspection.state.data : null;
@@ -207,18 +230,7 @@ export function CalculatorApp() {
                 view={recompute}
                 hardwareRequested={values.hardwareMode !== "capacity_only"}
                 gpuWorkerConnected={profiles.data?.gpu_worker_connected ?? null}
-                exportSlot={
-                  <>
-                    <ExportMenu
-                      api={env.api}
-                      analysisId={runState.analysisId}
-                      result={terminalResult}
-                      jobStatus={runState.jobStatus}
-                      differsFromScreen={baseResult != null && (recompute.display !== baseResult || recompute.stale)}
-                    />
-                    <DeleteAnalysis api={env.api} analysisId={runState.analysisId} disabled={running} onDeleted={run.reset} />
-                  </>
-                }
+                exportSlot={exportSlot}
               />
             </div>
           </aside>

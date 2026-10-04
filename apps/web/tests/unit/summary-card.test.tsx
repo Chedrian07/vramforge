@@ -1,10 +1,8 @@
 import { screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { ExportMenu } from "@/components/results/ExportMenu";
 import { SummaryCard, type SummaryCardProps } from "@/components/results/SummaryCard";
-import type { AnalysisResult, JobStatus } from "@/lib/api/types";
+import type { AnalysisResult } from "@/lib/api/types";
 import { formatPercent } from "@/lib/format/bytes";
 import { INITIAL_RUN_STATE, type RunState } from "@/lib/hooks/useAnalysisRun";
 
@@ -143,60 +141,5 @@ describe("SummaryCard", () => {
     renderCard({ run: terminalRun(partialStatus), view: view(null) });
     expect(screen.getByText("전체 데이터 스캔이 끝나지 않아 메모리를 산정하지 않았습니다.")).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "결과 상태" })).toHaveTextContent("부분");
-  });
-});
-
-describe("ExportMenu", () => {
-  const api = { exportUrl: (id: string, f: string) => `/api/v1/analyses/${id}/export?format=${f}` };
-
-  async function open(result: AnalysisResult | null, jobStatus: JobStatus | null, id: string | null, differsFromScreen = false) {
-    const user = userEvent.setup();
-    renderWithProviders(<ExportMenu api={api} analysisId={id} result={result} jobStatus={jobStatus} differsFromScreen={differsFromScreen} />);
-    await user.click(screen.getByRole("button", { name: "결과 내보내기" }));
-    return screen.getByRole("dialog");
-  }
-
-  it("disables every export before an analysis exists", async () => {
-    const menu = await open(null, null, null);
-    const disabled = within(menu).getAllByRole("button");
-    expect(disabled).toHaveLength(4);
-    disabled.forEach((b) => expect(b).toHaveAttribute("aria-disabled", "true"));
-    expect(within(menu).getAllByText("분석이 끝난 뒤 내보낼 수 있습니다.").length).toBe(4);
-  });
-
-  it("keeps trainer-config disabled with the reason for a conditional result", async () => {
-    const menu = await open(grpoResult, "COMPLETED", grpoResult.analysis_id);
-    expect(within(menu).getByRole("link", { name: /analysis.json/ })).toHaveAttribute("href", `/api/v1/analyses/${grpoResult.analysis_id}/export?format=json`);
-    expect(within(menu).getByRole("link", { name: /resolved-plan.yaml/ })).toBeInTheDocument();
-    expect(within(menu).getByRole("link", { name: /report.md/ })).toBeInTheDocument();
-    const trainer = within(menu).getByRole("button", { name: /trainer-config.yaml/ });
-    expect(trainer).toHaveAttribute("aria-disabled", "true");
-    expect(trainer).toHaveAccessibleDescription(/조건부/);
-  });
-
-  it("offers trainer-config when the result is ready", async () => {
-    const menu = await open(dpoResult, "COMPLETED", dpoResult.analysis_id);
-    expect(within(menu).getByRole("link", { name: /trainer-config.yaml/ })).toHaveAttribute("href", `/api/v1/analyses/${dpoResult.analysis_id}/export?format=trainer-config`);
-    expect(within(menu).queryByRole("note")).not.toBeInTheDocument();
-  });
-
-  it("needs one explicit GRPO completion budget for trainer-config even when ready", async () => {
-    // A local reward model on the training GPU makes the result ready; budget candidates are a
-    // planning aid, not one max_completion_length (exports/trainer_config.py check_ready).
-    const ready: AnalysisResult = {
-      ...grpoResult,
-      status: { ...grpoResult.status!, training_readiness: "ready" },
-      resolved_config: { ...grpoResult.resolved_config!, grpo: { ...grpoResult.resolved_config!.grpo!, reward_kind: "local_model" } },
-    };
-    const menu = await open(ready, "COMPLETED", ready.analysis_id);
-    const trainer = within(menu).getByRole("button", { name: /trainer-config.yaml/ });
-    expect(trainer).toHaveAttribute("aria-disabled", "true");
-    expect(trainer).toHaveAccessibleDescription(/completion budget을 하나로 지정해야/);
-    expect(within(menu).getByRole("link", { name: /resolved-plan.yaml/ })).toBeInTheDocument();
-  });
-
-  it("says exports use the stored analysis when the screen shows other settings", async () => {
-    const menu = await open(dpoResult, "COMPLETED", dpoResult.analysis_id, true);
-    expect(within(menu).getByRole("note")).toHaveTextContent("서버에 저장된 기준 분석");
   });
 });

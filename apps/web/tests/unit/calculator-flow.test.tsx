@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CalculatorApp } from "@/components/calculator/CalculatorApp";
-import type { ApiClient } from "@/lib/api/client";
+import { ApiError, type ApiClient } from "@/lib/api/client";
 import type { AnalysisRequest, AnalysisStatus, InspectRequest, ScenarioResponse } from "@/lib/api/types";
 
 import { dpoResult } from "../fixtures/analysis-dpo-sft";
@@ -155,7 +155,11 @@ describe("calculator flow", () => {
             resolve({ fingerprint: "vf-fixture-s1", client_fingerprint: body.client_fingerprint ?? null, requires_reanalysis: false, reanalysis_reasons: [], result: dpoResult });
         }),
     );
-    renderApp({ getAnalysis: vi.fn(async (): Promise<AnalysisStatus> => completedSftStatus), scenarios });
+    // The download itself is not part of this flow.
+    const exportScenario = vi.fn<ApiClient["exportScenario"]>(async () => {
+      throw new ApiError(503, { code: "INTERNAL_ERROR", severity: "error", retryable: true, user_message: "잠시 후 다시 시도하세요." });
+    });
+    renderApp({ getAnalysis: vi.fn(async (): Promise<AnalysisStatus> => completedSftStatus), scenarios, exportScenario });
 
     await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue(MODEL_REF));
     expect(within(screen.getByRole("radiogroup", { name: "Method" })).getByRole("radio", { name: "SFT" })).toHaveAttribute("aria-checked", "true");
@@ -174,9 +178,16 @@ describe("calculator flow", () => {
     await waitFor(() => expect(screen.queryByText(/이전 설정 · 바뀐 조건으로 재계산 중/)).not.toBeInTheDocument());
     expect(screen.getByRole("img", { name: /GPU 사용량/ })).toBeInTheDocument();
 
-    // The recomputed numbers are not in the stored analysis that the exports are made from.
+    // The recomputed numbers are what the exports contain: the scenario request is posted.
     await user.click(screen.getByRole("button", { name: "결과 내보내기" }));
-    expect(within(screen.getByRole("dialog", { name: "결과 내보내기" })).getByRole("note")).toHaveTextContent("서버에 저장된 기준 분석");
+    const menu = screen.getByRole("dialog", { name: "결과 내보내기" });
+    expect(within(menu).getByRole("note")).toHaveTextContent("화면에 표시된 재계산 시나리오 (LoRA r 16 → 32)");
+    await user.click(within(menu).getByRole("button", { name: /analysis.json/ }));
+    await waitFor(() => expect(exportScenario).toHaveBeenCalledTimes(1));
+    const [exportedId, exportBody] = exportScenario.mock.calls[0]!;
+    expect(exportedId).toBe(completedSftStatus.analysis_id);
+    expect(exportBody.format).toBe("json");
+    expect(exportBody.request.training.lora?.r).toBe(32);
   });
 
   it("answers NEEDS_INPUT inline and starts a new analysis", async () => {
