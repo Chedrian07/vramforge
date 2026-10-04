@@ -12,11 +12,13 @@ import type { DatasetInspection, UploadResponse } from "@/lib/api/types";
 import { formatCount, formatSize, shortDigest } from "@/lib/format/bytes";
 import { DATASET_FORMAT_LABEL } from "@/lib/format/labels";
 import { datasetInspectCall, referenceOfKey } from "@/lib/form/inspect";
+import { mappedColumns } from "@/lib/form/mapping";
 import { hasViewerRowParam } from "@/lib/form/references";
 import type { FormValues } from "@/lib/form/values";
 import { useLocalRoots, type useDatasetInspection } from "@/lib/hooks/useInspection";
 
-import { MappingEditor, clearMapping, dropAutoAppliedMapping, syncMappingWithInspection } from "./MappingEditor";
+import { resetConfigSelections, resetDatasetSelections } from "./dataset-selection";
+import { MappingEditor, dropAutoAppliedMapping, syncMappingWithInspection } from "./MappingEditor";
 
 type Inspection = ReturnType<typeof useDatasetInspection>;
 
@@ -28,6 +30,9 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const { register, getValues, setValue, formState } = useFormContext<FormValues>();
   const reference = useWatch<FormValues, "datasetReference">({ name: "datasetReference" });
   const config = useWatch<FormValues, "datasetConfig">({ name: "datasetConfig" });
+  // The inline split select is controlled (not registered): Advanced registers datasetSplit, and
+  // two registered elements for one field fall out of sync.
+  const split = useWatch<FormValues, "datasetSplit">({ name: "datasetSplit" });
   const objective = useWatch<FormValues, "objective">({ name: "objective" });
   const fileInput = useRef<HTMLInputElement>(null);
   const [upload, setUpload] = useState<{ status: "idle" | "uploading" | "done" | "error"; data?: UploadResponse; error?: ApiError }>({ status: "idle" });
@@ -36,22 +41,14 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const id = "dataset-reference";
   const hint = "Hugging Face 데이터셋 ID·URL, 업로드 파일 또는 서버의 local: 경로. 조회는 메타데이터만 읽고 전체 스캔은 분석 시작 후 진행합니다.";
 
-  // Dataset-specific selections (config, splits, revision, mapping) belong to the dataset they
-  // were made for: another dataset starts again from auto-selection and its own suggestion
-  // (plan.md §4.1, §7.2). Uploads reset them the same way.
-  const resetDatasetSelections = () => {
-    for (const name of ["datasetConfig", "datasetSplit", "datasetEvalSplit", "datasetRevision"] as const) {
-      setValue(name, "", RESET_OPTS);
-    }
-    clearMapping(setValue);
-  };
   // The reference when the input received focus (null while it is not being edited): unlike the
   // last inspection it is also known for a form restored after a reload.
   const editedFrom = useRef<string | null>(null);
 
   const trigger = (force: boolean, overrides: Partial<Pick<FormValues, "datasetConfig">> = {}) => {
     const typed = getValues("datasetReference").trim();
-    if (editedFrom.current != null && editedFrom.current !== typed) resetDatasetSelections();
+    // Another dataset (typed after a reload too) starts from auto-selection; uploads reset alike.
+    if (editedFrom.current != null && editedFrom.current !== typed) resetDatasetSelections(setValue);
     if (editedFrom.current != null) editedFrom.current = typed;
     const call = datasetInspectCall({ ...getValues(), ...overrides });
     if (!call) return;
@@ -83,7 +80,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
       setUpload({ status: "done", data });
       setValue("datasetUploadRef", data.reference, RESET_OPTS);
       setValue("datasetReference", data.reference, RESET_OPTS);
-      resetDatasetSelections();
+      resetDatasetSelections(setValue);
       inspection.forget();
       trigger(true);
     } catch (err) {
@@ -208,8 +205,10 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
                     id="dataset-config-inline"
                     value={config}
                     onChange={(event) => {
-                      setValue("datasetConfig", event.target.value, { shouldDirty: true });
-                      trigger(true, { datasetConfig: event.target.value });
+                      const next = event.target.value;
+                      setValue("datasetConfig", next, { shouldDirty: true });
+                      resetConfigSelections(setValue, getValues);
+                      trigger(true, { datasetConfig: next });
                     }}
                   >
                     <option value="">— 선택 —</option>
@@ -223,13 +222,18 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
               ) : null}
               {needSplit ? (
                 <Field label="학습 split" htmlFor="dataset-split-inline" hint="선택하지 않은 split은 분석·학습에 섞지 않습니다.">
-                  <NativeSelect id="dataset-split-inline" {...register("datasetSplit")}>
+                  <NativeSelect
+                    id="dataset-split-inline"
+                    value={split}
+                    onChange={(event) => setValue("datasetSplit", event.target.value, { shouldDirty: true, shouldValidate: true })}
+                  >
                     <option value="">— 선택 —</option>
                     {splits.map((s) => (
                       <option key={s.name} value={s.name}>
                         {s.name}
                       </option>
                     ))}
+                    {split && !splits.some((s) => s.name === split) ? <option value={split}>{split} (목록에 없음)</option> : null}
                   </NativeSelect>
                 </Field>
               ) : null}
@@ -245,26 +249,15 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   );
 }
 
-/** Restored mapping (e.g. after reload) before the dataset is inspected again. */
+/** Restored mapping (e.g. after reload) before the dataset is inspected again. Only the roles of
+ * the chosen format are listed: those are the ones the request carries. */
 function MappingSummaryWithoutColumns() {
-  const values = useWatch<FormValues>();
+  const values = useWatch<FormValues>() as FormValues;
   if (!values.mappingEnabled) return null;
-  const pairs: Array<[string, string | undefined]> = [
-    ["system", values.mapSystem],
-    ["prompt", values.mapPrompt],
-    ["chosen", values.mapChosen],
-    ["rejected", values.mapRejected],
-    ["completion", values.mapCompletion],
-    ["messages", values.mapMessages],
-    ["text", values.mapText],
-  ];
+  const pairs = Object.entries(mappedColumns(values)).map(([role, column]) => `${column} → ${role}`);
   return (
     <p className="text-[12px] text-ink-2">
-      적용 매핑:{" "}
-      {pairs
-        .filter(([, column]) => column)
-        .map(([role, column]) => `${column} → ${role}`)
-        .join(", ")}
+      적용 매핑 ({DATASET_FORMAT_LABEL[values.mappingFormat]}): {pairs.length > 0 ? pairs.join(", ") : "역할 미지정"}
       <span className="text-muted"> (데이터셋 확인 후 편집할 수 있습니다)</span>
     </p>
   );

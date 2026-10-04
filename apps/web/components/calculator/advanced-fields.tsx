@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Controller, useFormContext, type FieldPath } from "react-hook-form";
+import { Controller, useFormContext, type FieldPath, type RegisterOptions } from "react-hook-form";
 
 import { SwitchField } from "@/components/ui/controls";
 import { Badge, Field, NativeSelect, TextArea, TextInput, describedBy } from "@/components/ui/primitives";
@@ -18,6 +18,7 @@ export function TextField({
   numeric,
   disabled,
   applied,
+  registerOptions,
 }: {
   name: Name;
   label: ReactNode;
@@ -26,6 +27,8 @@ export function TextField({
   numeric?: boolean;
   disabled?: boolean;
   applied?: ReactNode;
+  /** e.g. an onChange that resets selections depending on this field. */
+  registerOptions?: RegisterOptions<FormValues, Name>;
 }) {
   const { register, getFieldState, formState } = useFormContext<FormValues>();
   const error = getFieldState(name, formState).error?.message;
@@ -40,7 +43,7 @@ export function TextField({
         disabled={disabled}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy(id, { hint, error })}
-        {...register(name)}
+        {...register(name, registerOptions)}
       />
     </Field>
   );

@@ -4,13 +4,14 @@ import userEvent from "@testing-library/user-event";
 import type { UseFormReturn } from "react-hook-form";
 import { describe, expect, it, vi } from "vitest";
 
+import { AdvancedSettings } from "@/components/calculator/AdvancedSettings";
 import { DatasetSection } from "@/components/calculator/DatasetSection";
 import { ModelSection } from "@/components/calculator/ModelSection";
 import { ApiError, type ApiClient } from "@/lib/api/client";
 import type { FormValues } from "@/lib/form/values";
 import { shouldRetryInspection, useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
 
-import { DATASET_REF, MODEL_REF } from "../fixtures/common";
+import { DATASET_REF, MODEL_REF, preferenceMapping } from "../fixtures/common";
 import { ambiguousDatasetInspection, datasetInspection, modelInspection, uploadResponse } from "../fixtures/sources";
 import type { DatasetInspection } from "@/lib/api/types";
 
@@ -47,6 +48,26 @@ function ModelHost() {
 function DatasetHost() {
   const inspection = useDatasetInspection();
   return <DatasetSection inspection={inspection} />;
+}
+
+/** The dataset input next to an open "Dataset & reproducibility" group, as on the page. */
+function DatasetWithAdvanced() {
+  const inspection = useDatasetInspection();
+  const data = inspection.state.status === "done" ? inspection.state.data : null;
+  return (
+    <>
+      <DatasetSection inspection={inspection} />
+      <AdvancedSettings resolved={null} datasetInspection={data} open={["dataset"]} />
+    </>
+  );
+}
+
+/** Per-objective answers: SFT ranks prompt-completion first, GRPO/DPO the preference pair. */
+const sftSuggestion = { ...preferenceMapping, format: "prompt_completion" as const, chosen: null, rejected: null, completion: "chosen" };
+function inspectionFor(objective: string | null | undefined): DatasetInspection {
+  if (objective === "sft") return { ...datasetInspection, suggested_mapping: sftSuggestion, mapping_candidates: [sftSuggestion, preferenceMapping] };
+  if (objective === "dpo") return { ...datasetInspection, suggested_mapping: null, mapping_ambiguous: true };
+  return datasetInspection;
 }
 
 /** The app's own query defaults (app/providers.tsx): one retry unless a query says otherwise. */
@@ -295,6 +316,107 @@ describe("dataset input and mapping editor", () => {
     await user.tab();
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     expect(inspect.mock.calls[1]![0]).toMatchObject({ objective: "dpo" });
+  });
+
+  it("keeps the inline and the Advanced split selects in sync (one field, one registration)", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: ambiguousDatasetInspection }));
+    const { form } = renderSection(<DatasetWithAdvanced />, { inspect }, { datasetReference: DATASET_REF });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await screen.findByLabelText("Config");
+    const [inline, advanced] = screen.getAllByLabelText("학습 split");
+    await user.selectOptions(inline!, "train_extra");
+    expect(form().getValues("datasetSplit")).toBe("train_extra");
+    expect(advanced).toHaveValue("train_extra");
+    await user.selectOptions(advanced!, "train");
+    expect(inline).toHaveValue("train");
+    expect(form().getValues("datasetSplit")).toBe("train");
+  });
+
+  it("starts the split choice over when another config is picked", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: ambiguousDatasetInspection }));
+    const { form } = renderSection(<DatasetWithAdvanced />, { inspect }, { datasetReference: DATASET_REF, datasetEvalSplit: "train" });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await screen.findByLabelText("Config");
+    const [inline] = screen.getAllByLabelText("학습 split");
+    await user.selectOptions(inline!, "train_extra");
+    await user.selectOptions(screen.getByLabelText("Config"), "extended");
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Config")).toHaveValue("extended"));
+    expect([form().getValues("datasetSplit"), form().getValues("datasetEvalSplit")]).toEqual(["", ""]);
+    const [inlineAfter, advancedAfter] = screen.getAllByLabelText("학습 split");
+    expect(inlineAfter).toHaveValue("");
+    expect(advancedAfter).toHaveValue("");
+
+    // Typing another config in Advanced resets the split as well.
+    await user.selectOptions(inlineAfter!, "train");
+    await user.type(screen.getByLabelText("데이터셋 config"), "x");
+    expect(form().getValues("datasetSplit")).toBe("");
+  });
+
+  it("replaces an automatically applied mapping when the objective changes", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async (body) => ({ model: null, dataset: inspectionFor(body.objective) }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, { datasetReference: DATASET_REF, objective: "grpo", emptySystemPolicy: "keep" });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await waitFor(() => expect(form().getValues("mappingFormat")).toBe("preference"));
+    expect(form().getValues("mappingAutoApplied")).toBe(true);
+
+    // No blur or click: the inspector ranks candidates per objective, so it is asked again.
+    act(() => form().setValue("objective", "sft"));
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(inspect.mock.calls[1]![0]).toMatchObject({ objective: "sft" });
+    await waitFor(() => expect(form().getValues("mappingFormat")).toBe("prompt_completion"));
+    const v = form().getValues();
+    expect([v.mapPrompt, v.mapCompletion, v.mapChosen, v.mapRejected]).toEqual(["question", "chosen", "", ""]);
+    expect(v.emptySystemPolicy).toBe("keep"); // the user's policy is kept for the next mapping
+  });
+
+  it("drops an automatically applied mapping when the new objective is ambiguous", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async (body) => ({ model: null, dataset: inspectionFor(body.objective) }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, { datasetReference: DATASET_REF, objective: "grpo" });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await waitFor(() => expect(form().getValues("mappingEnabled")).toBe(true));
+    act(() => form().setValue("objective", "dpo"));
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    // The server would ask for DPO; an answer given for GRPO must not decide it.
+    await waitFor(() => expect(form().getValues("mappingEnabled")).toBe(false));
+    expect(form().getValues("mappingFormat")).toBe("auto");
+    expect(await screen.findByText(/매핑 후보가 여러 개입니다/)).toBeInTheDocument();
+  });
+
+  it("keeps a mapping the user chose when the objective changes", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async (body) => ({ model: null, dataset: inspectionFor(body.objective) }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, { datasetReference: DATASET_REF, objective: "grpo" });
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await screen.findByLabelText("user prompt");
+    await waitFor(() => expect(form().getValues("mappingEnabled")).toBe(true));
+    await user.selectOptions(screen.getByLabelText("user prompt"), "vulnerability");
+    expect(form().getValues("mappingAutoApplied")).toBe(false);
+    act(() => form().setValue("objective", "sft"));
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(form().getValues("mappingFormat")).toBe("preference");
+    expect(form().getValues("mapPrompt")).toBe("vulnerability");
+  });
+
+  it("lists only the roles of the chosen format in the restored mapping summary", () => {
+    renderSection(<DatasetHost />, {}, {
+      datasetReference: DATASET_REF,
+      mappingEnabled: true,
+      mappingFormat: "messages",
+      mapMessages: "conversations",
+      // Left over from an earlier preference choice: not sent, so not shown.
+      mapPrompt: "question",
+      mapChosen: "chosen",
+    });
+    const summary = screen.getByText(/적용 매핑/);
+    expect(summary).toHaveTextContent("conversations → messages");
+    expect(summary).not.toHaveTextContent("question");
+    expect(summary).not.toHaveTextContent("chosen");
   });
 
   it("uploads a file and analyses it by its upload reference", async () => {

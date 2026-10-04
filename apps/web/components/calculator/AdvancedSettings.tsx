@@ -25,10 +25,12 @@ import {
   REWARD_KIND_LABEL,
   ROLLOUT_BACKEND_LABEL,
 } from "@/lib/format/labels";
+import { mappedColumns } from "@/lib/form/mapping";
 import type { FormValues } from "@/lib/form/values";
 import { useBackendProfiles } from "@/lib/hooks/useInspection";
 
 import { ListField, SelectField, SwitchControl, TextField, UnsupportedSwitch, enumOptions } from "./advanced-fields";
+import { resetConfigSelections } from "./dataset-selection";
 
 export const ADVANCED_GROUPS = ["adapter", "batch", "runtime", "method", "dataset"] as const;
 export type AdvancedGroup = (typeof ADVANCED_GROUPS)[number];
@@ -335,20 +337,11 @@ function MethodSpecific({
   );
 }
 
-const MAPPING_ROLES = [
-  ["mapSystem", "system"],
-  ["mapPrompt", "prompt"],
-  ["mapChosen", "chosen"],
-  ["mapRejected", "rejected"],
-  ["mapCompletion", "completion"],
-  ["mapMessages", "messages"],
-  ["mapText", "text"],
-] as const;
-
-/** Read-only mapping summary; the editor itself lives next to the dataset input. */
+/** Read-only mapping summary; the editor itself lives next to the dataset input. Only the roles of
+ * the chosen format are listed (roles left from another format are never sent). */
 function MappingSummary() {
   const values = useWatch<FormValues>() as FormValues;
-  const pairs = MAPPING_ROLES.filter(([field]) => values[field]).map(([field, role]) => `${values[field]} → ${role}`);
+  const pairs = Object.entries(mappedColumns(values)).map(([role, column]) => `${column} → ${role}`);
   const jump = () => {
     const target = document.getElementById("mapping-format") ?? document.getElementById("dataset-reference");
     target?.focus();
@@ -373,6 +366,7 @@ function MappingSummary() {
 function DatasetReproducibility({ inspection }: { inspection: DatasetInspection | null }) {
   const splits = (inspection?.splits ?? []).map((s) => s.name);
   const mappingEnabled = useWatch<FormValues, "mappingEnabled">({ name: "mappingEnabled" });
+  const { setValue, getValues } = useFormContext<FormValues>();
   return (
     <>
       <MappingSummary />
@@ -386,7 +380,12 @@ function DatasetReproducibility({ inspection }: { inspection: DatasetInspection 
       ) : (
         <TextField name="datasetEvalSplit" label="평가 split" placeholder="없음" />
       )}
-      <TextField name="datasetConfig" label="데이터셋 config" placeholder="자동" />
+      <TextField
+        name="datasetConfig"
+        label="데이터셋 config"
+        placeholder="자동"
+        registerOptions={{ onChange: () => resetConfigSelections(setValue, getValues) }}
+      />
       {mappingEnabled ? (
         <SelectField name="emptySystemPolicy" label="빈 system 메시지" options={enumOptions(EMPTY_SYSTEM_POLICY_LABEL)} hint="유지하면 템플릿이 빈 system 블록을 렌더링해 길이가 늘 수 있습니다." />
       ) : (
