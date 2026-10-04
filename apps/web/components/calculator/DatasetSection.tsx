@@ -22,6 +22,7 @@ import { MappingEditor, applyMapping, clearMapping } from "./MappingEditor";
 type Inspection = ReturnType<typeof useDatasetInspection>;
 
 const ACCEPT = ".json,.jsonl,.parquet,.arrow,.csv";
+const RESET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
 
 export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const api = useApi();
@@ -35,15 +36,25 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const id = "dataset-reference";
   const hint = "Hugging Face 데이터셋 ID·URL, 업로드 파일 또는 서버의 local: 경로. 조회는 메타데이터만 읽고 전체 스캔은 분석 시작 후 진행합니다.";
 
+  // Dataset-specific selections (config, splits, revision, mapping) belong to the dataset they
+  // were made for: another dataset starts again from auto-selection and its own suggestion
+  // (plan.md §4.1, §7.2). Uploads reset them the same way.
+  const resetDatasetSelections = () => {
+    for (const name of ["datasetConfig", "datasetSplit", "datasetEvalSplit", "datasetRevision"] as const) {
+      setValue(name, "", RESET_OPTS);
+    }
+    clearMapping(setValue);
+  };
+  // The reference when the input received focus (null while it is not being edited): unlike the
+  // last inspection it is also known for a form restored after a reload.
+  const editedFrom = useRef<string | null>(null);
+
   const trigger = (force: boolean, overrides: Partial<Pick<FormValues, "datasetConfig">> = {}) => {
+    const typed = getValues("datasetReference").trim();
+    if (editedFrom.current != null && editedFrom.current !== typed) resetDatasetSelections();
+    if (editedFrom.current != null) editedFrom.current = typed;
     const call = datasetInspectCall({ ...getValues(), ...overrides });
     if (!call) return;
-    // An explicit mapping belongs to the dataset it was made for: another dataset starts again
-    // from auto-detection and gets its own suggestion (plan.md §4.1, §7.2).
-    const previous = referenceOfKey(inspection.state.key);
-    if (getValues("mappingEnabled") && previous != null && previous !== call.body.dataset?.reference) {
-      clearMapping(setValue);
-    }
     const run = force ? inspection.reinspect(call.key, call.body) : inspection.inspect(call.key, call.body);
     void run.then((data) => {
       if (!data) return;
@@ -66,12 +77,9 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
     try {
       const data = await api.upload(file);
       setUpload({ status: "done", data });
-      const opts = { shouldDirty: true, shouldValidate: true };
-      setValue("datasetUploadRef", data.reference, opts);
-      setValue("datasetReference", data.reference, opts);
-      setValue("datasetConfig", "", opts);
-      setValue("datasetSplit", "", opts);
-      clearMapping(setValue);
+      setValue("datasetUploadRef", data.reference, RESET_OPTS);
+      setValue("datasetReference", data.reference, RESET_OPTS);
+      resetDatasetSelections();
       inspection.forget();
       trigger(true);
     } catch (err) {
@@ -81,7 +89,12 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
     }
   };
 
-  const field = register("datasetReference", { onBlur: () => trigger(false) });
+  const field = register("datasetReference", {
+    onBlur: () => {
+      trigger(false);
+      editedFrom.current = null;
+    },
+  });
   const data: DatasetInspection | null = inspection.state.status === "done" ? inspection.state.data : null;
   const inspectedRef = referenceOfKey(inspection.state.key);
   const outdated = inspectedRef != null && inspectedRef !== reference.trim();
@@ -103,6 +116,9 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
             spellCheck={false}
             aria-invalid={error ? true : undefined}
             aria-describedby={describedBy(id, { hint, error })}
+            onFocus={() => {
+              editedFrom.current = getValues("datasetReference").trim();
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();

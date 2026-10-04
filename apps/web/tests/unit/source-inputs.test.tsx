@@ -189,6 +189,47 @@ describe("dataset input and mapping editor", () => {
     expect([v.mapPrompt, v.mapCompletion, v.mapChosen, v.mapRejected, v.mapSystem]).toEqual(["instruction", "output", "", "", ""]);
   });
 
+  it("resets the old dataset's selections when another dataset is typed after a reload", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: promptCompletionInspection }));
+    // A form restored from requested_config: no inspection has run on this page yet.
+    const { form } = renderSection(<DatasetHost />, { inspect }, {
+      datasetReference: DATASET_REF,
+      datasetConfig: "extended",
+      datasetSplit: "train_extra",
+      datasetEvalSplit: "test",
+      datasetRevision: "81aeacf06cf43b16d7278a3a01f019a496a53c51",
+      mappingEnabled: true,
+      mappingFormat: "preference",
+      mapPrompt: "instruction",
+      mapChosen: "chosen",
+      mapRejected: "rejected",
+    });
+    const input = screen.getByLabelText("Dataset");
+    await user.clear(input);
+    await user.type(input, "org/other-data");
+    await user.tab();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    expect(inspect.mock.calls[0]![0]).toMatchObject({ dataset: { reference: "org/other-data", config: null, revision: null } });
+    const v = form().getValues();
+    expect([v.datasetConfig, v.datasetSplit, v.datasetEvalSplit, v.datasetRevision]).toEqual(["", "", "", ""]);
+    // "instruction" exists in the new dataset too, but the mapping was made for the old one.
+    await waitFor(() => expect(form().getValues("mappingFormat")).toBe("prompt_completion"));
+    expect(form().getValues("mapCompletion")).toBe("output");
+  });
+
+  it("keeps the selections when the same dataset is confirmed again", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: ambiguousDatasetInspection }));
+    const { form } = renderSection(<DatasetHost />, { inspect }, { datasetReference: DATASET_REF, datasetConfig: "extended", datasetSplit: "train_extra" });
+    await user.click(screen.getByLabelText("Dataset"));
+    await user.tab();
+    await user.click(screen.getByRole("button", { name: "데이터셋 확인" }));
+    await waitFor(() => expect(inspect).toHaveBeenCalled());
+    expect(inspect.mock.calls.at(-1)![0]).toMatchObject({ dataset: { config: "extended" } });
+    expect(form().getValues("datasetSplit")).toBe("train_extra");
+  });
+
   it("drops a restored mapping that does not fit the inspected columns", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: null, dataset: promptCompletionInspection }));
