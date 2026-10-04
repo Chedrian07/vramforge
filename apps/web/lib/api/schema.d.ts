@@ -31,7 +31,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Analysis */
+        /**
+         * Get Analysis
+         * @description Status, progress, the stored request and the partial/final result. `expires_at` is when
+         *     retention deletes a finished analysis (None while it runs).
+         */
         get: operations["get_analysis_api_v1_analyses__analysis_id__get"];
         put?: never;
         post?: never;
@@ -73,7 +77,9 @@ export interface paths {
          * Analysis Events
          * @description Server-sent events (`AnalysisEvent` JSON in `data:`), resumable with Last-Event-ID.
          *
-         *     Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`. Types:
+         *     Frames are `id: <event_id>`, `event: <type>`, `data: <AnalysisEvent JSON>`; the payload schema
+         *     is `#/components/schemas/AnalysisEvent` (with `EventType`, `JobProgress`, `ShardProgress`;
+         *     the keys of `AnalysisEvent.partial` are documented there). Types:
          *     `progress` (stage changes and coalesced scan progress), `partial_result` (refetch the
          *     analysis for the result so far), `warning`, and the terminal types `completed`, `failed`
          *     (status FAILED, or PARTIAL when the pipeline stopped with a partial result), `cancelled`
@@ -140,6 +146,30 @@ export interface paths {
          * @description Recompute batch plan and memory from cached artifacts, or report re-analysis is needed.
          */
         post: operations["scenarios_api_v1_analyses__analysis_id__scenarios_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{analysis_id}/scenarios/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Scenario
+         * @description Export the result of a scenario: recomputed exactly like `/scenarios` with the same form
+         *     state, then exported like `/export` (same formats and file names).
+         *
+         *     409 REANALYSIS_REQUIRED when the change needs a new analysis (the reasons are in
+         *     `details.reasons`); `trainer-config` is 409 unless the recomputed result is ready.
+         */
+        post: operations["export_scenario_api_v1_analyses__analysis_id__scenarios_export_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -264,8 +294,10 @@ export interface paths {
          * Upload Dataset
          * @description Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.
          *
-         *     Streams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap; the
-         *     extension must match the content. Use the returned `reference` as the dataset reference.
+         *     Streams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap and the
+         *     owner's remaining `VRAMFORGE_MAX_UPLOAD_BYTES_PER_OWNER` quota (413 UPLOAD_TOO_LARGE, with
+         *     `details.reason = "owner_quota"` for the quota); the extension must match the content. Use
+         *     the returned `reference` as the dataset reference.
          */
         post: operations["upload_dataset_api_v1_uploads_post"];
         delete?: never;
@@ -353,6 +385,34 @@ export interface components {
              */
             reused: boolean;
             status: components["schemas"]["JobStatus"];
+        };
+        /**
+         * AnalysisEvent
+         * @description One server-sent event of `GET /api/v1/analyses/{analysis_id}/events` (the JSON in `data:`). `event:` repeats `type`, `id:` is `event_id` (resume with Last-Event-ID).
+         */
+        AnalysisEvent: {
+            /** Analysis Id */
+            analysis_id: string;
+            /** Event Id */
+            event_id: number;
+            /** Fingerprint */
+            fingerprint: string;
+            issue?: components["schemas"]["Issue"] | null;
+            /**
+             * Partial
+             * @description Display-only scan statistics on `progress` events while TOKENIZING; never raw rows, token ids or credentials, and null on other events. Keys: `status` (`partial` while scanning; the final report carries the scan coverage: `complete`, `partial` or `failed`), `rows_ok` and `rows_failed` (rows tokenized / failed so far) and, in tokens, the longest row seen so far of every length branch that has data: `max_prompt`, `max_completion`, `max_sequence`, `max_loss_tokens`, `max_chosen`, `max_rejected`, `max_chosen_sequence`, `max_rejected_sequence`, `max_pair_max`. Sanitized by the worker: at most 32 keys, strings cut at 200 characters, booleans sent as 0/1, nested values dropped. Partial values are not dataset maxima until the scan is complete.
+             */
+            partial?: {
+                [key: string]: number | string | null;
+            } | null;
+            progress?: components["schemas"]["JobProgress"] | null;
+            status: components["schemas"]["JobStatus"];
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp: string;
+            type: components["schemas"]["EventType"];
         };
         /**
          * AnalysisRamEstimate
@@ -1073,6 +1133,11 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /**
+         * EventType
+         * @enum {string}
+         */
+        EventType: "progress" | "partial_result" | "warning" | "needs_input" | "completed" | "failed" | "cancelled";
         /**
          * Evidence
          * @description Evidence attached to a single number (allocation, assumption).
@@ -2013,6 +2078,24 @@ export interface components {
             scenario_id: string;
             /** Timepoints */
             timepoints?: components["schemas"]["Timepoint"][];
+        };
+        /**
+         * ScenarioExportRequest
+         * @description `POST /analyses/{id}/scenarios/export`: the form state of `/scenarios` plus the file format.
+         *
+         *     The server recomputes exactly like `/scenarios` and exports that result, so the file matches
+         *     the scenario shown on screen.
+         */
+        ScenarioExportRequest: {
+            /** Client Fingerprint */
+            client_fingerprint?: string | null;
+            /**
+             * Format
+             * @default json
+             * @enum {string}
+             */
+            format: "json" | "yaml" | "md" | "trainer-config";
+            request: components["schemas"]["AnalysisRequest"];
         };
         /**
          * ScenarioRequest
@@ -3005,6 +3088,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScenarioResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Access token required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden (owner mismatch or CSRF header missing) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation or compatibility error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Concurrency limit */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    export_scenario_api_v1_analyses__analysis_id__scenarios_export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScenarioExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/yaml": unknown;
+                    "text/markdown": unknown;
                 };
             };
             /** @description Invalid request */
