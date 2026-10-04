@@ -12,7 +12,8 @@ Token-slot formulas follow the TRL 1.14.1 collators (docs/research/trl-sft-dpo.m
 ``worst_case`` is the structural conservative shape (the longest rows together). The seeded
 sampler order needs torch's RNG, so ``sampler_max`` is only filled when the order cannot change
 the shape (one row per batch, all rows in one batch, or one unique prompt per GRPO generation);
-otherwise it stays None and an info issue says the structural worst case is used.
+otherwise it stays None and a SAMPLER_ORDER_NOT_REPRODUCED info issue says the structural worst
+case is used.
 """
 
 from __future__ import annotations
@@ -108,7 +109,7 @@ def _order_note(rows: int, batch: int, seed: int) -> str:
 
 def _order_issue() -> Issue:
     return _issue(
-        ErrorCode.TRAINER_BATCH_CONSTRAINT,
+        ErrorCode.SAMPLER_ORDER_NOT_REPRODUCED,
         Severity.INFO,
         "batch가 2개 이상의 row를 묶으면 실제 batch 구성이 seed에 따른 sampler 순서(torch RNG)에 "
         "달려 있어 재현하지 않았습니다. 가장 긴 row들을 한 batch로 묶은 구조적 최악 shape를 "

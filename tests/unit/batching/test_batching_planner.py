@@ -78,7 +78,7 @@ def test_sampler_max_only_when_order_cannot_matter(make_resolved, make_table) ->
     grouped = plan_batches(lengths, make_resolved(SFT, microbatch=2), seed=7)
     assert grouped.sampler_max is None
     info = grouped.issues[0]
-    assert info.code is ErrorCode.TRAINER_BATCH_CONSTRAINT and info.severity is Severity.INFO
+    assert info.code is ErrorCode.SAMPLER_ORDER_NOT_REPRODUCED and info.severity is Severity.INFO
     whole = plan_batches(lengths, make_resolved(SFT, microbatch=8), seed=7)
     assert whole.sampler_max is not None and whole.worst_case.rows_per_microbatch == 5
 
@@ -152,6 +152,10 @@ def test_grpo_repeat_sampler_tail_arithmetic(
     if dropped:
         assert drops[0].details["dropped_rows"] == dropped
         assert plan.sampler_max is None
+        order = [i for i in plan.issues if i.code is ErrorCode.SAMPLER_ORDER_NOT_REPRODUCED]
+        assert [i.severity for i in order] == [Severity.INFO]
+    # TRAINER_BATCH_CONSTRAINT is reserved for settings TRL itself rejects
+    assert ErrorCode.TRAINER_BATCH_CONSTRAINT not in [i.code for i in plan.issues]
 
 
 def test_grpo_pad_to_multiple_of_rounds_prompt_and_completion(
