@@ -5111,6 +5111,42 @@
         "title": "ScopeConfig",
         "type": "object"
       },
+      "SessionLogin": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "SessionLogin",
+        "type": "object"
+      },
+      "SessionStatus": {
+        "additionalProperties": false,
+        "description": "Whether the deployment requires an access token and whether this browser has one.",
+        "properties": {
+          "auth_required": {
+            "title": "Auth Required",
+            "type": "boolean"
+          },
+          "authenticated": {
+            "title": "Authenticated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "auth_required",
+          "authenticated"
+        ],
+        "title": "SessionStatus",
+        "type": "object"
+      },
       "Severity": {
         "enum": [
           "info",
@@ -6039,6 +6075,16 @@
               }
             },
             "description": "Concurrency limit"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Job queue unavailable"
           }
         },
         "summary": "Create Analysis",
@@ -6049,6 +6095,7 @@
     },
     "/api/v1/analyses/{analysis_id}": {
       "delete": {
+        "description": "Delete the analysis, its events and artifacts, and uploads only it referenced.",
         "operationId": "delete_analysis_api_v1_analyses__analysis_id__delete",
         "parameters": [
           {
@@ -6359,6 +6406,25 @@
             }
           },
           {
+            "description": "Resume after this event id",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Resume after this event id",
+              "title": "After"
+            }
+          },
+          {
             "in": "header",
             "name": "Last-Event-ID",
             "required": false,
@@ -6381,6 +6447,9 @@
               "text/event-stream": {}
             },
             "description": "SSE stream"
+          },
+          "204": {
+            "description": "Finished analysis with no events after Last-Event-ID"
           },
           "400": {
             "content": {
@@ -6998,6 +7067,285 @@
         ]
       }
     },
+    "/api/v1/session": {
+      "delete": {
+        "operationId": "logout_api_v1_session_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "session"
+        ]
+      },
+      "get": {
+        "operationId": "session_status_api_v1_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Session Status",
+        "tags": [
+          "session"
+        ]
+      },
+      "post": {
+        "operationId": "login_api_v1_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionLogin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Access token required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden (owner mismatch or CSRF header missing)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Validation or compatibility error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Concurrency limit"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "session"
+        ]
+      }
+    },
     "/api/v1/sources/inspect": {
       "post": {
         "description": "Metadata-only inspection of a model and/or dataset (no weights, no full scan).",
@@ -7102,7 +7450,7 @@
     },
     "/api/v1/uploads": {
       "post": {
-        "description": "Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.",
+        "description": "Upload a dataset file (JSON/JSONL/Parquet/Arrow/CSV) for analysis.\n\nStreams the single `file` part to disk with the `VRAMFORGE_MAX_UPLOAD_BYTES` cap; the\nextension must match the content. Use the returned `reference` as the dataset reference.",
         "operationId": "upload_dataset_api_v1_uploads_post",
         "requestBody": {
           "content": {
@@ -7174,6 +7522,26 @@
               }
             },
             "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Upload too large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "File type not allowed"
           },
           "422": {
             "content": {
