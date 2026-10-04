@@ -70,11 +70,11 @@ export function ModelSection({ inspection }: { inspection: Inspection }) {
 }
 
 function ModelInspectionView({ data, outdated }: { data: ModelInspection; outdated: boolean }) {
-  const { getValues } = useFormContext<FormValues>();
   const facts = data.summary?.facts ?? null;
   const tokenizer = data.tokenizer ?? null;
-  const objective = getValues("objective");
-  const strategy = getValues("strategy");
+  // Watched (not read once) so the "(선택)" mark follows Method and strategy changes.
+  const objective = useWatch<FormValues, "objective">({ name: "objective" });
+  const strategy = useWatch<FormValues, "strategy">({ name: "strategy" });
   const layerCounts = facts?.layer_type_counts ?? [];
   const support = data.support ?? [];
   return (

@@ -85,6 +85,17 @@ describe("model input", () => {
     expect(inspect).toHaveBeenCalledTimes(1);
   });
 
+  it("marks the supported combination of the current method and strategy", async () => {
+    const user = userEvent.setup();
+    const inspect = vi.fn<ApiClient["inspect"]>(async () => ({ model: modelInspection, dataset: null }));
+    const { form } = renderSection(<ModelHost />, { inspect }, { modelReference: MODEL_REF, objective: "grpo" });
+    await user.click(screen.getByRole("button", { name: "모델 확인" }));
+    expect(await screen.findByText(/GRPO · QLoRA — 정적 추정 · 조건부 \(선택\)/)).toBeInTheDocument();
+    act(() => form().setValue("objective", "dpo"));
+    expect(await screen.findByText(/DPO · QLoRA — 정적 추정 · 준비됨 \(선택\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/GRPO · QLoRA.*\(선택\)/)).not.toBeInTheDocument();
+  });
+
   it("validates the reference locally before any request", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn();
