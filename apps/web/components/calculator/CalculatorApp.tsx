@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FormProvider, useForm, useWatch } from "react-hook-form";
 
 import { TokenPrompt } from "@/components/layout/TokenPrompt";
+import { DeleteAnalysis } from "@/components/results/DeleteAnalysis";
 import { DetailTabs } from "@/components/results/DetailTabs";
 import { ExportMenu } from "@/components/results/ExportMenu";
 import { SummaryCard } from "@/components/results/SummaryCard";
@@ -183,7 +184,12 @@ export function CalculatorApp() {
                 view={recompute}
                 hardwareRequested={values.hardwareMode !== "capacity_only"}
                 gpuWorkerConnected={profiles.data?.gpu_worker_connected ?? null}
-                exportSlot={<ExportMenu api={env.api} analysisId={runState.analysisId} result={terminalResult} jobStatus={runState.jobStatus} />}
+                exportSlot={
+                  <>
+                    <ExportMenu api={env.api} analysisId={runState.analysisId} result={terminalResult} jobStatus={runState.jobStatus} />
+                    <DeleteAnalysis api={env.api} analysisId={runState.analysisId} disabled={running} onDeleted={run.reset} />
+                  </>
+                }
               />
             </div>
           </aside>
