@@ -34,7 +34,7 @@ from .. import store
 from ..access import source_access
 from ..db import session_scope, utcnow
 from ..deps import OwnerDep, StateDep
-from ..inspect_service import inspect_sources
+from ..inspect_service import inspect_sources as run_inspection
 from ..models import Upload
 from ..settings import Settings
 from ..uploads import SavedUpload, receive_upload
@@ -80,7 +80,7 @@ def upload_reference_issue(
 
 
 @router.post("/sources/inspect", response_model=InspectResponse)
-async def inspect_sources_route(
+async def inspect_sources(
     body: InspectRequest, state: StateDep, owner: OwnerDep
 ) -> InspectResponse:
     """Metadata-only inspection of a model and/or dataset (no weights, no full scan)."""
@@ -100,7 +100,7 @@ async def inspect_sources_route(
     access = source_access(
         settings, owner, http_timeout_s=min(30.0, float(settings.inspect_timeout_s))
     )
-    return await inspect_sources(
+    return await run_inspection(
         body,
         access,
         timeout_s=settings.inspect_timeout_s,
