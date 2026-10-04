@@ -4,6 +4,7 @@ the error format (docs/architecture.md §6)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from vramforge_api.app import EVENTS_PATH, create_app
 from vramforge_estimator.schemas import AnalysisEvent, Branch, EventType
 
+REPO = Path(__file__).resolve().parents[3]
 EVENT_SCHEMAS = ("AnalysisEvent", "EventType", "JobProgress", "ShardProgress")
 
 
@@ -74,3 +76,11 @@ def test_errors_are_documented_as_error_response(spec: dict[str, Any]) -> None:
                     path,
                     status,
                 )
+
+
+def test_committed_document_has_the_event_contract_and_scenario_export() -> None:
+    committed = json.loads((REPO / "docs" / "api" / "openapi.json").read_text(encoding="utf-8"))
+    for name in EVENT_SCHEMAS:
+        assert name in committed["components"]["schemas"], name
+    assert "/api/v1/analyses/{analysis_id}/scenarios/export" in committed["paths"]
+    assert "ScenarioExportRequest" in committed["components"]["schemas"]
