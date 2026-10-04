@@ -125,3 +125,54 @@ def test_example_dataset_full_stream(source: ResolvedSource, access: SourceAcces
     )
     expected = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
     assert [dict(r.row) for r in rows] == expected
+
+
+@pytest.mark.parametrize("repo", ["cornell-movie-review-data/rotten_tomatoes", "nyu-mll/glue"])
+def test_hub_layout_matches_datasets_builder(
+    repo: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configs and per-split file order equal `load_dataset_builder(repo, name, revision=sha)`."""
+    import datasets
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
+
+    from vramforge_estimator.inspection.dataset_files import SourceFiles
+    from vramforge_estimator.inspection.dataset_layout import resolve_layout
+    from vramforge_estimator.inspection.readers import ReaderLimits
+
+    monkeypatch.setattr(datasets.config, "HF_UPDATE_DOWNLOAD_COUNTS", False)
+    datasets.disable_progress_bars()
+    api = HfApi()
+    sha = api.dataset_info(repo, token=False).sha
+    assert sha is not None
+    entries = [
+        FileEntry(
+            path=i.path, size=i.size, blob_id=i.blob_id, sha256=i.lfs.sha256 if i.lfs else None
+        )
+        for i in api.list_repo_tree(
+            repo, repo_type="dataset", revision=sha, recursive=True, token=False
+        )
+        if isinstance(i, RepoFile)
+    ]
+    manifest = SourceManifest(
+        kind="dataset",
+        source_type=SourceType.HUGGINGFACE,
+        reference=f"hf:{repo}",
+        repo_id=repo,
+        resolved_revision=sha,
+        files=entries,
+        fingerprint=sha,
+    )
+    hub_source = ResolvedSource(kind="dataset", manifest=manifest, repo_id=repo, revision=sha)
+    access = SourceAccess(hf_home=tmp_path / "hf")
+    layout = resolve_layout(SourceFiles(hub_source, access, ReaderLimits()))
+    prefix = f"hf://datasets/{repo}@{sha}/"
+    for config in layout.configs:
+        builder = datasets.load_dataset_builder(
+            repo, config.name, revision=sha, cache_dir=str(tmp_path / "ds")
+        )
+        expected = {
+            str(split): [url.removeprefix(prefix) for url in urls]
+            for split, urls in builder.config.data_files.items()
+        }
+        assert {s.name: [f.shard_id for f in s.files] for s in config.splits} == expected
