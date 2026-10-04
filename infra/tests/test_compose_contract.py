@@ -99,7 +99,13 @@ def test_volumes_and_read_only_local_sources(services: dict[str, dict[str, Any]]
     local = "${VRAMFORGE_LOCAL_SOURCES_DIR:-./local-sources}:/sources/local:ro"
     for name in ("api", "worker"):
         assert services[name]["volumes"] == ["vfdata:/data", local]
-    assert "volumes" not in services["migrate"]
+    # migrate initializes the shared data volume alone, before api and worker start (avoids the
+    # concurrent copy-up race seen on Linux CI: "mkdir .../uploads: file exists").
+    assert services["migrate"]["volumes"] == ["vfdata:/data"]
+    for name in ("api", "worker"):
+        assert (
+            services[name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+        )
     # PostgreSQL 18 keeps PGDATA under /var/lib/postgresql/18/docker (stack-compat.md §7.3).
     assert services["postgres"]["volumes"] == ["pgdata:/var/lib/postgresql"]
     assert services["redis"]["volumes"] == ["redisdata:/data"]

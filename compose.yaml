@@ -164,6 +164,11 @@ services:
     command: ["vramforge-api", "migrate"]
     init: true
     environment: *db-env
+    # migrate runs first and alone, so it performs the one-time copy of the image's /data layout
+    # (owned by the app user) into the empty named volume. api and worker start only after it
+    # exits; mounting a fresh volume in both at once races on that copy ("mkdir …: file exists").
+    volumes:
+      - vfdata:/data
     networks: [backend]
     depends_on:
       postgres:
