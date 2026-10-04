@@ -29,6 +29,21 @@
   --vf-info-soft: #eaf0fe;
   --vf-neutral-soft: #eef0f3;
   --vf-focus: #4f46e5;
+  /* Charts: categorical slots from the validated reference palette (dataviz skill, palette.md),
+     checked against the card surfaces with validate_palette.js; single-series marks use the
+     accent, de-emphasis uses the muted gray (>= 3:1 on the card). */
+  --vf-series-1: #2a78d6;
+  --vf-series-2: #eb6834;
+  --vf-series-3: #1baf7a;
+  --vf-series-4: #eda100;
+  --vf-series-5: #e87ba4;
+  --vf-series-6: #008300;
+  --vf-series-7: #4a3aa7;
+  --vf-chart-accent-wash: #8f8ae8;
+  --vf-chart-muted: #8a919e;
+  --vf-chart-muted-wash: #c9cdd5;
+  --vf-chart-grid: #e8eaee;
+  --vf-chart-axis: #c9ced8;
   color-scheme: light;
 }
 
@@ -54,6 +69,18 @@
   --vf-info-soft: #172440;
   --vf-neutral-soft: #1c2433;
   --vf-focus: #a5a1ff;
+  --vf-series-1: #3987e5;
+  --vf-series-2: #d95926;
+  --vf-series-3: #199e70;
+  --vf-series-4: #c98500;
+  --vf-series-5: #d55181;
+  --vf-series-6: #008300;
+  --vf-series-7: #9085e9;
+  --vf-chart-accent-wash: #5f5bb8;
+  --vf-chart-muted: #5d6680;
+  --vf-chart-muted-wash: #313a4d;
+  --vf-chart-grid: #222b3b;
+  --vf-chart-axis: #36425a;
   color-scheme: dark;
 }
 
