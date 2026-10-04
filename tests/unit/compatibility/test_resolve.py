@@ -519,3 +519,39 @@ def test_sft_layout_rule_matches_the_preprocessing_adapter(mapping) -> None:
     m = ColumnMapping.model_validate(mapping)
     layout, _ = resolve_sft_layout(m)
     assert resolver_mod._sft_prompt_completion(m) is (layout == "prompt_completion")
+
+
+# ---------------------------------------------------------------- processor-only chat template
+
+
+def _manifest(source: str) -> TokenizerManifest:
+    return TokenizerManifest(
+        tokenizer_class="T",
+        vocab_size=10,
+        chat_template_present=source != "none",
+        chat_template_source=source,
+        fingerprint="x",
+    )
+
+
+def test_processor_only_template_needs_autoprocessor(adapter) -> None:
+    sft = {"training__objective": "sft"}  # otherwise ready
+    cfg, report = resolve(request(**sft), hybrid_inventory(), _manifest("processor"))
+    assert cfg is not None and cfg.processing_class == "processor"
+    assert "Pillow" in field(cfg, "training.processing_class").reason
+    warning = next(
+        w for w in report.warnings if w.affected_component == "training.processing_class"
+    )
+    assert warning.code is ErrorCode.PROFILE_SCOPE_INCOMPLETE
+    assert warning.details["requires"] == ["pillow", "torchvision"]
+    # the pinned environment lacks both packages: never a silent ready (tokenizer) export
+    assert report.readiness is TrainingReadiness.CONDITIONAL
+
+
+@pytest.mark.parametrize("source", ["chat_template.jinja", "tokenizer_config.json", "none"])
+def test_tokenizer_held_templates_keep_autotokenizer(adapter, source) -> None:
+    cfg, report = resolve(request(training__objective="sft"), hybrid_inventory(), _manifest(source))
+    assert cfg is not None and cfg.processing_class == "tokenizer"
+    assert report.readiness is TrainingReadiness.READY
+    no_manifest, _ = resolve(request(training__objective="sft"), hybrid_inventory(), None)
+    assert no_manifest is not None and no_manifest.processing_class == "tokenizer"

@@ -688,6 +688,14 @@ def common_assumptions(b: ScheduleBuilder, cfg: ResolvedConfig) -> None:
         PADDING_NOTES[cfg.objective],
         "docs/research/architecture-memory.md §3.1, docs/research/trl-grpo.md §6.4",
     )
+    if cfg.processing_class == "processor":
+        b.assume(
+            "processing_class",
+            "chat template이 processor 파일에만 있어 학습은 AutoProcessor로 같은 template을 "
+            "적용한다고 가정합니다. 학습 환경에 Pillow·torchvision이 필요합니다 (분석은 이 "
+            "template을 tokenizer에 붙여 토큰화했습니다).",
+            "docs/research/loading-quantization-peft.md 미확정 6",
+        )
 
 
 __all__ = [

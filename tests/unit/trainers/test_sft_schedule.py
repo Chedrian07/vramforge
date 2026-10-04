@@ -207,3 +207,12 @@ def test_sequence_shapes_report_the_padding_of_the_planned_batch() -> None:
     rows = FakeArch()
     build(shape=sft_shape(2, 100), arch=rows)
     assert [(s.batch, s.has_padding) for _, s in rows.seen] == [(2, True)]
+
+
+def test_processor_processing_class_is_a_stated_assumption() -> None:
+    plain = build()
+    assert not any(a.id == "processing_class" for a in plain.assumptions)
+    cfg = make_cfg(inventory=INV).model_copy(update={"processing_class": "processor"})
+    sched = build(cfg=cfg)
+    note = next(a for a in sched.assumptions if a.id == "processing_class")
+    assert "AutoProcessor" in note.text and "Pillow·torchvision" in note.text

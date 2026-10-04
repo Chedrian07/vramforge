@@ -65,6 +65,8 @@ from .validation import validate_request
 
 LINEAR_ATTENTION = "linear_attention"
 MixedPrecision = Literal["bf16", "fp16", "none"]
+# AutoProcessor of multimodal checkpoints needs these (environment profile `kernels.absent` names)
+PROCESSOR_PACKAGES = ("pillow", "torchvision")
 
 
 def _issue(code: ErrorCode, message: str, component: str, **details: object) -> Issue:
@@ -95,13 +97,15 @@ def _support(profile: AnalyticProfile) -> list[SupportEntry]:
 
 
 class _Resolution:
-    """Collects requested -> resolved records, blockers and warnings."""
+    """Collects requested -> resolved records, blockers, warnings and the conditions that make an
+    otherwise ready result conditional."""
 
     def __init__(self) -> None:
         self.records: list[ConfigResolution] = []
         self.not_effective: list[ConfigResolution] = []
         self.blockers: list[Issue] = []
         self.warnings: list[Issue] = []
+        self.conditions: list[str] = []
 
     def set(self, field: str, requested: Any, resolved: Any, reason: str) -> Any:
         self.records.append(
@@ -459,6 +463,49 @@ def _loss_masks(request: AnalysisRequest, res: _Resolution) -> tuple[bool, bool 
     return False, completion_only
 
 
+def _processing_class(
+    facts: ArchitectureFacts,
+    tokenizer: TokenizerManifest | None,
+    env: EnvironmentProfile,
+    res: _Resolution,
+) -> Literal["tokenizer", "processor"]:
+    """`processing_class` the trainer config must pass. A chat template held only by the
+    processor files (chat_template.json / processor_config.json) is absent from AutoTokenizer, so
+    the run needs AutoProcessor, which needs Pillow and torchvision; an environment profile without
+    them makes the result conditional (docs/research/loading-quantization-peft.md open question 6,
+    docs/research/trl-sft-dpo.md §3). The token ids were scanned with that same template."""
+    if tokenizer is None or tokenizer.chat_template_source != "processor":
+        return res.set(
+            "training.processing_class",
+            None,
+            "tokenizer",
+            "학습 환경에 Pillow·torchvision이 없어 AutoTokenizer를 processing_class로 명시합니다."
+            if facts.has_vision
+            else "tokenizer",
+        )
+    missing = [p for p in PROCESSOR_PACKAGES if p in env.kernels.absent]
+    if missing:
+        res.conditions.append("training.processing_class")
+        res.warnings.append(
+            _warning(
+                ErrorCode.PROFILE_SCOPE_INCOMPLETE,
+                "chat template이 tokenizer가 아니라 processor 파일에만 있어 학습에는 "
+                "AutoProcessor가 필요합니다(AutoTokenizer에는 이 template이 없어 대신 쓰지 "
+                f"않습니다). AutoProcessor에 필요한 {', '.join(missing)}이(가) 고정 학습 환경 "
+                f"{env.id}에 없어, 이 패키지를 설치한다는 조건부 결과입니다.",
+                "training.processing_class",
+                requires=missing,
+            )
+        )
+    return res.set(
+        "training.processing_class",
+        None,
+        "processor",
+        "chat template이 processor(chat_template.json·processor_config.json)에만 있어 "
+        "AutoProcessor를 processing_class로 씁니다. 학습 환경에 Pillow·torchvision이 필요합니다.",
+    )
+
+
 def _dpo(
     request: AnalysisRequest, profile: AnalyticProfile, microbatch: int, res: _Resolution
 ) -> DpoResolved:
@@ -688,7 +735,7 @@ def _readiness(
 ) -> TrainingReadiness:
     if res.blockers:
         return TrainingReadiness.UNSUPPORTED
-    readiness = base
+    readiness = TrainingReadiness.CONDITIONAL if res.conditions else base
     if request.training.objective is Objective.GRPO:
         reward = request.grpo.reward
         if reward.kind is RewardKind.UNSPECIFIED:
@@ -890,15 +937,7 @@ def _build(
     loss_path = _loss_path(request, profile, res)
     packing = _packing(request, paths, res)
     assistant_only_loss, completion_only_loss = _loss_masks(request, res)
-    processing = "tokenizer"
-    res.set(
-        "training.processing_class",
-        None,
-        processing,
-        "학습 환경에 Pillow·torchvision이 없어 AutoTokenizer를 processing_class로 명시합니다."
-        if facts.has_vision
-        else "tokenizer",
-    )
+    processing = _processing_class(facts, tokenizer, env, res)
     template_kwargs: dict[str, Any] = {}
     thinking = t.template.enable_thinking
     if thinking is not None:
