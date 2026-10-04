@@ -14,12 +14,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pyarrow.parquet as pq
 import pytest
 
 from vramforge_estimator.batching import plan_batches
 from vramforge_estimator.inspection import SourceRow, TokenizerHandle
 from vramforge_estimator.preprocessing import get_adapter
-from vramforge_estimator.scan import LengthTable, ScanLimits, full_scan, load_lengths
+from vramforge_estimator.preprocessing.trl_common import token_digest
+from vramforge_estimator.scan import (
+    LengthTable,
+    ScanLimits,
+    full_scan,
+    load_lengths,
+    validate_context,
+)
+from vramforge_estimator.scan.artifact import part_paths
 from vramforge_estimator.schemas import (
     Branch,
     BranchStats,
@@ -169,12 +178,47 @@ def assert_matches(stats: BranchStats, golden: dict[str, Any], *, full: bool) ->
         assert [r.row_id for r in stats.top_rows] == [f"train:{i}" for i in golden["top10_rows"]]
 
 
-def test_every_row_is_processed_completely(scans) -> None:
-    for outcome in scans.values():
+def test_every_row_is_processed_completely(scans, tokenizer) -> None:
+    for (objective, policy), outcome in scans.items():
         res = outcome.result
         assert res.coverage is ScanCoverage.COMPLETE and res.rows_ok == DATASET["rows"]
         assert res.rows_failed == 0 and res.context_exceeded_rows == 0
+        # no failure, prompt-boundary, special-token or literal added-token finding (§5, R7)
         assert outcome.template_content_loss_rows == 0 and outcome.issues == []
+        # every system value is empty: OMIT skips one system message per row, KEEP renders it
+        omitted = DATASET["system_empty_rows"] if policy == "omit" else None
+        assert res.omitted_system_messages == omitted
+        context = validate_context(
+            res,
+            model_declared_max=MODEL["max_position_embeddings"],
+            tokenizer=tokenizer.manifest,
+            backend_verified_max=None,
+            extra_tokens=8192 if objective is Objective.GRPO else 0,
+        )
+        assert context.status == "ok" and context.exceeded_rows == 0
+        assert context.exceeded_rows_exact
+
+
+def test_artifacts_carry_token_digests_and_their_preprocess_key(scans, tokenizer, rows) -> None:
+    for (objective, policy), outcome in scans.items():
+        table = load_lengths(outcome.artifact_path)
+        assert table.preprocess_key == f"golden-{objective.value}-{policy}"
+        stored = pq.read_table(part_paths(outcome.artifact_path), columns=["token_digest"])
+        digests = stored.column("token_digest").to_pylist()
+        assert len(digests) == DATASET["rows"] and None not in digests
+    # the SFT digest is the hash of the ids TRL's chat-template tokenization produces
+    stored = pq.read_table(
+        part_paths(scans[Objective.SFT, "omit"].artifact_path), columns=["token_digest"]
+    )
+    sft = stored.column("token_digest").to_pylist()
+    tok = tokenizer.tokenizer
+    for i in (0, *GOLDEN["sft"]["total_omit"]["max_rows"]):
+        conversation = [
+            {"role": "user", "content": rows[i]["question"]},
+            {"role": "assistant", "content": rows[i]["chosen"]},
+        ]
+        ids = tok.apply_chat_template(conversation)["input_ids"]
+        assert sft[i] == token_digest({"input_ids": ids})
 
 
 def test_grpo_prompt_stats(scans) -> None:
