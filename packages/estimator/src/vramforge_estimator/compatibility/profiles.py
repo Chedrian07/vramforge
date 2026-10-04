@@ -344,10 +344,18 @@ def clear_registry_cache() -> None:
 
 
 def _read_yaml(path: Path, base: Path) -> Any:
+    name = path.relative_to(base)
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ProfileError(f"cannot read profile {path.relative_to(base)}: {exc}") from exc
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        # str(OSError) embeds the absolute path; report only the profile-relative name.
+        raise ProfileError(
+            f"cannot read profile {name}: {exc.strerror or type(exc).__name__}"
+        ) from exc
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ProfileError(f"cannot read profile {name}: {exc}") from exc
 
 
 def _parse[M: BaseModel](model: type[M], path: Path, base: Path) -> M:

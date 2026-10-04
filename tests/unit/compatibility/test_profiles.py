@@ -130,6 +130,21 @@ def test_invalid_profile_is_reported_with_relative_name(
     assert str(tmp_path) not in str(info.value)
 
 
+def test_unreadable_profile_error_has_no_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "profiles"
+    shutil.copytree(REPO_PROFILES, target)
+    env = target / "environments" / "cuda-trl-1.14.1.yaml"
+    env.unlink()
+    env.mkdir()  # reading a directory raises IsADirectoryError, whose str() holds the full path
+    monkeypatch.setenv(PROFILES_DIR_ENV, str(target))
+    with pytest.raises(ProfileError) as info:
+        load_registry()
+    assert "environments/cuda-trl-1.14.1.yaml" in str(info.value)
+    assert str(tmp_path) not in str(info.value)
+
+
 # ---------------------------------------------------------------- analytic profiles
 
 
