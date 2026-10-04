@@ -70,6 +70,26 @@ describe("SummaryCard", () => {
     expect(screen.getByText(/분석 진행 중/)).toBeInTheDocument();
   });
 
+  it("labels the scanner's partial statistics in Korean", () => {
+    renderCard({
+      run: {
+        ...IDLE_RUN,
+        phase: "running",
+        analysisId: "vf-fixture-x",
+        jobStatus: "TOKENIZING",
+        progress: { stage: "TOKENIZING", processed_rows: 1_536, total_rows: null },
+        partial: { status: "partial", rows_ok: 1_535, rows_failed: 1, max_prompt: 201, max_chosen_sequence: 1_843 },
+      },
+    });
+    const box = within(screen.getByText(/현재까지 확인한 데이터 기준/).parentElement!);
+    expect(box.getByText("스캔 범위")).toBeInTheDocument();
+    expect(box.getByText("부분")).toBeInTheDocument();
+    expect(box.getByText("현재까지 최대 길이 · prompt")).toBeInTheDocument();
+    expect(box.getByText("현재까지 최대 길이 · prompt + chosen")).toBeInTheDocument();
+    expect(box.getByText("1,843")).toBeInTheDocument();
+    expect(box.queryByText("max_prompt")).not.toBeInTheDocument();
+  });
+
   it("shows five separate status badges with text after completion", () => {
     renderCard({ run: terminalRun(completedSftStatus), view: view(sftResult) });
     const list = screen.getByRole("list", { name: "결과 상태" });

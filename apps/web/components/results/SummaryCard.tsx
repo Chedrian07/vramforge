@@ -4,10 +4,10 @@ import { memo, type ReactNode } from "react";
 
 import { Badge, Button, InfoTip } from "@/components/ui/primitives";
 import { Bytes, BytesRange, IssueList, NotComputed, type DisplayIssue } from "@/components/ui/values";
-import type { AnalysisResult } from "@/lib/api/types";
+import type { AnalysisResult, Branch, ScanCoverage } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
 import { exactBytesRange, formatCount, formatGiB, gibNumber } from "@/lib/format/bytes";
-import { JOB_STATUS_LABEL } from "@/lib/format/labels";
+import { BRANCH_LABEL, JOB_STATUS_LABEL, SCAN_COVERAGE_LABEL } from "@/lib/format/labels";
 import type { RunState } from "@/lib/hooks/useAnalysisRun";
 import type { RecomputeView } from "@/lib/hooks/useRecompute";
 import { hardwareSelected, summarize, type ResultSummary } from "@/lib/result/summary";
@@ -16,7 +16,10 @@ import { BudgetList } from "./BudgetList";
 import { StatusBadges } from "./StatusBadges";
 import { UsageGauge } from "./UsageGauge";
 
+// Keys of AnalysisEvent.partial. The scanner sends status, rows_ok, rows_failed and
+// max_<branch> (scan/scanner.py); the others are accepted for older or future producers.
 const PARTIAL_LABEL: Record<string, string> = {
+  status: "스캔 범위",
   rows_seen: "읽은 row",
   rows_ok: "성공 row",
   rows_failed: "실패 row",
@@ -243,6 +246,20 @@ function SummaryCardImpl({ run, view, hardwareRequested, gpuWorkerConnected, exp
   );
 }
 
+function partialLabel(key: string): ReactNode {
+  const known = PARTIAL_LABEL[key];
+  if (known) return known;
+  const branch = key.startsWith("max_") ? key.slice(4) : null;
+  if (branch && branch in BRANCH_LABEL) return `현재까지 최대 길이 · ${BRANCH_LABEL[branch as Branch]}`;
+  return <span className="font-mono text-[12px]">{key}</span>;
+}
+
+function partialValue(key: string, value: number | string | null): ReactNode {
+  if (typeof value === "number") return formatCount(value);
+  if (key === "status" && value != null && value in SCAN_COVERAGE_LABEL) return SCAN_COVERAGE_LABEL[value as ScanCoverage];
+  return value ?? "—";
+}
+
 function ScanSoFar({ run }: { run: RunState }) {
   const progress = run.progress;
   const entries = Object.entries(run.partial ?? {});
@@ -262,8 +279,8 @@ function ScanSoFar({ run }: { run: RunState }) {
         ) : null}
         {entries.map(([key, value]) => (
           <div key={key} className="flex justify-between gap-2">
-            <dt className="text-muted">{PARTIAL_LABEL[key] ?? <span className="font-mono text-[12px]">{key}</span>}</dt>
-            <dd className="num text-ink">{typeof value === "number" ? formatCount(value) : (value ?? "—")}</dd>
+            <dt className="text-muted">{partialLabel(key)}</dt>
+            <dd className="num text-ink">{partialValue(key, value)}</dd>
           </div>
         ))}
       </dl>
