@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from vramforge_estimator.errors import make_issue
@@ -434,13 +434,6 @@ def _upload_still_referenced(db: Session, owner_key: str, upload_id: str) -> boo
     return False
 
 
-def touch(db: Session, analysis_id: str, **values: Any) -> int:
-    """Conditional single-row update helper; returns the number of rows changed."""
-    values.setdefault("updated_at", utcnow())
-    res = db.execute(update(Analysis).where(Analysis.id == analysis_id).values(**values))
-    return int(res.rowcount or 0)  # type: ignore[attr-defined]
-
-
 __all__ = [
     "ACTIVE_STATUSES",
     "TERMINAL_EVENT_FOR_STATUS",
@@ -474,5 +467,4 @@ __all__ = [
     "request_cancel",
     "resolve_data_path",
     "to_status",
-    "touch",
 ]
