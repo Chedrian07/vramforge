@@ -45,6 +45,24 @@ describe("calculator flow", () => {
     expect(screen.getByRole("button", { name: "전체 데이터 분석 및 계산" })).toBeEnabled();
   });
 
+  it("opens the Advanced group that holds an error when the run is refused", async () => {
+    const user = userEvent.setup();
+    const createAnalysis = vi.fn<ApiClient["createAnalysis"]>();
+    renderApp({ createAnalysis });
+    await user.click(screen.getByRole("button", { name: "예시 입력 불러오기" }));
+    const adapter = screen.getByRole("button", { name: /^Adapter/ });
+    await user.click(adapter);
+    await user.clear(screen.getByLabelText("rank (r)"));
+    await user.type(screen.getByLabelText("rank (r)"), "0");
+    await user.click(adapter); // collapse: the field and its message unmount
+    expect(screen.queryByLabelText("rank (r)")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "전체 데이터 분석 및 계산" }));
+    await waitFor(() => expect(adapter).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.getByLabelText("rank (r)")).toHaveAccessibleDescription("1–4,096 사이 정수를 입력하세요");
+    expect(createAnalysis).not.toHaveBeenCalled();
+  });
+
   it("runs the GRPO example end to end and asks for re-analysis on a method switch", async () => {
     const user = userEvent.setup();
     const createAnalysis = vi.fn<ApiClient["createAnalysis"]>(async () => created());

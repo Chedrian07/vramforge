@@ -23,7 +23,7 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
 import { useBackendProfiles, useDatasetInspection, useModelInspection } from "@/lib/hooks/useInspection";
 import { useRecompute } from "@/lib/hooks/useRecompute";
 
-import { AdvancedSettings } from "./AdvancedSettings";
+import { AdvancedSettings, groupsWithErrors } from "./AdvancedSettings";
 import { DatasetSection } from "./DatasetSection";
 import { HardwareSection } from "./HardwareSection";
 import { applyMapping } from "./MappingEditor";
@@ -102,7 +102,13 @@ export function CalculatorApp() {
     },
     [presets, run],
   );
-  const submit = form.handleSubmit(onValid);
+  // Fields of a closed Advanced group are unmounted: open the groups that hold an error so the
+  // message is visible and the field can take focus.
+  const [advancedOpen, setAdvancedOpen] = useState<string[]>([]);
+  const submit = form.handleSubmit(onValid, (errors) => {
+    const groups = groupsWithErrors(errors);
+    if (groups.length > 0) setAdvancedOpen((open) => Array.from(new Set([...open, ...groups])));
+  });
 
   const loadExample = () => {
     form.reset(EXAMPLE_FORM_VALUES);
@@ -152,7 +158,12 @@ export function CalculatorApp() {
             <Card title="하드웨어" id="hardware-title">
               <HardwareSection />
             </Card>
-            <AdvancedSettings resolved={shown?.resolved_config ?? null} datasetInspection={datasetData} />
+            <AdvancedSettings
+              resolved={shown?.resolved_config ?? null}
+              datasetInspection={datasetData}
+              open={advancedOpen}
+              onOpenChange={setAdvancedOpen}
+            />
             <RunBar
               running={running}
               needsReanalysis={recompute.mode === "reanalysis"}

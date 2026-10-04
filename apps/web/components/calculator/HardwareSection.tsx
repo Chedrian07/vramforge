@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 
 import { Field, NativeSelect, TextInput, describedBy } from "@/components/ui/primitives";
@@ -20,6 +21,13 @@ export function HardwareSection() {
   const selectValue = mode === "capacity_only" ? CAPACITY : mode === "custom" ? CUSTOM : presetId;
   const opts = { shouldDirty: true, shouldValidate: true };
   const preset = presets.find((p) => p.id === presetId) ?? null;
+  // An error in the collapsed margin settings would otherwise be invisible: open them (never
+  // close them for the user).
+  const marginDetails = useRef<HTMLDetailsElement>(null);
+  const marginError = Boolean(errors.externalReservedGiB || errors.marginMinGiB || errors.marginFraction);
+  useEffect(() => {
+    if (marginError && marginDetails.current) marginDetails.current.open = true;
+  }, [marginError]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -106,7 +114,7 @@ export function HardwareSection() {
         </div>
       ) : null}
 
-      <details className="group rounded-lg border border-line px-3 py-2">
+      <details ref={marginDetails} className="group rounded-lg border border-line px-3 py-2">
         <summary className="cursor-pointer select-none text-[13px] font-medium text-ink-2">외부 점유 · 계획용 여유 정책</summary>
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="외부 점유 (GiB)" htmlFor="external-reserved" hint="필요 총 용량 = 권장 용량 + 외부 점유" error={errors.externalReservedGiB?.message}>

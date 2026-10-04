@@ -2,7 +2,7 @@
 
 import { Accordion } from "radix-ui";
 import type { ReactNode } from "react";
-import { useFormContext, useWatch } from "react-hook-form";
+import { useFormContext, useWatch, type FieldErrors, type FieldPath } from "react-hook-form";
 
 import { Segmented } from "@/components/ui/controls";
 import { Field, Mono, NativeSelect } from "@/components/ui/primitives";
@@ -31,6 +31,36 @@ import { useBackendProfiles } from "@/lib/hooks/useInspection";
 import { ListField, SelectField, SwitchControl, TextField, UnsupportedSwitch, enumOptions } from "./advanced-fields";
 
 export const ADVANCED_GROUPS = ["adapter", "batch", "runtime", "method", "dataset"] as const;
+export type AdvancedGroup = (typeof ADVANCED_GROUPS)[number];
+
+/** Form fields edited inside each group (a closed group unmounts its fields). */
+const GROUP_FIELDS: Record<AdvancedGroup, readonly FieldPath<FormValues>[]> = {
+  adapter: ["loraR", "loraAlpha", "loraDropout", "loraTargetMode", "loraTargetModules", "loraExcludeModules", "loraModulesToSave", "loraBias", "loraRankPattern"],
+  batch: ["microbatch", "accumulation", "padToMultipleOf", "precision", "loadDtype", "optimizer", "quantFormat", "computeDtype"],
+  runtime: ["attentionBackend", "linearAttentionKernel", "lossKernel", "backendProfile"],
+  method: [
+    "dpoReferenceStrategy",
+    "dpoReferenceModel",
+    "dpoBeta",
+    "dpoLossType",
+    "dpoPrecomputeBatchSize",
+    "grpoNumGenerations",
+    "grpoGenerationBatchSize",
+    "grpoStepsPerGeneration",
+    "grpoNumIterations",
+    "grpoCompletionBudget",
+    "grpoBudgetCandidates",
+    "grpoBeta",
+    "grpoRewardKind",
+    "grpoRewardModelReference",
+  ],
+  dataset: ["datasetSplit", "datasetEvalSplit", "datasetConfig", "enableThinking", "loadingScope", "modelRevision", "datasetRevision", "seed"],
+};
+
+/** Groups holding a validation error: opened after a failed submit so the message is visible. */
+export function groupsWithErrors(errors: FieldErrors<FormValues>): AdvancedGroup[] {
+  return ADVANCED_GROUPS.filter((group) => GROUP_FIELDS[group].some((field) => errors[field as keyof FormValues] != null));
+}
 
 function Group({ value, title, summary, children }: { value: string; title: string; summary: ReactNode; children: ReactNode }) {
   return (
@@ -57,7 +87,18 @@ function Wide({ children }: { children: ReactNode }) {
   return <div className="sm:col-span-2">{children}</div>;
 }
 
-export function AdvancedSettings({ resolved, datasetInspection }: { resolved: ResolvedConfig | null; datasetInspection: DatasetInspection | null }) {
+export function AdvancedSettings({
+  resolved,
+  datasetInspection,
+  open,
+  onOpenChange,
+}: {
+  resolved: ResolvedConfig | null;
+  datasetInspection: DatasetInspection | null;
+  /** Controlled open groups (uncontrolled when omitted). */
+  open?: string[];
+  onOpenChange?: (groups: string[]) => void;
+}) {
   const values = useWatch<FormValues>() as FormValues;
   const { setValue } = useFormContext<FormValues>();
   const profiles = useBackendProfiles();
@@ -66,7 +107,7 @@ export function AdvancedSettings({ resolved, datasetInspection }: { resolved: Re
   const auto = (v: string) => (v === "" ? "자동" : v);
 
   return (
-    <Accordion.Root type="multiple" className="overflow-hidden rounded-xl border border-line bg-surface">
+    <Accordion.Root type="multiple" value={open} onValueChange={onOpenChange} className="overflow-hidden rounded-xl border border-line bg-surface">
       <div className="border-b border-line px-4 py-3">
         <h2 className="text-lg font-semibold tracking-tight text-ink">Advanced</h2>
         <p className="text-[12px] text-muted">비워 둔 값은 공개된 프로필 preset으로 해석하고, 실제 적용값은 분석 후 표시합니다.</p>

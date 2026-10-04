@@ -75,6 +75,19 @@ describe("hardware section", () => {
   });
 });
 
+describe("hardware margin settings", () => {
+  it("opens the collapsed margin settings when one of them is invalid", async () => {
+    const user = userEvent.setup();
+    renderForm(<HardwareSection />);
+    const details = screen.getByText("외부 점유 · 계획용 여유 정책").closest("details")!;
+    expect(details.open).toBe(false);
+    await user.clear(screen.getByLabelText("여유 비율"));
+    await user.type(screen.getByLabelText("여유 비율"), "abc");
+    await waitFor(() => expect(details.open).toBe(true));
+    expect(screen.getByText("0–10 사이 값을 입력하세요")).toBeInTheDocument();
+  });
+});
+
 describe("advanced settings", () => {
   it("offers five groups operable from the keyboard", async () => {
     const user = userEvent.setup();
