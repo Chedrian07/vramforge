@@ -176,11 +176,15 @@ class DecoderAdapter:
             raise structure_error("출력 projection(lm_head)의 크기를 결정할 수 없습니다.")
         return emb.shape[1], emb.shape[0]  # tied lm_head shares the embedding
 
-    # ------------------------------------------------------------------ extras
-
     def loading_budget_bytes(self, inventory: ModelInventory, cfg: ResolvedConfig) -> int:
-        """`S_load` of transformers' `caching_allocator_warmup` / bnb `device_map="auto"` check
-        (single GPU without max_memory loads only if free × 0.81 >= S_load, research §3.5)."""
+        """S_load: device bytes from_pretrained must fit before training starts (4-bit modules at
+        their packed size, everything else in the load dtype). With bnb 4-bit + device_map="auto"
+        on one GPU and no max_memory, loading needs free memory x 0.81 >= S_load
+        (docs/research/loading-quantization-peft.md §4.5).
+
+        Same sum as transformers' `compute_module_sizes` / `caching_allocator_warmup`: Linear4bit
+        weights at 0.5 B/param, other loaded tensors (tied ones once, MTP never) in the load dtype.
+        """
         return device_map_load_bytes(self.structure(inventory), cfg)
 
 

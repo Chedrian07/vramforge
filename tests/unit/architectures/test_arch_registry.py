@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from types import ModuleType
 
 import pytest
@@ -10,7 +12,13 @@ from arch_helpers import make_cfg
 from vramforge_estimator.architectures import ArchitectureAdapter, get_adapter, match_adapter
 from vramforge_estimator.architectures.registry import adapter_ids
 from vramforge_estimator.errors import EstimatorError
-from vramforge_estimator.schemas import ErrorCode, ModelInventory
+from vramforge_estimator.schemas import ErrorCode, ModelComponent, ModelInventory, Strategy
+
+PROTOCOL_METHODS = sorted(
+    name
+    for name, member in vars(ArchitectureAdapter).items()
+    if inspect.isfunction(member) and not name.startswith("_")
+)
 
 
 def test_example_model_matches_the_hybrid_adapter(mimo: ModelInventory) -> None:
@@ -98,3 +106,33 @@ def test_tied_dense_lm_head_dims_fall_back_to_the_embedding(ib: ModuleType) -> N
         }
     )
     assert get_adapter("dense_decoder").lm_head_dims(inv) == (96, 1000)
+
+
+def _signature(fn: Callable[..., object]) -> list[tuple[str, object, object, object]]:
+    return [
+        (p.name, p.kind, p.default, p.annotation) for p in inspect.signature(fn).parameters.values()
+    ]
+
+
+@pytest.mark.parametrize("adapter_id", ["qwen3_5_hybrid", "dense_decoder"])
+def test_adapters_implement_every_protocol_method_with_its_signature(adapter_id: str) -> None:
+    assert "loading_budget_bytes" in PROTOCOL_METHODS and len(PROTOCOL_METHODS) == 10
+    cls = type(get_adapter(adapter_id))
+    for name in PROTOCOL_METHODS:
+        theirs, ours = getattr(ArchitectureAdapter, name), getattr(cls, name)
+        assert _signature(ours) == _signature(theirs), name
+        assert inspect.signature(ours).return_annotation == (
+            inspect.signature(theirs).return_annotation
+        ), name
+
+
+def test_loading_budget_is_the_device_map_sum(mimo: ModelInventory) -> None:
+    adapter = get_adapter("qwen3_5_hybrid")
+    # 4-bit Linear weights at 0.5 B/param + everything else in the load dtype (LQ §4.4-4.5)
+    assert adapter.loading_budget_bytes(mimo, make_cfg()) == 7_765_103_072
+    assert adapter.loading_budget_bytes(mimo, make_cfg(load="float32")) == 11_845_364_672
+    text = adapter.loading_budget_bytes(mimo, make_cfg(scope="text_only"))
+    assert text < 7_765_103_072  # the vision tower is not loaded
+    unquantized = adapter.loading_budget_bytes(mimo, make_cfg(strategy=Strategy.LORA))
+    loaded = sum(t.numel for t in mimo.tensors if t.component is not ModelComponent.MTP)
+    assert unquantized == 2 * loaded  # bf16 everywhere; MTP is never loaded, nothing is tied

@@ -8,7 +8,7 @@ from types import ModuleType
 import pytest
 from arch_helpers import by_name, make_cfg
 
-from vramforge_estimator.architectures import StepTimepoints, get_adapter
+from vramforge_estimator.architectures import StepTimepoints, final_hidden_alias, get_adapter
 from vramforge_estimator.architectures import activations as act
 from vramforge_estimator.architectures.ledger import K_GC_BACKWARD, K_GC_FORWARD
 from vramforge_estimator.schemas import (
@@ -101,7 +101,8 @@ def test_gc_keeps_boundaries_and_recomputes_the_largest_layer(
     assert led["policy.act.rope_cos_sin"].bytes_low == 2 * 2 * 4096 * 64  # [B,T,r] bf16, 1 MiB
     assert led["policy.act.final_norm"].bytes_low == act.rmsnorm_q35(4096, H, False)  # 64.03 MiB
     hidden = led["policy.act.final_hidden"]
-    assert hidden.storage_alias_group == "policy.final_hidden"
+    # trainer adapters reuse the alias for a trainable LM head's saved input (counted once)
+    assert hidden.storage_alias_group == final_hidden_alias("policy") == "policy.final_hidden"
     assert hidden.live_at == [TPS.forward, TPS.loss]
 
 

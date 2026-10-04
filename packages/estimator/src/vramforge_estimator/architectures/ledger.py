@@ -23,7 +23,7 @@ from vramforge_estimator.schemas import (
 from vramforge_estimator.units import canonical_dtype, dtype_bytes
 
 from . import activations as act
-from .base import GenerationTimepoints, StepTimepoints
+from .base import FINAL_HIDDEN_SUFFIX, GenerationTimepoints, StepTimepoints, final_hidden_alias
 from .structure import (
     EXECUTED_COMPONENTS,
     FULL_ATTENTION,
@@ -588,7 +588,7 @@ def train_step(
     hidden = _ceil(n * d.hidden * load_b)
     out.append(
         spec(
-            f"{p}.final_hidden",
+            f"{p}.{FINAL_HIDDEN_SUFFIX}",
             AllocationCategory.SAVED_ACTIVATIONS,
             hidden,
             hidden,
@@ -597,7 +597,7 @@ def train_step(
             shape="[B,T,H]",
             dims=dims,
             dtype=load,
-            alias=f"{prefix}.final_hidden",
+            alias=final_hidden_alias(prefix),
             note="final norm 출력 = LM head 입력. LM head ledger가 저장분으로 셀 때 같은 alias.",
         )
     )
