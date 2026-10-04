@@ -145,6 +145,15 @@ class Paths:
     notes: dict[str, str] = field(default_factory=dict)  # layer type -> defaulted path
 
 
+def attention_dropout(structure: ModelStructure) -> float:
+    """Config `attention_dropout` (applied functionally in training; not an nn.Dropout, so TRL's
+    disable_dropout does not reach it)."""
+    value = structure.facts.extra.get("attention_dropout")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
 def resolve_paths(structure: ModelStructure, cfg: ResolvedConfig) -> Paths:
     configured = {k: v.strip().lower() for k, v in cfg.attention_path_by_layer_type.items()}
     notes: dict[str, str] = {}
@@ -154,7 +163,11 @@ def resolve_paths(structure: ModelStructure, cfg: ResolvedConfig) -> Paths:
         if raw in (None, "auto"):
             raw = DEFAULT_ATTENTION
             notes[lt] = "attention 경로 미지정 → transformers 기본 sdpa로 계산"
-        if raw in _SDPA_AUTO:
+        if attention_dropout(structure) > 0:
+            # dropout changes the saved set (eager mask) and the CUDA SDPA backend choice
+            # (flash refuses head_dim > 224 with dropout on sm86/89/120): not verified
+            attention[lt] = None
+        elif raw in _SDPA_AUTO:
             attention[lt] = "sdpa"
         elif raw in _SDPA_MEM:
             attention[lt] = "sdpa_mem_efficient"
@@ -320,6 +333,11 @@ def unknown_reason(structure: ModelStructure, cfg: ResolvedConfig, paths: Paths)
             "(architecture-memory.md §5)."
         )
     bad = [lt for lt, p in paths.attention.items() if p is None]
+    if bad and attention_dropout(structure) > 0:
+        return (
+            f"attention_dropout={attention_dropout(structure):g}: dropout이 있는 attention의 "
+            "saved set과 CUDA SDPA backend 선택이 검증되지 않았습니다."
+        )
     if bad:
         raw = ", ".join(f"{lt}={cfg.attention_path_by_layer_type.get(lt)}" for lt in bad)
         return f"attention 경로({raw})의 saved set이 검증되지 않았습니다."
@@ -547,8 +565,11 @@ def train_step(
 
     known = all(s.known for s in sets)
     reason = None if known else unknown_reason(structure, cfg, paths)
+    inferred = inferred_notes(structure, paths, seq, variants, mode)
     if not gc:
-        out.extend(_saved_layer_allocs(structure, sets, every, p, dims, reason, paths.notes))
+        out.extend(
+            _saved_layer_allocs(structure, sets, every, p, dims, reason, paths.notes, inferred)
+        )
         if use_cache and known:
             # A DynamicCache kept by the training forward pins the last state-update branch of
             # every linear layer until the outputs are dropped (§4.2 cache variant, measured).
@@ -576,7 +597,10 @@ def train_step(
             out.extend(_train_cache_states(structure, cfg, batch, live, p))
     smin, smax = s_max(sets)
     cls = mode_class(tr, mode) if mode else "full"
-    defaulted = "; ".join(f"{lt}: {why}" for lt, why in paths.notes.items())
+    defaulted = " ".join(
+        [f"{lt}: {why}." for lt, why in paths.notes.items()]
+        + list(dict.fromkeys(inferred.values()))
+    )
     W, R = AllocationCategory.WORKSPACE, AllocationCategory.RECOMPUTE_WORKING_SET
     factors = (
         [
@@ -702,6 +726,37 @@ def _factor(
     )
 
 
+_FLA_NOTE = (
+    "fla·causal-conv1d saved set은 CUDA 전용이라 소스 정독 기반 추정입니다(INFERRED, AM §2.3)."
+)
+_MEM_EFFICIENT_NOTE = (
+    "mask가 있는 CUDA mem-efficient 경로(repeat_kv K/V, 8 정렬 additive mask, 32 정렬 lse, "
+    "contiguous 복사 없음)는 torch 소스 기반 추정입니다(INFERRED, AM §3.2-3.4)."
+)
+_DROPOUT_NOTE = "LoRA dropout mask는 CUDA native_dropout의 bool(1 B/원소)로 가정합니다(INFERRED)."
+
+
+def inferred_notes(
+    structure: ModelStructure,
+    paths: Paths,
+    seq: int,
+    variants: Sequence[bool],
+    mode: act.ActMode | None,
+) -> dict[tuple[str, str], str]:
+    """(layer type, ledger group) -> note for terms read from CUDA sources but not measured."""
+    notes: dict[tuple[str, str], str] = {}
+    if paths.linear == "fla":
+        notes[(LINEAR_ATTENTION, "linear_attention")] = _FLA_NOTE
+    for lt, path in paths.attention.items():
+        kinds = {attn_path(path, lt, structure, seq, v).kind for v in variants} if path else set()
+        if "mem_efficient" in kinds:
+            notes[(lt, "attention")] = notes[(lt, "mask")] = _MEM_EFFICIENT_NOTE
+    if mode is not None and mode.dropout > 0:
+        for lt in set(structure.layer_types):
+            notes[(lt, "lora")] = _DROPOUT_NOTE
+    return notes
+
+
 def _saved_layer_allocs(
     structure: ModelStructure,
     sets: Sequence[LayerSet],
@@ -710,6 +765,7 @@ def _saved_layer_allocs(
     dims: dict[str, int],
     reason: str | None,
     path_notes: dict[str, str],
+    inferred: dict[tuple[str, str], str],
 ) -> list[AllocationSpec]:
     out: list[AllocationSpec] = []
     for lt in dict.fromkeys(structure.layer_types):
@@ -729,11 +785,13 @@ def _saved_layer_allocs(
             )
             continue
         per_set: list[dict[str, int]] = []
+        shapes: dict[str, dict[str, None]] = {}  # group -> ordered "label shape" of its terms
         for s in sets:
             sums: dict[str, int] = {}
             for i in idx:
                 for term in s.terms[i] or []:
                     sums[term.group] = sums.get(term.group, 0) + term.nbytes
+                    shapes.setdefault(term.group, {})[f"{term.label} {term.shape}"] = None
             per_set.append(sums)
         # A group missing from one padding variant (e.g. "mask") is 0 bytes there.
         for g in dict.fromkeys(name for sums in per_set for name in sums):
@@ -747,6 +805,8 @@ def _saved_layer_allocs(
             mixer = "linear_attention" if lt == LINEAR_ATTENTION else "attention"
             if g == mixer and lt in path_notes:
                 note += f" ({path_notes[lt]})"
+            if (lt, g) in inferred:
+                note += " " + inferred[(lt, g)]
             out.append(
                 spec(
                     f"{p}.{lt}.{g}",
@@ -756,6 +816,7 @@ def _saved_layer_allocs(
                     live,
                     ref=_GROUP_REFS[g],
                     evidence=Evidence.ANALYTIC,
+                    shape="layer당 " + " + ".join(shapes[g]),
                     dims={**dims, "layers": len(idx)},
                     count=len(idx),
                     saved=True,
@@ -873,6 +934,9 @@ def no_grad_forward(
             "act-nograd",
             "no_grad forward의 layer 1개 작업 집합",
             reason,
+            extra=" ".join(
+                dict.fromkeys(inferred_notes(structure, paths, seq, variants, mode).values())
+            ),
         )
     )
     q4 = q4_transient(structure, cfg, tr, batch * seq, forward=True, backward=False)

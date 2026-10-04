@@ -166,7 +166,7 @@ alpha, rsLoRA, dropout은 파라미터 수를 바꾸지 않는다
 
 범위는 embedding 출력부터 final norm까지다. LM head 입력이 lm_head에 저장되는지, logits·loss는 trainer adapter가 센다.
 층별 saved byte는 아래 식을 항목(term) 단위로 옮겼고 각 항목은 ledger group(`norms`, `mlp`, `attention`, `linear_attention`, `lora`, `mask`)을 가진다.
-층 하나의 saved 합계 `S_layer = Σ terms`.
+층 하나의 saved 합계 `S_layer = Σ terms`. GC가 없을 때 층 type × group allocation(`act.<type>.<group>`)의 `shape_expression`은 그 group의 항목 이름과 shape("layer당 query [B,nq,T,d] + ...")이고, CUDA 소스 정독만으로 정한 항목(fla, mask가 있는 mem-efficient, CUDA dropout mask)은 note에 `INFERRED`를 단다(GC면 재계산·transient 계수 allocation의 note에 붙는다).
 
 **검증**: AM §F 골든 표(3행 × 5열), fixture (a), §10.2 실제 차원 값(MiB 소수 둘째 자리)을 그대로 재현한다(`tests/unit/architectures/test_arch_formulas.py`).
 추가로 CPU에서 실제 PEFT 모델의 autograd graph를 순회해 147개 점(Qwen3.5 linear/full, Llama, Qwen3 × frozen/full FT/full FT+autocast/LoRA bf16·fp32 ± autocast × 3 shape)이 byte 단위로 일치함을 확인했다(`test_arch_parity.py`, parity marker).
@@ -213,6 +213,7 @@ cos/sin은 층마다 세지 않고 모델당 1번(§6.5).
 | `sdpa_mem_efficient` | mem-efficient | 위와 같음 | |
 | `eager` | eager | K/V 확장, softmax fp32 + probs `(f+b)·B·nq·T²`, Qwen3.5는 contiguous 출력이 gate mul에 저장, dense는 o_proj가 학습될 때만 | AM §3.3, fit 계수 `6·nq` |
 | `flash_attention_2`, `sdpa_math`, 그 밖 | — | **unknown** | AM G, 미확정 4 |
+| config `attention_dropout > 0` (모든 경로) | dropout mask(eager)와 backend 선택(flash는 sm86/89/120에서 `d > 224` + dropout 거부)이 바뀜 | **unknown** | AM §3.2. `nn.Dropout`이 아니라 TRL `disable_dropout`도 끄지 못함 |
 
 mask가 생기는 조건(AM §3.1, transformers `masking_utils._ignore_causal_mask_sdpa`): batch에 padding이 있거나, sliding layer에서 `T ≥ sliding_window`. eager는 항상 float mask를 만든다.
 
@@ -389,6 +390,7 @@ C = 4, P = 272, L = 1,295: KV 161.875 MiB, linear state 198 MiB.
 | FA2, SDPA math, flex, hub kernels, fla 대체 backend | saved set 미확인 | unknown |
 | DoRA activation·임시값 | 미검증 | unknown |
 | fla + causal-conv1d saved set | INFERRED (CUDA 미실행) | analytic + note |
+| `attention_dropout > 0` | 미검증 | unknown |
 | mem-efficient mask 경로(복사 없음, 8/32 정렬) | INFERRED (CUDA 소스) | analytic, padding 범위의 high |
 | SDPA backend 선택 | sm80+ 가정 (hardware가 `ResolvedConfig`에 없음) | flash/mem-efficient만 |
 | transient 계수 | CPU 측정, CUDA allocator 미포함 | assumption 범위 |

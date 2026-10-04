@@ -274,3 +274,36 @@ def test_no_grad_forward_working_set(mimo: ModelInventory, auto: list[str]) -> N
     assert led["ref.nograd.attn_mask.full_attention"].bytes_high == 2 * 1024 * 1024
     assert led["ref.nograd.q4_dequant"].bytes_low == 106_954_752
     assert not any(a.category is AllocationCategory.SAVED_ACTIVATIONS for a in led.values())
+
+
+def test_inferred_paths_are_labelled(mimo: ModelInventory, auto: list[str]) -> None:
+    fla = step(mimo, make_cfg(targets=auto, gc=False, paths={"linear_attention": "fla"}))
+    assert "INFERRED" in (fla["policy.act.linear_attention.linear_attention"].note or "")
+    assert "INFERRED" not in (fla["policy.act.full_attention.attention"].note or "")
+    dpo = step(mimo, make_cfg(objective=Objective.DPO, targets=auto, gc=False), batch=2)
+    for group in ("attention", "mask"):  # padded variant runs CUDA mem-efficient (source-read)
+        assert "mem-efficient" in (dpo[f"policy.act.full_attention.{group}"].note or "")
+    drop = step(mimo, make_cfg(targets=auto, gc=False, dropout=0.05))
+    assert "INFERRED" in (drop["policy.act.linear_attention.lora"].note or "")
+    gc = step(mimo, make_cfg(targets=auto, paths={"linear_attention": "fla"}))
+    assert "INFERRED" in (gc["policy.act.recompute.backward"].note or "")
+
+
+def test_layer_groups_carry_their_shape_expression(mimo: ModelInventory, auto: list[str]) -> None:
+    led = step(mimo, make_cfg(targets=auto, gc=False))
+    attn = led["policy.act.full_attention.attention"].shape_expression or ""
+    assert "query [B,nq,T,d]" in attn and "lse [B,nq,T] fp32" in attn
+    norms = led["policy.act.linear_attention.norms"].shape_expression or ""
+    assert norms.startswith("layer당 input_layernorm")
+
+
+def test_attention_dropout_is_an_unverified_path(ib: ModuleType) -> None:
+    inv = ib.tiny_q35_inventory()
+    inv = inv.model_copy(
+        update={"facts": inv.facts.model_copy(update={"extra": {"attention_dropout": 0.1}})}
+    )
+    cfg = make_cfg(strategy=Strategy.FULL, gc=False)
+    led = by_name(HYBRID.train_step_ledger(inv, cfg, SequenceShape(batch=1, seq_len=40), TPS, "p"))
+    full = led["p.act.full_attention"]
+    assert full.bytes_low is None and "attention_dropout" in (full.note or "")
+    assert led["p.act.linear_attention.linear_attention"].bytes_low  # linear layers still known
