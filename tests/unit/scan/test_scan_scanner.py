@@ -71,6 +71,13 @@ def test_artifact_has_length_record_columns_and_round_trips(make_stream, adapter
     assert (out.artifact_path / "manifest.json").is_file()
 
 
+def test_artifact_keeps_the_token_digest_of_ok_rows_only(make_stream, adapter, ctx) -> None:
+    data = [{"len": 5, "digest": "ab" * 32}, {"fail": True, "digest": "cd" * 32}, {"len": 6}]
+    out = scan(make_stream(data), adapter, ctx)
+    table = pq.read_table(sorted(out.artifact_path.glob("part-*.parquet"))).to_pylist()
+    assert [r["token_digest"] for r in table] == ["ab" * 32, None, None]
+
+
 def test_artifact_never_stores_raw_text(make_stream, adapter, ctx) -> None:
     out = scan(make_stream(rows()), adapter, ctx)
     blob = b"".join(p.read_bytes() for p in out.artifact_path.iterdir())

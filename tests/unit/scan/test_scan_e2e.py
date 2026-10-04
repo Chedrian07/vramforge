@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
 from vramforge_estimator import keys
@@ -11,6 +12,7 @@ from vramforge_estimator.batching import plan_batches
 from vramforge_estimator.inspection import TokenizerHandle
 from vramforge_estimator.preprocessing import get_adapter
 from vramforge_estimator.scan import audit_preservation, full_scan, load_lengths, validate_context
+from vramforge_estimator.scan.artifact import part_paths
 from vramforge_estimator.schemas import (
     Branch,
     ColumnMapping,
@@ -130,6 +132,9 @@ def test_scan_records_exactly_what_the_adapter_computes(
     assert table.prompt_tokens == [r.prompt_tokens for r in expected]
     assert table.sequence_tokens == [r.sequence_tokens for r in expected]
     assert table.rejected_total_tokens == [r.rejected_total_tokens for r in expected]
+    stored = pq.read_table(part_paths(out.artifact_path), columns=["token_digest"])
+    digests = stored.column("token_digest").to_pylist()
+    assert digests == [r.extras["token_digest"] for r in expected] and None not in digests
     assert out.result.omitted_system_messages == 2  # the two empty system values
     assert "omit" in out.result.transformation_note  # the policy itself is still stated
 

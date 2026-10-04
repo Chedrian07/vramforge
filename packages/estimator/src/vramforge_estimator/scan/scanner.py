@@ -2,7 +2,8 @@
 
 One sequential pass over the `RowStream`. Only integer lengths are kept in memory (exact
 `LengthAccumulator` counts); per-row `LengthRecord` columns go to Parquet part files under
-``ctx.artifact_dir/lengths/``. After every part the checkpoint (last processed ``row_index`` +
+``ctx.artifact_dir/lengths/``, including ``token_digest`` (a hash of the token ids the trainer
+sees, never the ids). After every part the checkpoint (last processed ``row_index`` +
 accumulators) is saved; a resumed scan re-reads the stream and skips processed indices.
 Coverage (plan §7.7, §19.2 "손상 row"):
 
@@ -598,10 +599,18 @@ def _account(
         "chosen_completion_tokens": rec.chosen_completion_tokens,
         "rejected_completion_tokens": rec.rejected_completion_tokens,
         "content_digest": rec.content_digest,
+        "token_digest": _token_digest(rec),
         "processing_status": "ok" if rec.ok else "failed",
         "context_status": context_status,
         "error_code": rec.error_code.value if rec.error_code else None,
     }
+
+
+def _token_digest(rec: TokenizedRecord) -> str | None:
+    """The adapter's hash of the token ids the trainer sees (preprocessing.trl_common
+    .token_digest; combined over a DPO row's two branches). Ids themselves are never stored."""
+    digest = rec.extras.get("token_digest") if rec.ok else None
+    return digest if isinstance(digest, str) and digest else None
 
 
 def _count_duplicates(paths: list[Path]) -> int:

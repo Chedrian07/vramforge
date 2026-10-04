@@ -156,6 +156,8 @@ class FakeSftAdapter:
             extras["system_omitted"] = 1
         if "omitted" in row:
             extras["system_omitted"] = int(row["omitted"])
+        if "digest" in row:
+            extras["token_digest"] = row["digest"]
         return TokenizedRecord(
             row_id=row_id,
             objective=self.objective,
