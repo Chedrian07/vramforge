@@ -2,6 +2,7 @@
 // so an empty field can mean "resolve from the profile preset" (request `None`) instead of NaN.
 import { z } from "zod";
 
+import { explicitMappingErrors } from "./mapping";
 import { isValidDatasetReference, isValidModelReference } from "./references";
 
 const integerFmt = new Intl.NumberFormat("ko-KR");
@@ -61,12 +62,14 @@ export function parseBudgetList(text: string): number[] | null {
 export const formSchema = z
   .object({
     // Model
+    // No `abort` on the empty check: an aborting issue would also skip the cross-field rules of
+    // superRefine below (Zod 4), hiding them while a reference is still empty.
     modelReference: z
       .string()
       .trim()
-      .min(1, { message: "모델을 입력하세요", abort: true })
+      .min(1, "모델을 입력하세요")
       .max(2048, "2,048자 이하로 입력하세요")
-      .refine(isValidModelReference, {
+      .refine((v) => v === "" || isValidModelReference(v), {
         message: "Hugging Face ID(org/name), huggingface.co URL 또는 local: 참조를 입력하세요",
       }),
     modelRevision: z.string().trim().max(256, "256자 이하로 입력하세요"),
@@ -76,9 +79,9 @@ export const formSchema = z
     datasetReference: z
       .string()
       .trim()
-      .min(1, { message: "데이터셋을 입력하거나 파일을 업로드하세요", abort: true })
+      .min(1, "데이터셋을 입력하거나 파일을 업로드하세요")
       .max(2048, "2,048자 이하로 입력하세요")
-      .refine(isValidDatasetReference, {
+      .refine((v) => v === "" || isValidDatasetReference(v), {
         message: "Hugging Face 데이터셋 ID·URL, local: 참조 또는 업로드한 파일이어야 합니다",
       }),
     datasetUploadRef: z.string(),
@@ -183,6 +186,9 @@ export const formSchema = z
     }
     if (v.strategy !== "full" && v.loraTargetMode === "custom" && parseList(v.loraTargetModules).length === 0) {
       issue("loraTargetModules", "대상 모듈을 하나 이상 입력하세요");
+    }
+    if (v.mappingEnabled) {
+      for (const [field, message] of Object.entries(explicitMappingErrors(v))) issue(field, message);
     }
     if (parseRankPattern(v.loraRankPattern) === null) {
       issue("loraRankPattern", "한 줄에 하나씩 `패턴=rank` 형식으로 입력하세요 (rank 1–4,096)");

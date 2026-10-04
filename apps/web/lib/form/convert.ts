@@ -3,6 +3,7 @@
 import type { AnalysisRequest, GpuPreset } from "@/lib/api/types";
 import { bytesToGibInput, gibInputToBytes } from "@/lib/format/bytes";
 
+import { mappedColumns } from "./mapping";
 import { analysisRequestSchema, type ExplicitAnalysisRequest } from "./request-schema";
 import { datasetSourceType, modelSourceType } from "./references";
 import {
@@ -17,17 +18,20 @@ import {
 const orNull = (text: string): string | null => (text.trim() === "" ? null : text.trim());
 const intOrNull = (text: string): number | null => (text.trim() === "" ? null : Number(text.trim()));
 
+/** Explicit mapping with only the roles of its format (roles of a previously chosen format stay
+ * in the form but are never sent); null = auto-detection on the server. */
 function mappingFrom(values: FormValues): ExplicitAnalysisRequest["dataset"]["mapping"] {
   if (!values.mappingEnabled) return null;
+  const used = mappedColumns(values);
   return {
     format: values.mappingFormat,
-    system: orNull(values.mapSystem),
-    prompt: orNull(values.mapPrompt),
-    chosen: orNull(values.mapChosen),
-    rejected: orNull(values.mapRejected),
-    completion: orNull(values.mapCompletion),
-    messages: orNull(values.mapMessages),
-    text: orNull(values.mapText),
+    system: used.system ?? null,
+    prompt: used.prompt ?? null,
+    chosen: used.chosen ?? null,
+    rejected: used.rejected ?? null,
+    completion: used.completion ?? null,
+    messages: used.messages ?? null,
+    text: used.text ?? null,
     empty_system_policy: values.emptySystemPolicy,
   };
 }

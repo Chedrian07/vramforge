@@ -128,6 +128,32 @@ describe("request building", () => {
     expect(r.dataset.source_type).toBe("upload");
   });
 
+  it("sends only the roles of the selected mapping format", () => {
+    // The user first had a preference mapping, then switched the format to messages: the
+    // preference roles stay in the form but are not part of the explicit mapping.
+    const r = request({
+      ...base,
+      mappingEnabled: true,
+      mappingFormat: "messages",
+      mapSystem: "system",
+      mapPrompt: "question",
+      mapChosen: "chosen",
+      mapRejected: "rejected",
+      mapMessages: "conversations",
+    });
+    expect(r.dataset.mapping).toEqual({
+      format: "messages",
+      system: null,
+      prompt: null,
+      chosen: null,
+      rejected: null,
+      completion: null,
+      messages: "conversations",
+      text: null,
+      empty_system_policy: "omit",
+    });
+  });
+
   it("round-trips through requested_config", () => {
     const values: FormValues = {
       ...EXAMPLE_FORM_VALUES,
@@ -162,8 +188,29 @@ describe("form validation", () => {
     expect(fieldErrors({ ...base, modelReference: "" }).modelReference).toBe("모델을 입력하세요");
   });
 
+  it("requires a complete explicit mapping (format and required roles)", () => {
+    const explicit = { ...base, mappingEnabled: true };
+    expect(fieldErrors({ ...explicit, mapPrompt: "question" }).mappingFormat).toContain("데이터 형식을 골라야");
+    const partial = fieldErrors({ ...explicit, mappingFormat: "preference", mapPrompt: "question", mapChosen: "chosen" });
+    expect(partial.mapRejected).toContain("dispreferred response (rejected)");
+    expect(partial.mapChosen).toBeUndefined();
+    expect(fieldErrors({ ...explicit, mappingFormat: "prompt_completion", mapPrompt: "q" }).mapCompletion).toBeDefined();
+    const complete = fieldErrors({ ...explicit, mappingFormat: "preference", mapChosen: "chosen", mapRejected: "rejected" });
+    expect(complete).toEqual({});
+    // Auto-detection (no explicit mapping) needs no roles.
+    expect(fieldErrors(base)).toEqual({});
+  });
+
   it("rejects Full + 4-bit", () => {
     expect(fieldErrors({ ...base, strategy: "full", load4bit: true }).load4bit).toContain("지원하지 않는 조합");
+  });
+
+  it("keeps cross-field checks while a reference is still empty", () => {
+    const errors = fieldErrors({ ...DEFAULT_FORM_VALUES, strategy: "full", load4bit: true, hardwareMode: "custom" });
+    expect(errors.modelReference).toBe("모델을 입력하세요");
+    expect(errors.datasetReference).toBe("데이터셋을 입력하거나 파일을 업로드하세요");
+    expect(errors.load4bit).toContain("지원하지 않는 조합");
+    expect(errors.hardwareTotalGiB).toBeDefined();
   });
 
   it("checks numeric ranges and cross-field hardware rules", () => {
