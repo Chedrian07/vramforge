@@ -8,16 +8,12 @@ import { IssueList } from "@/components/ui/values";
 import type { ModelInspection } from "@/lib/api/types";
 import { formatCount, shortDigest } from "@/lib/format/bytes";
 import { EVIDENCE_LEVEL_LABEL, OBJECTIVE_LABEL, READINESS_LABEL, STRATEGY_LABEL } from "@/lib/format/labels";
-import { isValidModelReference, modelSourceType } from "@/lib/form/references";
+import { modelInspectCall, referenceOfKey } from "@/lib/form/inspect";
 import type { FormValues } from "@/lib/form/values";
 import type { useModelInspection } from "@/lib/hooks/useInspection";
 import { READINESS_TONE } from "@/lib/result/status";
 
 type Inspection = ReturnType<typeof useModelInspection>;
-
-export function inspectionKey(reference: string, revision: string, scope: string): string {
-  return JSON.stringify([reference.trim(), revision.trim(), scope]);
-}
 
 export function ModelSection({ inspection }: { inspection: Inspection }) {
   const { register, getValues, formState } = useFormContext<FormValues>();
@@ -27,22 +23,14 @@ export function ModelSection({ inspection }: { inspection: Inspection }) {
   const hint = "Hugging Face ID·URL 또는 서버에 등록된 local: 경로. 입력을 마치거나 확인을 누르면 메타데이터만 조회합니다.";
 
   const trigger = (force: boolean) => {
-    const ref = getValues("modelReference").trim();
-    if (!isValidModelReference(ref)) return;
-    const revision = getValues("modelRevision");
-    const scope = getValues("loadingScope");
-    const body = {
-      model: { source_type: modelSourceType(ref), reference: ref, revision: revision.trim() || null, loading_scope: scope },
-      dataset: null,
-      objective: null,
-    };
-    const key = inspectionKey(ref, revision, scope);
-    void (force ? inspection.reinspect(key, body) : inspection.inspect(key, body));
+    const call = modelInspectCall(getValues());
+    if (!call) return;
+    void (force ? inspection.reinspect(call.key, call.body) : inspection.inspect(call.key, call.body));
   };
 
   const field = register("modelReference", { onBlur: () => trigger(false) });
   const { state } = inspection;
-  const inspectedRef = state.key ? (JSON.parse(state.key) as string[])[0] : null;
+  const inspectedRef = referenceOfKey(state.key);
   const outdated = inspectedRef != null && inspectedRef !== reference.trim();
 
   return (

@@ -8,10 +8,11 @@ import { Badge, Button, Field, Mono, NativeSelect, TextInput, describedBy } from
 import { IssueList } from "@/components/ui/values";
 import { ApiError } from "@/lib/api/client";
 import { useApi } from "@/lib/api/context";
-import type { DatasetInspection, InspectRequest, UploadResponse } from "@/lib/api/types";
+import type { DatasetInspection, UploadResponse } from "@/lib/api/types";
 import { formatCount, formatSize, shortDigest } from "@/lib/format/bytes";
 import { DATASET_FORMAT_LABEL } from "@/lib/format/labels";
-import { datasetSourceType, hasViewerRowParam, isValidDatasetReference } from "@/lib/form/references";
+import { datasetInspectCall, referenceOfKey, shouldApplySuggestion } from "@/lib/form/inspect";
+import { hasViewerRowParam } from "@/lib/form/references";
 import type { FormValues } from "@/lib/form/values";
 import { useLocalRoots, type useDatasetInspection } from "@/lib/hooks/useInspection";
 
@@ -34,33 +35,15 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
   const hint = "Hugging Face 데이터셋 ID·URL, 업로드 파일 또는 서버의 local: 경로. 조회는 메타데이터만 읽고 전체 스캔은 분석 시작 후 진행합니다.";
 
   const trigger = (force: boolean, overrides: Partial<Pick<FormValues, "datasetConfig">> = {}) => {
-    const ref = getValues("datasetReference").trim();
-    if (!isValidDatasetReference(ref)) return;
-    const values = { ...getValues(), ...overrides };
-    const body: InspectRequest = {
-      model: null,
-      objective: values.objective,
-      dataset: {
-        source_type: datasetSourceType(ref, values.datasetUploadRef),
-        reference: ref,
-        revision: values.datasetRevision.trim() || null,
-        config: values.datasetConfig.trim() || null,
-        split: null,
-        eval_split: null,
-        scan_mode: "full",
-        sample_rows: null,
-        mapping: null,
-      },
-    };
-    const key = JSON.stringify([ref, values.datasetRevision.trim(), values.datasetConfig.trim()]);
-    const run = force ? inspection.reinspect(key, body) : inspection.inspect(key, body);
+    const call = datasetInspectCall({ ...getValues(), ...overrides });
+    if (!call) return;
+    const run = force ? inspection.reinspect(call.key, call.body) : inspection.inspect(call.key, call.body);
     void run.then((data) => {
-      if (!data) return;
       // An unambiguous suggestion is applied (and shown) unless the user already edited it.
-      if (data.suggested_mapping && !data.mapping_ambiguous && !getValues("mappingEnabled")) {
+      // An auto-selected split stays "auto" (null) so the result can report split_auto_selected.
+      if (data?.suggested_mapping && shouldApplySuggestion(data, getValues("mappingEnabled"))) {
         applyMapping(setValue, data.suggested_mapping);
       }
-      // An auto-selected split stays "auto" (null) so the result can report split_auto_selected.
     });
   };
 
@@ -87,7 +70,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
 
   const field = register("datasetReference", { onBlur: () => trigger(false) });
   const data: DatasetInspection | null = inspection.state.status === "done" ? inspection.state.data : null;
-  const inspectedRef = inspection.state.key ? (JSON.parse(inspection.state.key) as string[])[0] : null;
+  const inspectedRef = referenceOfKey(inspection.state.key);
   const outdated = inspectedRef != null && inspectedRef !== reference.trim();
   const configs = data?.configs ?? [];
   const splits = data?.splits ?? [];
