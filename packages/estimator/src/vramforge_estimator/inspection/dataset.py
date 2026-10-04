@@ -4,7 +4,9 @@
 selects them only when the choice is unambiguous (otherwise DATASET_CONFIG_REQUIRED /
 DATASET_SPLIT_REQUIRED with the options), previews at most 100 rows within
 `SourceAccess.max_metadata_bytes` (`dataset_schema`) and ranks column-mapping candidates for the
-objective (`dataset_mapping`).
+objective (`dataset_mapping`). It raises `EstimatorError` only when there is nothing the user could
+choose to analyze (no loadable layout, or the config that would be analyzed is unsupported); every
+other problem is an issue of the returned inspection.
 
 `open_rows` returns a `DatasetRowStream` over every record of one split. Failure signal and stop
 contract (see `dataset_stream`): undecodable records arrive as `FailedSourceRow` (a `SourceRow`
@@ -64,7 +66,11 @@ def inspect_dataset(
     *,
     limits: ReaderLimits | None = None,
 ) -> DatasetInspection:
-    """Configs, splits, columns, detected format and ranked mapping candidates (preview only)."""
+    """Configs, splits, columns, detected format and ranked mapping candidates (preview only).
+
+    Raises `EstimatorError` when nothing can be analyzed (see the module docstring), so callers
+    fail instead of asking the user for a config, split or mapping that cannot exist.
+    """
     return inspect_dataset_details(source, ref, access, objective, limits=limits).inspection
 
 
@@ -84,13 +90,8 @@ def inspect_dataset_details(
     from .readers import ReaderLimits
 
     limits = limits or ReaderLimits()
-    try:
-        files = SourceFiles(source, access, limits)
-        layout = resolve_layout(files)
-    except EstimatorError as exc:
-        return DatasetInspectionDetails(
-            DatasetInspection(manifest=source.manifest, issues=[exc.issue])
-        )
+    files = SourceFiles(source, access, limits)
+    layout = resolve_layout(files)  # EstimatorError: no loadable layout at all
     issues: list[Issue] = []
     configs = [config.name for config in layout.configs]
     config, config_issue = _select_config(layout, ref.config)
@@ -100,6 +101,8 @@ def inspect_dataset_details(
     selected_split: str | None = None
     auto_selected = False
     preview = None
+    if config is not None and config.unsupported is not None:
+        raise EstimatorError(config.unsupported)  # the only (or the requested) config
     if config is not None:
         splits = [
             DatasetSplitInfo(
@@ -117,19 +120,14 @@ def inspect_dataset_details(
         eval_issue = _check_eval_split(config, ref.eval_split, selected_split)
         if eval_issue is not None:
             issues.append(eval_issue)
-        if config.unsupported is not None:
-            issues.append(config.unsupported)
-        else:
-            # Columns come from the selected split; while the split is still undecided the first
-            # split of the config stands in (datasets shares one schema across a config's splits).
-            preview_split = config.split(selected_split) if selected_split else None
-            if preview_split is None and config.splits:
-                preview_split = config.splits[0]
-            if preview_split is not None:
-                preview = read_preview(
-                    files, config, preview_split, access.max_metadata_bytes, limits
-                )
-                issues.extend(preview.issues)
+        # Columns come from the selected split; while the split is still undecided the first
+        # split of the config stands in (datasets shares one schema across a config's splits).
+        preview_split = config.split(selected_split) if selected_split else None
+        if preview_split is None and config.splits:
+            preview_split = config.splits[0]
+        if preview_split is not None:
+            preview = read_preview(files, config, preview_split, access.max_metadata_bytes, limits)
+            issues.extend(preview.issues)
     columns = preview_columns(preview) if preview is not None else []
     mapping = None
     if columns:

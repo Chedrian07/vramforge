@@ -205,23 +205,46 @@ def test_preview_reads_at_most_100_rows_and_respects_the_byte_budget(tmp_path: P
     )
 
 
-def test_layout_errors_come_back_as_issues(tmp_path: Path) -> None:
+def test_unanalyzable_layouts_raise_instead_of_asking_for_input(tmp_path: Path) -> None:
+    # A caller must fail here, not ask for a config/split/mapping that cannot exist.
     root = tmp_path / "demo"
     root.mkdir()
     (root / "demo.py").write_text("raise SystemExit\n", encoding="utf-8")
     write_jsonl(root / "train.jsonl", [{"text": "x"}])
-    result = inspect(local_source(root), Objective.SFT)
-    assert codes(result) == [ErrorCode.DATASET_FORMAT_UNSUPPORTED]
-    assert result.configs == [] and result.manifest is not None
+    with pytest.raises(EstimatorError) as excinfo:
+        inspect(local_source(root), Objective.SFT)
+    assert excinfo.value.issue.code == ErrorCode.DATASET_FORMAT_UNSUPPORTED
+    assert excinfo.value.issue.details["reason"] == "loading_script"
 
 
-def test_unsupported_module_is_reported(tmp_path: Path) -> None:
+def test_unsupported_module_raises(tmp_path: Path) -> None:
     root = tmp_path / "txt"
     root.mkdir()
     (root / "train.txt").write_text("hello\n", encoding="utf-8")
-    result = inspect(local_source(root), Objective.SFT)
-    assert ErrorCode.DATASET_FORMAT_UNSUPPORTED in codes(result)
-    assert result.columns == []
+    with pytest.raises(EstimatorError) as excinfo:
+        inspect(local_source(root), Objective.SFT)
+    assert excinfo.value.issue.code == ErrorCode.DATASET_FORMAT_UNSUPPORTED
+    assert excinfo.value.issue.details["reason"] == "module_not_supported"
+
+
+def test_an_unsupported_config_among_several_is_only_fatal_when_selected(tmp_path: Path) -> None:
+    root = tmp_path / "ds"
+    write_jsonl(root / "chat" / "train.jsonl", [{"prompt": "p", "completion": "c"}])
+    (root / "tab").mkdir()
+    (root / "tab" / "x.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+    (root / "README.md").write_text(
+        "---\nconfigs:\n- config_name: chat\n  data_files: chat/*.jsonl\n"
+        "- config_name: tabular\n  data_files: tab/*.tsv\n---\n",
+        encoding="utf-8",
+    )
+    source = local_source(root)
+    undecided = inspect(source, Objective.SFT)
+    assert undecided.configs == ["chat", "tabular"]
+    assert codes(undecided) == [ErrorCode.DATASET_CONFIG_REQUIRED]
+    assert inspect(source, Objective.SFT, config="chat").suggested_mapping is not None
+    with pytest.raises(EstimatorError) as excinfo:
+        inspect(source, Objective.SFT, config="tabular")
+    assert excinfo.value.issue.details["reason"] == "mixed_file_formats"
 
 
 def test_no_absolute_paths_in_results(tmp_path: Path) -> None:
