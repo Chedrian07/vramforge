@@ -1,0 +1,21 @@
+# Build context for infra/docker/web.Dockerfile (context = apps/web). BuildKit uses this file
+# instead of any .dockerignore inside the context. Paths are relative to apps/web.
+# Host build output and dependencies must never enter the image: the build runs in Linux.
+node_modules
+**/node_modules
+.next
+out
+coverage
+test-results
+playwright-report
+blob-report
+*.tsbuildinfo
+next-env.d.ts
+.pnpm-store
+.turbo
+.vercel
+.env
+.env.*
+**/.DS_Store
+npm-debug.log*
+pnpm-debug.log*
