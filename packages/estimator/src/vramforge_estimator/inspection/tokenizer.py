@@ -220,6 +220,8 @@ def load_tokenizer(source: ResolvedSource, access: SourceAccess) -> TokenizerHan
                 error_type=type(exc).__name__,
             ) from None
 
+    # never keep the private staging path on the handle (results must not carry host paths)
+    tokenizer.name_or_path = source.repo_id or source.manifest.reference
     template = tokenizer.chat_template
     if isinstance(template, dict):
         template = template.get("default")

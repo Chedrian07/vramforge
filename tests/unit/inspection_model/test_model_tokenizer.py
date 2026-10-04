@@ -81,6 +81,7 @@ def test_tiny_tokenizer_manifest(load_local: Loader) -> None:
     }
     assert m.fingerprint.startswith("tok_")
     assert load_local().manifest.fingerprint == m.fingerprint  # deterministic
+    assert handle.tokenizer.name_or_path.startswith("local:models/")
 
     # the handle works after the private staging directory is gone (no torch, plain lists)
     tok = handle.tokenizer
@@ -267,8 +268,9 @@ def test_hf_tokenizer_matches_local(
     client = _hub(fake_hub, tmp_path, monkeypatch, "org/tiny", files)
     access = SourceAccess(hf_home=tmp_path / "hf")
     source = resolve_model(ModelSourceRef(reference="org/tiny"), access)
-    remote = load_tokenizer(source, access).manifest
-    assert remote == load_local().manifest
+    handle = load_tokenizer(source, access)
+    assert handle.manifest == load_local().manifest
+    assert handle.tokenizer.name_or_path == "org/tiny"
     downloads = {name for call, name in client.calls if call == "download_file"}
     assert downloads == {
         "tokenizer.json",
