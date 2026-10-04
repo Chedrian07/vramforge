@@ -9,7 +9,6 @@ here. Tied embeddings are counted once in ``params_total``.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
@@ -162,15 +161,16 @@ def role_of(name: str, ndim: int, conv_modules: set[str], matrix_modules: set[st
     return TensorRole.OTHER
 
 
-def _quantized_format(tensors: Iterable[TensorInfo]) -> str | None:
+def _quantized_format(tensors: list[TensorInfo]) -> str | None:
+    """Most specific evidence first: quantizer tensor names, then fp8, then integer weights."""
     for tensor in tensors:
         for suffix, fmt in _QUANT_SUFFIXES.items():
             if tensor.name.endswith(suffix):
                 return fmt
-        if tensor.dtype.startswith("float8"):
-            return "fp8"
-        if tensor.role is TensorRole.LINEAR_WEIGHT and tensor.dtype in _INT_DTYPES:
-            return "integer-packed"
+    if any(t.dtype.startswith("float8") for t in tensors):
+        return "fp8"
+    if any(t.role is TensorRole.LINEAR_WEIGHT and t.dtype in _INT_DTYPES for t in tensors):
+        return "integer-packed"
     return None
 
 
