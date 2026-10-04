@@ -6,7 +6,14 @@ import { ApiError, newIdempotencyKey } from "@/lib/api/client";
 import { useApiEnvironment } from "@/lib/api/context";
 import type { AnalysisEvent, EventIssue } from "@/lib/api/events";
 import { openAnalysisStream, type ConnectionState } from "@/lib/api/stream";
-import { isTerminalStatus, type AnalysisRequest, type AnalysisStatus, type JobProgress, type JobStatus } from "@/lib/api/types";
+import {
+  isTerminalStatus,
+  type AnalysisRequest,
+  type AnalysisStatus,
+  type Issue,
+  type JobProgress,
+  type JobStatus,
+} from "@/lib/api/types";
 import { readAnalysisParam, writeAnalysisParam } from "@/lib/url";
 
 export type RunPhase = "idle" | "creating" | "running" | "terminal" | "error";
@@ -47,7 +54,8 @@ type Action =
   | { type: "status"; status: AnalysisStatus }
   | { type: "connection"; state: ConnectionState }
   | { type: "cancelling" }
-  | { type: "error"; error: ApiError; fatal: boolean }
+  /** `id`: the analysis the failed request was about; errors for another analysis are dropped. */
+  | { type: "error"; error: ApiError; fatal: boolean; id?: string }
   | { type: "reset" };
 
 function reducer(state: RunState, action: Action): RunState {
@@ -60,7 +68,7 @@ function reducer(state: RunState, action: Action): RunState {
       return { ...INITIAL, phase: "running", analysisId: action.id };
     case "event": {
       const e = action.event;
-      if (state.analysisId && e.analysis_id !== state.analysisId) return state;
+      if (e.analysis_id !== state.analysisId) return state;
       return {
         ...state,
         jobStatus: e.status,
@@ -71,10 +79,14 @@ function reducer(state: RunState, action: Action): RunState {
     }
     case "status": {
       const s = action.status;
+      // A late answer for another analysis (an earlier run, a request still in flight when a new
+      // run started) never replaces the current run.
+      if (s.analysis_id !== state.analysisId) return state;
       const terminal = isTerminalStatus(s.status);
+      // A running snapshot fetched before the final status cannot reopen a finished run.
+      if (!terminal && state.phase === "terminal") return state;
       return {
         ...state,
-        analysisId: s.analysis_id,
         status: s,
         jobStatus: s.status,
         progress: s.progress ?? state.progress,
@@ -88,6 +100,7 @@ function reducer(state: RunState, action: Action): RunState {
     case "cancelling":
       return { ...state, cancelling: true };
     case "error":
+      if (action.id !== undefined && action.id !== state.analysisId) return state;
       // Fatal: the run cannot continue from here (create/resume/status failed). A failed cancel
       // request is not fatal: the job keeps running and the stream stays open.
       return action.fatal
@@ -99,6 +112,19 @@ function reducer(state: RunState, action: Action): RunState {
 }
 
 const GONE = new Set([401, 403, 404]);
+
+const UNREADABLE_ANSWER: Issue = {
+  code: "INTERNAL_ERROR",
+  severity: "error",
+  retryable: true,
+  user_message: "서버 응답을 처리하지 못했습니다. 잠시 후 다시 시도하세요.",
+};
+
+/** Every failure ends up as an ApiError so the run never stays stuck in a pending phase. */
+function asApiError(error: unknown): ApiError {
+  return error instanceof ApiError ? error : new ApiError(0, UNREADABLE_ANSWER);
+}
+
 /** `partial_result` asks clients to refetch the analysis; refetch at most this often. */
 const PARTIAL_REFRESH_MS = 2_000;
 
@@ -143,9 +169,9 @@ export function useAnalysisRun() {
         dispatch({ type: "status", status });
         return status;
       } catch (error) {
-        if (!(error instanceof ApiError)) return null;
-        dispatch({ type: "error", error, fatal: true });
-        return error;
+        const apiError = asApiError(error);
+        dispatch({ type: "error", error: apiError, fatal: true, id });
+        return apiError;
       }
     },
     [api],
@@ -174,7 +200,7 @@ export function useAnalysisRun() {
               return isTerminalStatus(status.status) ? "terminal" : "retry";
             } catch (error) {
               if (error instanceof ApiError && GONE.has(error.status)) {
-                dispatch({ type: "error", error, fatal: true });
+                dispatch({ type: "error", error, fatal: true, id });
                 return "stop";
               }
               return "retry";
@@ -208,8 +234,7 @@ export function useAnalysisRun() {
         if (isTerminalStatus(created.status)) void fetchStatus(created.analysis_id);
         else follow(created.analysis_id, null);
       } catch (error) {
-        if (error instanceof ApiError) dispatch({ type: "error", error, fatal: true });
-        else throw error;
+        dispatch({ type: "error", error: asApiError(error), fatal: true });
       }
     },
     [api, closeStream, fetchStatus, follow],
@@ -231,13 +256,14 @@ export function useAnalysisRun() {
   );
 
   const cancel = useCallback(async () => {
-    if (!state.analysisId) return;
+    const id = state.analysisId;
+    if (!id) return;
     dispatch({ type: "cancelling" });
     try {
-      const status = await api.cancelAnalysis(state.analysisId);
+      const status = await api.cancelAnalysis(id);
       dispatch({ type: "status", status });
     } catch (error) {
-      if (error instanceof ApiError) dispatch({ type: "error", error, fatal: false });
+      dispatch({ type: "error", error: asApiError(error), fatal: false, id });
     }
   }, [api, state.analysisId]);
 

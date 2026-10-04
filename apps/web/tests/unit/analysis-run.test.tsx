@@ -140,6 +140,77 @@ describe("useAnalysisRun", () => {
     expect(result.current.state.cancelling).toBe(false);
   });
 
+  it("ignores a late status answer for an earlier analysis", async () => {
+    vi.useFakeTimers();
+    const NEXT = "vf-fixture-next-0002";
+    const ids = [ID, NEXT];
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ids.shift()!, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    let releaseLate: (value: typeof runningStatus) => void = () => {};
+    const getAnalysis = vi
+      .fn<ApiClient["getAnalysis"]>()
+      // partial_result refetch for the first analysis: answered only after the second one started
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseLate = resolve)))
+      // final fetch of the first analysis
+      .mockImplementationOnce(async () => completedGrpoStatus);
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const es = FakeEventSource.latest();
+    act(() => es.emit("partial_result", makeEvent({ event_id: 1, analysis_id: ID, type: "partial_result", status: "TOKENIZING" })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    act(() => es.emit("completed", makeEvent({ event_id: 2, analysis_id: ID, type: "completed", status: "COMPLETED" })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.phase).toBe("terminal");
+
+    await act(() => result.current.start(grpoRequest));
+    expect(result.current.state.analysisId).toBe(NEXT);
+    await act(async () => releaseLate(runningStatus));
+    expect(result.current.state.analysisId).toBe(NEXT);
+    expect(result.current.state.status).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("does not reopen a finished run with an older running snapshot", async () => {
+    vi.useFakeTimers();
+    const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
+    let releaseLate: (value: typeof runningStatus) => void = () => {};
+    const getAnalysis = vi
+      .fn<ApiClient["getAnalysis"]>()
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseLate = resolve)))
+      .mockImplementationOnce(async () => completedGrpoStatus);
+    const { result } = setup({ createAnalysis, getAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    const es = FakeEventSource.latest();
+    act(() => es.emit("partial_result", makeEvent({ event_id: 1, analysis_id: ID, type: "partial_result", status: "TOKENIZING" })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    act(() => es.emit("completed", makeEvent({ event_id: 2, analysis_id: ID, type: "completed", status: "COMPLETED" })));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.jobStatus).toBe("COMPLETED");
+    // The partial refetch was sent before completion and answers last.
+    await act(async () => releaseLate(runningStatus));
+    expect(result.current.state.phase).toBe("terminal");
+    expect(result.current.state.jobStatus).toBe("COMPLETED");
+    expect(result.current.state.status?.result?.analysis_id).toBe(ID);
+    vi.useRealTimers();
+  });
+
+  it("ends the creating phase when the server answer cannot be read", async () => {
+    const createAnalysis = vi.fn(async () => {
+      throw new SyntaxError("Unexpected token <");
+    });
+    const { result } = setup({ createAnalysis });
+    await act(() => result.current.start(grpoRequest));
+    expect(result.current.state.phase).toBe("error");
+    expect(result.current.state.error?.issue.user_message).toBeTruthy();
+  });
+
   it("requests cancellation", async () => {
     const createAnalysis = vi.fn(async () => ({ analysis_id: ID, status: "QUEUED" as const, fingerprint: "f", created_at: "", reused: false }));
     const cancelAnalysis = vi.fn(async () => ({ ...runningStatus, status: "CANCEL_REQUESTED" as const }));
