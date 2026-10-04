@@ -68,7 +68,9 @@ _ROOT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _UPLOAD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
 _SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
-_CONTROL = re.compile(r"[\x00-\x20\x7f]")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+# Spaces are legal in local file names only; HF ids, revisions and upload ids never contain them.
+_WHITESPACE = re.compile(r"\s")
 
 _EXAMPLE_FORMS = (
     "Hugging Face 저장소 ID(예: org/name), https://huggingface.co 주소, "
@@ -156,16 +158,22 @@ def _normalize(
     split: str | None = None,
 ) -> NormalizedReference:
     raw = reference.strip()
-    if not raw or _CONTROL.search(raw):
+    scheme_match = _SCHEME.match(raw)
+    is_local = (
+        scheme_match.group(1).lower() == "local"
+        if scheme_match
+        else source_type is SourceType.LOCAL
+    )
+    if not raw or _CONTROL.search(raw) or (not is_local and _WHITESPACE.search(raw)):
         raise _error(
             ErrorCode.INVALID_REQUEST,
-            "참조에 공백이나 제어 문자를 넣을 수 없습니다. " + _EXAMPLE_FORMS,
+            "참조에 제어 문자를 넣을 수 없고, 공백은 local: 경로에서만 쓸 수 있습니다. "
+            + _EXAMPLE_FORMS,
             kind,
             reason="invalid_characters",
         )
     field_revision = _clean_optional(revision)
 
-    scheme_match = _SCHEME.match(raw)
     if _WINDOWS_DRIVE.match(raw) or raw.startswith(("/", "\\", "~", "./", "../")) or "\\" in raw:
         raise _error(
             ErrorCode.LOCAL_PATH_NOT_ALLOWED,

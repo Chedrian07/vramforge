@@ -82,6 +82,14 @@ def test_model_file_url_keeps_path_as_information_only() -> None:
     )
     assert norm.path_in_repo == "sub/config.json"
     assert norm.notes  # the user is told the path does not narrow the analysis
+    spaced = normalize_model_reference(
+        ModelSourceRef(reference="https://huggingface.co/org/name/blob/main/my%20notes.md")
+    )
+    assert (spaced.repo_id, spaced.revision, spaced.path_in_repo) == (
+        "org/name",
+        "main",
+        "my notes.md",
+    )
 
 
 DATASET_CASES = [
@@ -183,6 +191,14 @@ LOCAL_CASES = [
     ("local:models/org/qwen/", "models", "org/qwen", "local:models/org/qwen"),
     ("local:models", "models", "", "local:models/"),
     ("local:data/train.jsonl", "data", "train.jsonl", "local:data/train.jsonl"),
+    # spaces and non-ASCII names are ordinary local file names
+    (
+        "local:data/my data/train set.jsonl",
+        "data",
+        "my data/train set.jsonl",
+        "local:data/my data/train set.jsonl",
+    ),
+    ("local:data/보안 데이터.jsonl", "data", "보안 데이터.jsonl", "local:data/보안 데이터.jsonl"),
 ]
 
 
@@ -200,6 +216,10 @@ def test_local_and_upload_without_prefix_use_source_type() -> None:
         DatasetSourceRef(source_type=SourceType.LOCAL, reference="data/x.parquet")
     )
     assert (local.local_root, local.local_relative) == ("data", "x.parquet")
+    spaced = normalize_dataset_reference(
+        DatasetSourceRef(source_type=SourceType.LOCAL, reference="data/my set/x.parquet")
+    )
+    assert spaced.local_relative == "my set/x.parquet"
     upload = normalize_dataset_reference(
         DatasetSourceRef(
             source_type=SourceType.UPLOAD, reference="0f8c2f4e-7d0b-4f8e-9a8b-1c2d3e4f5a6b"
@@ -277,6 +297,15 @@ REJECTED = [
     ("org name/x", ErrorCode.INVALID_REQUEST),
     ("org/na\nme", ErrorCode.INVALID_REQUEST),
     ("org/\x00name", ErrorCode.INVALID_REQUEST),
+    ("hf:org/na me", ErrorCode.INVALID_REQUEST),
+    ("org/na me", ErrorCode.INVALID_REQUEST),
+    ("https://huggingface.co/org/na%20me", ErrorCode.INVALID_REQUEST),
+    ("https://huggingface.co/org/name/tree/ma in", ErrorCode.INVALID_REQUEST),
+    # spaces are allowed in local paths, control characters never
+    ("local:models/a\tb", ErrorCode.INVALID_REQUEST),
+    ("local:models/a\u2028b", ErrorCode.INVALID_REQUEST),
+    ("local:models/a\x85b", ErrorCode.INVALID_REQUEST),
+    ("upload:abcd efgh ijkl", ErrorCode.INVALID_REQUEST),
 ]
 
 

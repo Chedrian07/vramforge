@@ -142,6 +142,19 @@ def test_single_dataset_file(access: SourceAccess, roots: dict[str, Path]) -> No
     assert [f.path for f in source.manifest.files] == ["single.parquet"]
 
 
+def test_local_names_with_spaces(access: SourceAccess, roots: dict[str, Path]) -> None:
+    folder = roots["data"] / "my set"
+    folder.mkdir()
+    (folder / "train part.jsonl").write_text('{"q": "s"}\n', encoding="utf-8")
+    source = resolve_dataset(DatasetSourceRef(reference="local:data/my set"), access)
+    assert source.manifest.reference == "local:data/my set"
+    assert [f.path for f in source.manifest.files] == ["train part.jsonl"]
+    single = resolve_dataset(
+        DatasetSourceRef(reference="local:data/my set/train part.jsonl"), access
+    )
+    assert single.local_path is not None and single.local_path.name == "train part.jsonl"
+
+
 def test_identity_is_independent_of_root_location(
     access: SourceAccess, roots: dict[str, Path], tmp_path: Path
 ) -> None:
