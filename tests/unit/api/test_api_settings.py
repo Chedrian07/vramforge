@@ -78,3 +78,35 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("VRAMFORGE_RETENTION_DAYS", "")
     s = Settings()
     assert s.max_upload_bytes == 2 * 1024**3 and s.retention_days == 7
+
+
+def test_blank_hf_token_is_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    for blank in ("", "   "):
+        s = Settings(hf_token=blank, share_server_hf_token=True)
+        assert s.hf_token_value() is None
+        assert s.source_hf_token() is None
+        assert s.hf_token_mode == "not_configured"
+
+
+def test_server_hf_token_is_used_only_when_shared(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HF_TOKEN", "hf_serverserverserver")
+    s = Settings()
+    assert s.share_server_hf_token is False  # plan §18: opt-in only
+    assert s.hf_token_value() == "hf_serverserverserver"
+    assert s.source_hf_token() is None
+    assert s.hf_token_mode == "configured_not_shared"
+
+    monkeypatch.setenv("VRAMFORGE_SHARE_SERVER_HF_TOKEN", "true")
+    s = Settings()
+    assert s.source_hf_token() == "hf_serverserverserver"
+    assert s.hf_token_mode == "shared"
+    assert "hf_serverserverserver" not in repr(s)
+
+    monkeypatch.setenv("VRAMFORGE_SHARE_SERVER_HF_TOKEN", "")  # compose passes empty values
+    assert Settings().share_server_hf_token is False
+    monkeypatch.delenv("HF_TOKEN")
+    monkeypatch.setenv("VRAMFORGE_SHARE_SERVER_HF_TOKEN", "true")
+    assert Settings().source_hf_token() is None  # nothing to share
+    assert Settings().hf_token_mode == "not_configured"

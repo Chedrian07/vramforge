@@ -31,7 +31,7 @@ from vramforge_estimator.schemas import (
 )
 
 from .. import store
-from ..access import source_access
+from ..access import hint_inspection, source_access
 from ..db import session_scope, utcnow
 from ..deps import OwnerDep, StateDep
 from ..inspect_service import inspect_sources as run_inspection
@@ -100,7 +100,7 @@ async def inspect_sources(
     access = source_access(
         settings, owner, http_timeout_s=min(30.0, float(settings.inspect_timeout_s))
     )
-    return await run_inspection(
+    response = await run_inspection(
         body,
         access,
         timeout_s=settings.inspect_timeout_s,
@@ -108,6 +108,7 @@ async def inspect_sources(
         dataset_issue=dataset_issue,
         limiter=limiter,
     )
+    return hint_inspection(response, settings)
 
 
 def _record_upload(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from vramforge_estimator.units import GiB
 
 _ROOT_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# How the server's Hugging Face token is used for source access (never its value).
+HfTokenMode = Literal["not_configured", "configured_not_shared", "shared"]
 
 
 class Settings(BaseSettings):
@@ -37,6 +41,10 @@ class Settings(BaseSettings):
     hf_token: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("VRAMFORGE_HF_TOKEN", "HF_TOKEN", "hf_token")
     )
+    # plan §18: the service's own Hugging Face account never stands in for a user's access. Only
+    # the operator of a single-user deployment opts in to using the server token for every
+    # owner's sources; otherwise it is never sent and private/gated sources are denied.
+    share_server_hf_token: bool = False
     access_token: SecretStr | None = None
     cookie_secure: bool = False
 
@@ -96,7 +104,22 @@ class Settings(BaseSettings):
         return self.retention_days * 86_400
 
     def hf_token_value(self) -> str | None:
-        return self.hf_token.get_secret_value() if self.hf_token else None
+        """The configured server token (None when unset or blank). Use `source_hf_token` for
+        source access."""
+        if self.hf_token is None:
+            return None
+        value = self.hf_token.get_secret_value().strip()
+        return value or None
+
+    def source_hf_token(self) -> str | None:
+        """The token sent for source access: the server token only when it is shared."""
+        return self.hf_token_value() if self.share_server_hf_token else None
+
+    @property
+    def hf_token_mode(self) -> HfTokenMode:
+        if self.hf_token_value() is None:
+            return "not_configured"
+        return "shared" if self.share_server_hf_token else "configured_not_shared"
 
     def access_token_value(self) -> str | None:
         if self.access_token is None:
@@ -134,4 +157,4 @@ def reset_settings_cache() -> None:
     get_settings.cache_clear()
 
 
-__all__ = ["Settings", "get_settings", "parse_local_roots", "reset_settings_cache"]
+__all__ = ["HfTokenMode", "Settings", "get_settings", "parse_local_roots", "reset_settings_cache"]
