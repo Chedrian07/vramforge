@@ -263,7 +263,7 @@ profile의 allocator slack과 운영 margin(§9)은 별도 항목입니다(plan 
 
 | 구분 | 의미 | 결과 |
 |---|---|---|
-| 제외 (excluded) | 범위에서 의도적으로 뺀 항목 (reward, eval, save). `ExcludedComponent`에 사유 | 단계는 `included=false`. reward 제외는 readiness `conditional` |
+| 제외 (excluded) | 범위에서 의도적으로 뺀 항목 (reward, eval, save). `ExcludedComponent`에 사유 | 단계는 `included=false`. reward 제외와, 평가 split이 있는데 평가를 뺀 경우는 readiness `conditional` |
 | 미상 (unknown) | 범위 안이지만 산정 근거가 없는 항목 | `null` + 사유, `unknown_components`, 범위 `null`, 적합 판정 보류 |
 | 해당 없음 | 그 학습 방식에 없는 단계 (예: SFT의 rollout) | 단계 `included=false`, "해당 없음" |
 
@@ -350,7 +350,7 @@ RAM 결과의 `bytes_low`는 단계별 최대값으로 본 **확인된 하한**�
 - **GRPO batch**(TRL `GRPOConfig.__post_init__`): spg = K (둘 다 미지정), spg = gbs / (B_update × W) (gbs 지정, 나누어떨어져야 함), gbs = B_update × W × spg; gbs mod G = 0, G ≥ 2, gbs와 spg 동시 지정 불가; U = gbs / G, C = B_update × spg. 예: G=4, gbs=4, B=1, K=4 → spg=4, C=4, U=1.
 - **차단(오류)**: 4-bit와 strategy 모순, 다중 GPU, 엄격 모드의 packing, 실행 경로나 메모리 모델이 없는 옵션(offload, compile, liger, flash-attn, vLLM rollout, DoRA, bf16 외 precision), DPO reference 충돌, 정보가 빠진 local reward.
 - **요청 무효(경고)**: 설치되지 않은 linear-attention kernel 요청(실제 실행 경로인 torch fallback으로 계산), `max_live_sequences`, template이 쓰지 않는 template 옵션.
-- readiness: 차단 항목이 있으면 `unsupported`, reward가 GPU 밖이거나 미지정이면 `conditional`, 그 외 `ready`.
+- readiness: 차단 항목이 있으면 `unsupported`, reward가 GPU 밖이거나 미지정이면 `conditional`, 평가 split을 지정했는데 평가 단계를 계산 범위에서 뺐으면 `conditional`, 그 외 `ready`.
 
 ## 15. 참고
 

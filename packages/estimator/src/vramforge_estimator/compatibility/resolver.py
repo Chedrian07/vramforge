@@ -514,6 +514,17 @@ def _readiness(
             readiness = TrainingReadiness.CONDITIONAL
         elif reward.kind in (RewardKind.CPU_RULE, RewardKind.REMOTE) or not reward.on_training_gpu:
             readiness = TrainingReadiness.CONDITIONAL
+    if request.dataset.eval_split and not request.scope.include_evaluation:
+        # Training will run an evaluation phase whose memory is outside the computed scope.
+        res.warnings.append(
+            _warning(
+                ErrorCode.PROFILE_SCOPE_INCOMPLETE,
+                "평가 split이 지정되었지만 평가 단계 메모리는 계산 범위에서 제외했습니다 "
+                "(조건부 결과).",
+                "scope.include_evaluation",
+            )
+        )
+        readiness = TrainingReadiness.CONDITIONAL
     return readiness
 
 

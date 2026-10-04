@@ -312,3 +312,16 @@ def test_adapter_configuration_errors_become_blockers(adapter, monkeypatch) -> N
         request(training__lora={"target_modules": "all-linear"}), hybrid_inventory(), None
     )
     assert cfg2 is None and report2.blockers[0].user_message == "대상 없음"
+
+
+def test_excluding_a_configured_evaluation_makes_the_result_conditional(adapter) -> None:
+    inv = hybrid_inventory()
+    sft = {"training__objective": "sft"}
+    assert resolve(request(**sft), inv, None)[1].readiness is TrainingReadiness.READY
+    report = resolve(request(**sft, dataset__eval_split="test"), inv, None)[1]
+    assert report.readiness is TrainingReadiness.CONDITIONAL
+    assert ErrorCode.PROFILE_SCOPE_INCOMPLETE in {w.code for w in report.warnings}
+    included = resolve(
+        request(**sft, dataset__eval_split="test", scope={"include_evaluation": True}), inv, None
+    )[1]
+    assert included.readiness is TrainingReadiness.READY
