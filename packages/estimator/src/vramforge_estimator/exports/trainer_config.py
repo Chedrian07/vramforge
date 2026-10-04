@@ -15,7 +15,8 @@ Produced only for a `ready` result. The `trl.args` section maps 1:1 to
 
 The model, quantization (`transformers.BitsAndBytesConfig`), PEFT (`peft.LoraConfig`), dataset
 (mapping transform, raw columns dropped) and processing-class sections describe the launcher
-inputs; raw data, tokens, absolute paths and private URLs are never included.
+inputs; raw data, tokens, absolute paths and private URLs are never included. A result whose
+pipeline halted or whose memory estimate is missing is never ready.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from vramforge_estimator.errors import EstimatorError, make_issue
+from vramforge_estimator.pipeline import halting_issue
 from vramforge_estimator.schemas import (
     AnalysisResult,
     DataPreservation,
@@ -158,6 +160,10 @@ def _not_ready(result: AnalysisResult, reasons: list[str], code: ErrorCode) -> E
 
 def check_ready(result: AnalysisResult) -> None:
     """Raise `EstimatorError` with the reason unless the result can be executed as-is."""
+    stopped = halting_issue(result)
+    if stopped is not None:
+        # A PARTIAL/FAILED/CANCELLED run never verified the setup it would describe.
+        raise _not_ready(result, [stopped.user_message], stopped.code)
     report = result.compatibility_report
     readiness = result.status.training_readiness
     if readiness is not TrainingReadiness.READY:
@@ -185,6 +191,8 @@ def check_ready(result: AnalysisResult) -> None:
         problems.append("데이터 보존 검사가 검증 상태가 아닙니다.")
     if result.source_manifests.model is None or result.source_manifests.dataset is None:
         problems.append("모델·데이터셋 revision이 고정되지 않았습니다.")
+    if result.memory is None:
+        problems.append("메모리 산정까지 끝난 결과가 아닙니다(진행 중이거나 중단된 분석).")
     if resolved is not None and resolved.objective is Objective.GRPO:
         grpo = resolved.grpo
         if grpo is None:

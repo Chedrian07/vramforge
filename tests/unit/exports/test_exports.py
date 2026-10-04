@@ -242,3 +242,24 @@ def test_conditional_refusal_explains_with_report_warnings(tmp_path: Path, monke
         export_trainer_config(result)
     assert exc.value.issue.code is ErrorCode.GRPO_REWARD_UNSPECIFIED
     assert "reward가 지정되지 않았습니다." in exc.value.issue.user_message
+
+
+def test_trainer_config_is_refused_for_halted_or_running_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a run that finished every stage may produce the execution config."""
+    ready = build_result("sft", tmp_path, monkeypatch)
+    assert export_trainer_config(ready)
+
+    halt = fakes.issue(ErrorCode.UNKNOWN_MEMORY_COMPONENT, "ledger를 만들 수 없습니다.")
+    halted = build_result("sft", tmp_path / "halted", monkeypatch, estimate_error=halt)
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(halted)
+    assert exc.value.issue.code is ErrorCode.UNKNOWN_MEMORY_COMPONENT
+    assert "ledger를 만들 수 없습니다." in exc.value.issue.user_message
+
+    # a result stored while the job is still running (or by an older build) has no estimate yet
+    running = ready.model_copy(update={"memory": None})
+    with pytest.raises(EstimatorError) as exc:
+        export_trainer_config(running)
+    assert "메모리 산정" in exc.value.issue.user_message

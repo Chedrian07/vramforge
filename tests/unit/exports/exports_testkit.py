@@ -15,6 +15,7 @@ from vramforge_estimator.schemas import (
     AnalysisResult,
     DpoResolved,
     GrpoResolved,
+    Issue,
     Objective,
     ReferenceStrategy,
     RewardKind,
@@ -68,6 +69,7 @@ def build_result(
     request_overrides: dict[str, Any] | None = None,
     resolved_overrides: dict[str, Any] | None = None,
     report_kwargs: dict[str, Any] | None = None,
+    estimate_error: Issue | None = None,
 ) -> AnalysisResult:
     obj = Objective(objective)
     extra: dict[str, Any] = {}
@@ -82,7 +84,10 @@ def build_result(
     extra.update(resolved_overrides or {})
     resolved = fakes.resolved_config(obj, **extra)
     report = fakes.compat_report(readiness=readiness, **(report_kwargs or {}))
-    fakes.FakeModules(resolve=lambda req, inv, tok: (resolved, report)).install(monkeypatch)
+    fakes.FakeModules(
+        resolve=lambda req, inv, tok: (resolved, report),
+        estimate_memory=fakes.raising(estimate_error) if estimate_error else None,
+    ).install(monkeypatch)
     overrides = {"training.objective": objective}
     if obj is Objective.GRPO:
         overrides.update(
