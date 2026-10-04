@@ -11,13 +11,17 @@ Tokenizer calls mirror what TRL 1.14.1 does through transformers 5.18 (no torch)
 
 Every successful record carries ``extras["token_digest"]`` (see `token_digest`): a hash of the
 token ids the trainer feeds to the model for that row, so GPU validation can confirm that a
-re-read row tokenizes identically without the ids ever being stored (plan §7.6).
+re-read row tokenizes identically without the ids ever being stored (plan §7.6). Rows whose mapped
+content spells out an added token (e.g. ``<|im_end|>``) get ``extras["special_token_literal"]``:
+the tokenizer turns that text into the control token, exactly as in training, so the lengths stay
+TRL's and the finding is only a warning (docs/research/example-model-dataset.md R7b).
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from vramforge_estimator.errors import EstimatorError, make_issue
@@ -62,6 +66,39 @@ def token_digest(sequences: Mapping[str, Sequence[int]]) -> str:
         h.update(",".join(map(str, sequences[name])).encode("ascii"))
         h.update(b"\n")
     return h.hexdigest()
+
+
+def _markup_like(content: str) -> bool:
+    """``<tool_call>``, ``[INST]``: added tokens that act as control markers. Other non-special
+    added tokens (e.g. whitespace runs or extra characters some vocabularies add) are ordinary
+    text pieces and are not reported."""
+    text = content.strip()
+    return len(text) >= 3 and (text[0], text[-1]) in (("<", ">"), ("[", "]"))
+
+
+def literal_token_matcher(tokenizer: Any) -> tuple[dict[int, str], re.Pattern[str] | None]:
+    """Added tokens that raw text can turn into (id -> string) and a regex that finds them.
+
+    Special tokens count unless the tokenizer splits them (``split_special_tokens``); non-special
+    added tokens count when they look like control markers (``<think>``, ``<tool_call>``)."""
+    try:
+        decoder = dict(getattr(tokenizer, "added_tokens_decoder", None) or {})
+    except Exception:  # pragma: no cover - defensive against unusual tokenizer classes
+        return {}, None
+    split_special = bool(getattr(tokenizer, "split_special_tokens", False))
+    tokens: dict[int, str] = {}
+    for index, added in decoder.items():
+        content = getattr(added, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            continue
+        special = bool(getattr(added, "special", False))
+        if (special and split_special) or (not special and not _markup_like(content)):
+            continue
+        tokens[int(index)] = content
+    if not tokens:
+        return {}, None
+    literals = sorted(set(tokens.values()), key=len, reverse=True)
+    return tokens, re.compile("|".join(re.escape(t) for t in literals))
 
 
 def check_template_kwargs(template_kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -157,6 +194,7 @@ class TrlAdapterBase:
         self.eos_token: str | None = getattr(self.tokenizer, "eos_token", None)
         self._bos_id: int | None = getattr(self.tokenizer, "bos_token_id", None)
         self._eos_id: int | None = getattr(self.tokenizer, "eos_token_id", None)
+        self._literal_tokens, self._literal_pattern = literal_token_matcher(self.tokenizer)
 
     # ------------------------------------------------------------------ contract
 
@@ -315,6 +353,35 @@ class TrlAdapterBase:
             flags["duplicate_eos"] = True
         return flags
 
+    def literal_token_flags(self, pieces: Iterable[str]) -> dict[str, Any]:
+        """Added-token strings that mapped content spells out verbatim and that the tokenizer
+        turns into that token. A regex pre-filter keeps clean rows cheap; a hit is confirmed by
+        tokenizing the piece, so flags such as ``single_word`` are honored."""
+        if self._literal_pattern is None:
+            return {}
+        found: set[str] = set()
+        for piece in pieces:
+            if piece and self._literal_pattern.search(piece) is not None:
+                found |= self._literal_tokens_in(piece)
+        return {"special_token_literal": sorted(found)} if found else {}
+
+    def _literal_tokens_in(self, piece: str) -> set[str]:
+        try:
+            ids = self.tokenizer(piece, add_special_tokens=False)["input_ids"]
+        except Exception:  # the row itself tokenized fine; this optional check stays silent
+            return set()
+        return {self._literal_tokens[i] for i in ids if i in self._literal_tokens}
+
+    @staticmethod
+    def message_texts(messages: Iterable[Message]) -> list[str]:
+        return [piece for message in messages for piece in text_parts(message.get("content"))]
+
+    def without_final_eos(self, text: str) -> str:
+        """A plain string TRL treats as already terminated keeps its EOS text as the terminator,
+        which is intended and not reported as a literal special token."""
+        eos = self.eos_token
+        return text[: -len(eos)] if eos and text.endswith(eos) else text
+
     def require_plain_eos(self) -> None:
         if self.eos_token is None:
             raise EstimatorError(
@@ -352,6 +419,7 @@ __all__ = [
     "TRL_VERSION",
     "TrlAdapterBase",
     "check_template_kwargs",
+    "literal_token_matcher",
     "loss_positions",
     "mapping_error",
     "token_digest",

@@ -16,7 +16,7 @@ Layouts (TRL dataset types):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from vramforge_estimator.errors import EstimatorError, make_issue
@@ -70,7 +70,7 @@ def resolve_sft_layout(mapping: ColumnMapping) -> tuple[SftLayout, str | None]:
 
 class TrlSftAdapter(TrlAdapterBase):
     name = f"trl-{TRL_VERSION}-sft"
-    version = "2"  # 2: records carry token digests
+    version = "2"  # 2: records carry token digests and literal special-token findings
     objective = Objective.SFT
 
     def __init__(
@@ -179,6 +179,7 @@ class TrlSftAdapter(TrlAdapterBase):
             preserved=preserved,
             issue=issue,
             omitted=omitted,
+            content=self.message_texts(messages),
         )
 
     def _prompt_completion_chat(self, row: Mapping[str, Any], row_id: str) -> TokenizedRecord:
@@ -214,6 +215,7 @@ class TrlSftAdapter(TrlAdapterBase):
             issue=issue,
             omitted=omitted,
             prefix_ok=ids[: len(prompt_ids)] == prompt_ids,
+            content=self.message_texts(full),
         )
 
     def _prompt_completion_plain(self, row: Mapping[str, Any], row_id: str) -> TokenizedRecord:
@@ -223,6 +225,7 @@ class TrlSftAdapter(TrlAdapterBase):
         prompt = self.plain_text(row, self.mapping.prompt, "prompt")
         completion = self.plain_text(row, self.completion_column, "completion")
         digest = content_digest({"prompt": prompt, "completion": completion})
+        content = [prompt, self.without_final_eos(completion)]
         completion = self.add_eos(completion)
         prompt_ids = self.encode_plain(prompt)
         ids = self.encode_plain(prompt + completion)
@@ -236,6 +239,7 @@ class TrlSftAdapter(TrlAdapterBase):
             issue=None,
             omitted=omitted,
             prefix_ok=ids[: len(prompt_ids)] == prompt_ids,
+            content=content,
         )
         record.extras.update(self.special_token_flags(ids))
         return record
@@ -245,7 +249,15 @@ class TrlSftAdapter(TrlAdapterBase):
         digest = content_digest({"text": text})
         ids = self.encode_plain(self.add_eos(text))
         record = self._record(
-            row_id, digest, ids, prompt_len=None, masks=[], preserved=None, issue=None, omitted=0
+            row_id,
+            digest,
+            ids,
+            prompt_len=None,
+            masks=[],
+            preserved=None,
+            issue=None,
+            omitted=0,
+            content=[self.without_final_eos(text)],
         )
         record.extras.update(self.special_token_flags(ids))
         return record
@@ -262,6 +274,7 @@ class TrlSftAdapter(TrlAdapterBase):
         issue: str | None,
         omitted: int,
         prefix_ok: bool | None = None,
+        content: Sequence[str] = (),
     ) -> TokenizedRecord:
         total = len(ids)
         completion: int | None = None
@@ -275,6 +288,7 @@ class TrlSftAdapter(TrlAdapterBase):
             extras["system_omitted"] = omitted
         if prefix_ok is False:
             extras["prefix_mismatch"] = True
+        extras.update(self.literal_token_flags(content))
         return TokenizedRecord(
             row_id=row_id,
             objective=self.objective,

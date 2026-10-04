@@ -9,7 +9,7 @@ lengths the model sees are ``len(prompt_ids) + len(<branch>_ids)`` — stored as
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from vramforge_estimator.inspection import TokenizerHandle
@@ -46,7 +46,7 @@ def extract_prompt(
 
 class TrlDpoAdapter(TrlAdapterBase):
     name = f"trl-{TRL_VERSION}-dpo"
-    version = "2"  # 2: records carry token digests
+    version = "2"  # 2: records carry token digests and literal special-token findings
     objective = Objective.DPO
 
     def __init__(
@@ -140,6 +140,7 @@ class TrlDpoAdapter(TrlAdapterBase):
             preserved=preserved,
             issue=issue,
             omitted=omitted,
+            content=self.message_texts(prompt + chosen + rejected),
         )
 
     def _plain(self, row: Mapping[str, Any], row_id: str) -> TokenizedRecord:
@@ -168,6 +169,7 @@ class TrlDpoAdapter(TrlAdapterBase):
             preserved=None,
             issue=None,
             omitted=omitted,
+            content=[prompt, self.without_final_eos(chosen), self.without_final_eos(rejected)],
         )
         for ids in (chosen_ids, rejected_ids):
             record.extras.update(self.special_token_flags(ids))
@@ -184,6 +186,7 @@ class TrlDpoAdapter(TrlAdapterBase):
         preserved: bool | None,
         issue: str | None,
         omitted: int,
+        content: Sequence[str],
     ) -> TokenizedRecord:
         p = len(prompt_ids)
         chosen_ids = prompt_chosen_ids[p:]
@@ -204,6 +207,7 @@ class TrlDpoAdapter(TrlAdapterBase):
             extras["system_omitted"] = omitted
         if prompt_chosen_ids[:p] != prompt_ids or prompt_rejected_ids[:p] != prompt_ids:
             extras["prefix_mismatch"] = True  # TRL only warns and slices anyway
+        extras.update(self.literal_token_flags(content))
         return TokenizedRecord(
             row_id=row_id,
             objective=self.objective,
