@@ -2,7 +2,8 @@
 
 Order: config.json → weight selection as transformers does it (only safetensors; GGUF, pickle
 ``*.bin``, adapter-only and pre-quantized checkpoints are refused, pickles are never opened) →
-remote-code check → index → every shard header (no weights) → inventory.
+remote-code check → index → every shard header (no weights) → inventory → for local sources, a
+re-check of the pinned content identity.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.schemas import ErrorCode, ModelInventory, Stage
 from vramforge_estimator.sources import ResolvedSource, SourceAccess
 from vramforge_estimator.sources.issues import blocking_error
+from vramforge_estimator.sources.local import verify_unchanged
 
 from .model_config import load_config, quantization_method, requires_remote_code
 from .model_files import SourceFiles, header_error, open_source_files
@@ -228,4 +230,10 @@ def inspect_model(source: ResolvedSource, access: SourceAccess) -> ModelInventor
     extra: dict[str, Any] = {"weights_file": weights}
     if others := other_weight_formats(paths):
         extra["ignored_weight_formats"] = others
-    return build_inventory(config, shards, index_total_size=index_total_size, extra_facts=extra)
+    inventory = build_inventory(
+        config, shards, index_total_size=index_total_size, extra_facts=extra
+    )
+    if source.repo_id is None:
+        # Local headers are pinned only by the content identity, not per file (plan §16.2).
+        verify_unchanged(source, access, stage=Stage.INSPECTING)
+    return inventory

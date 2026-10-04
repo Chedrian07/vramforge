@@ -173,6 +173,60 @@ def test_expected_content_digest(access: SourceAccess) -> None:
     assert exc.value.issue.code is ErrorCode.SOURCE_REVISION_CHANGED
 
 
+def test_verify_unchanged_rechecks_the_content_identity(
+    access: SourceAccess, roots: dict[str, Path]
+) -> None:
+    from vramforge_estimator.schemas import Stage
+    from vramforge_estimator.sources.local import verify_unchanged
+
+    model = resolve_model(ModelSourceRef(reference="local:models/tiny"), access)
+    data = resolve_dataset(DatasetSourceRef(reference="local:data/dpo"), access)
+    upload = resolve_dataset(DatasetSourceRef(reference=f"upload:{UPLOAD_ID}"), access)
+    for source in (model, data, upload):
+        verify_unchanged(source, access, stage=Stage.TOKENIZING)  # unchanged: no error
+
+    train = roots["data"] / "dpo" / "train.jsonl"
+    train.write_text('{"q": "A"}\n{"q": "b"}\n', encoding="utf-8")  # same size, new content
+    with pytest.raises(EstimatorError) as exc:
+        verify_unchanged(data, access, stage=Stage.TOKENIZING)
+    issue = exc.value.issue
+    assert (issue.code, issue.stage, issue.details["reason"]) == (
+        ErrorCode.SOURCE_REVISION_CHANGED,
+        Stage.TOKENIZING,
+        "content_changed",
+    )
+    _no_host_paths(issue.model_dump_json(), roots)
+
+    (roots["uploads"] / UPLOAD_ID / "upload.jsonl").unlink()
+    (roots["uploads"] / UPLOAD_ID).rmdir()
+    with pytest.raises(EstimatorError) as exc:
+        verify_unchanged(upload, access, stage=Stage.TOKENIZING)
+    assert exc.value.issue.code is ErrorCode.SOURCE_REVISION_CHANGED
+    assert exc.value.issue.details["reason"] == "file_missing"
+
+
+def test_verify_unchanged_skips_hub_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vramforge_estimator.schemas import SourceManifest, Stage
+    from vramforge_estimator.sources import ResolvedSource, local
+    from vramforge_estimator.sources.local import verify_unchanged
+
+    def boom(*_: object) -> None:
+        raise AssertionError("hub sources are pinned by commit and never re-walked")
+
+    monkeypatch.setattr(local, "build_local_source", boom)
+    sha = "2367e865d009c13ac81713a2878291d33ab28177"
+    manifest = SourceManifest(
+        kind="model",
+        source_type=SourceType.HUGGINGFACE,
+        reference="hf:org/name",
+        repo_id="org/name",
+        resolved_revision=sha,
+        fingerprint="src_x",
+    )
+    source = ResolvedSource(kind="model", manifest=manifest, repo_id="org/name", revision=sha)
+    verify_unchanged(source, SourceAccess(), stage=Stage.INSPECTING)
+
+
 def test_upload_reference(access: SourceAccess) -> None:
     source = resolve_dataset(DatasetSourceRef(reference=f"upload:{UPLOAD_ID}"), access)
     assert source.manifest.source_type is SourceType.UPLOAD

@@ -254,6 +254,58 @@ def test_local_change_after_resolution_is_detected(model_dir: ModelDir) -> None:
     assert exc.value.issue.code is ErrorCode.SOURCE_REVISION_CHANGED
 
 
+def test_same_size_header_change_after_resolution_is_detected(
+    model_dir: ModelDir, st_writer: Any
+) -> None:
+    # The manifest pins safetensors files by header digest + size only: a renamed tensor keeps
+    # the file size, so only the identity re-check can notice it (plan §16.2).
+    target, access = model_dir()
+    source = resolve_model(ModelSourceRef(reference=f"local:models/{target.name}"), access)
+    size = (target / "model.safetensors").stat().st_size
+    # same name length and payload: q_proj -> k_proj
+    renamed = {k.replace("q_proj", "k_proj"): v for k, v in TENSORS.items()}
+    st_writer.write_safetensors(target / "model.safetensors", renamed)
+    assert (target / "model.safetensors").stat().st_size == size
+    with pytest.raises(EstimatorError) as exc:
+        inspect_model(source, access)
+    issue = exc.value.issue
+    assert issue.code is ErrorCode.SOURCE_REVISION_CHANGED
+    assert issue.details["reason"] == "content_changed"
+    assert issue.stage is not None and issue.stage.value == "inspecting"
+    assert str(target) not in issue.model_dump_json()
+
+
+def test_file_added_after_resolution_is_detected(model_dir: ModelDir) -> None:
+    target, access = model_dir()
+    source = resolve_model(ModelSourceRef(reference=f"local:models/{target.name}"), access)
+    (target / "generation_config.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(EstimatorError) as exc:
+        inspect_model(source, access)
+    assert exc.value.issue.code is ErrorCode.SOURCE_REVISION_CHANGED
+
+
+def test_symlink_escape_added_after_resolution_is_refused(
+    model_dir: ModelDir, tmp_path: Path
+) -> None:
+    target, access = model_dir()
+    source = resolve_model(ModelSourceRef(reference=f"local:models/{target.name}"), access)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    (target / "notes.txt").symlink_to(outside)
+    with pytest.raises(EstimatorError) as exc:
+        inspect_model(source, access)
+    issue = exc.value.issue
+    assert issue.code is ErrorCode.LOCAL_PATH_NOT_ALLOWED
+    assert issue.stage is not None and issue.stage.value == "inspecting"
+    assert "secret" not in issue.model_dump_json()
+
+
+def test_unchanged_local_source_still_inspects(model_dir: ModelDir) -> None:
+    target, access = model_dir()
+    source = resolve_model(ModelSourceRef(reference=f"local:models/{target.name}"), access)
+    assert inspect_model(source, access) == inspect_model(source, access)
+
+
 def test_not_a_model_source(model_dir: ModelDir) -> None:
     from vramforge_estimator.schemas import DatasetSourceRef
     from vramforge_estimator.sources import resolve_dataset

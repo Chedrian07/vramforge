@@ -18,11 +18,24 @@ from pathlib import Path
 
 from vramforge_estimator.errors import EstimatorError
 from vramforge_estimator.keys import source_key, stable_hash
-from vramforge_estimator.schemas import ErrorCode, FileEntry, SourceManifest, SourceType, Stage
+from vramforge_estimator.schemas import (
+    DatasetSourceRef,
+    ErrorCode,
+    FileEntry,
+    ModelSourceRef,
+    SourceManifest,
+    SourceType,
+    Stage,
+)
 
 from .base import ResolvedSource, SourceAccess
 from .issues import blocking_error
-from .references import Kind, NormalizedReference
+from .references import (
+    Kind,
+    NormalizedReference,
+    normalize_dataset_reference,
+    normalize_model_reference,
+)
 from .safetensors_frame import HeaderFrameError, read_header_frame
 
 MAX_LOCAL_FILES = 100_000
@@ -324,3 +337,41 @@ def build_local_source(norm: NormalizedReference, access: SourceAccess) -> Resol
         notes=[*norm.notes, *notes],
     )
     return ResolvedSource(kind=kind, manifest=manifest, local_path=target)
+
+
+def _changed(kind: Kind, stage: Stage, reason: str) -> EstimatorError:
+    return blocking_error(
+        ErrorCode.SOURCE_REVISION_CHANGED,
+        "분석 중에 source 파일이 고정한 내용과 달라졌습니다. 다시 분석하세요.",
+        stage=stage,
+        component=kind,
+        details={"reason": reason},
+    )
+
+
+def verify_unchanged(source: ResolvedSource, access: SourceAccess, *, stage: Stage) -> None:
+    """Raise SOURCE_REVISION_CHANGED if a local/upload source no longer matches its identity.
+
+    Some content is pinned only through the identity digest (safetensors headers, the file set),
+    so re-resolve the display reference under the same confinement rules and compare
+    ``resolved_revision`` (plan §16.2). HF sources are immutable commits and are skipped.
+    """
+    manifest = source.manifest
+    if manifest.source_type is SourceType.HUGGINGFACE:
+        return
+    if source.kind == "model":
+        norm = normalize_model_reference(
+            ModelSourceRef(source_type=manifest.source_type, reference=manifest.reference)
+        )
+    else:
+        norm = normalize_dataset_reference(
+            DatasetSourceRef(source_type=manifest.source_type, reference=manifest.reference)
+        )
+    try:
+        current = build_local_source(norm, access)
+    except EstimatorError as exc:
+        if exc.issue.code is ErrorCode.SOURCE_NOT_FOUND:
+            raise _changed(source.kind, stage, "file_missing") from None
+        raise EstimatorError(exc.issue.model_copy(update={"stage": stage})) from None
+    if current.manifest.resolved_revision != manifest.resolved_revision:
+        raise _changed(source.kind, stage, "content_changed")
