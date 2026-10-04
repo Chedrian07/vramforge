@@ -45,6 +45,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      # Docker images and this job install uv.lock with --frozen, which never notices a stale lock.
+      - name: uv.lock is up to date with every pyproject.toml
+        run: uv lock --check
+
       - name: Install the workspace with every group (frozen lockfile)
         run: uv sync --all-groups --frozen
 
