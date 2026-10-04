@@ -9,7 +9,7 @@
 | 대상 환경 | 단일 NVIDIA GPU, `profiles/environments/cuda-trl-1.14.1.yaml` (torch 2.14.1, transformers 5.18.0, trl 1.14.1, peft 0.21.2, bitsandbytes 0.50.2, accelerate 1.15.0) |
 | trainer adapter | `trl-1.14.1-sft`, `trl-1.14.1-dpo`, `trl-1.14.1-grpo` (`vramforge_estimator.trainers`) |
 | 피크 엔진 | `vramforge_estimator.memory.evaluate` |
-| 근거 등급 | 모든 수치는 `analytic` (보정·실측 profile 없음, GPU 검증은 M5) |
+| 근거 등급 | profile의 objective × strategy 지원 등급 (등록된 profile은 모두 `analytic`, 보정·실측 profile 없음, GPU 검증은 M5) |
 
 `AllocationSpec.formula_ref`는 이 문서의 anchor(`methodology.md#<id>`)를 가리키며, 테스트가 anchor 존재를 확인합니다.
 
@@ -79,6 +79,20 @@ scenario_high_bytes = max_t high(t)    (미상 timepoint가 하나라도 있으�
 | reference 모델 가중치 | reference load peak 이후 | 별도 모델 |
 | CUDA context / library workspace / allocator slack | 모든 timepoint / load 제외 / 각 timepoint | §7 |
 
+<a id="padding"></a>
+### 3.2 padding과 attention mask
+
+transformers는 batch에 mask가 0인 위치가 하나라도 있을 때만 SDPA mask(`[B,1,T,T]` bool)를 만들고, 없으면 mask 없이 `is_causal`로 실행합니다(transformers 5.18 `masking_utils._ignore_causal_mask_sdpa`, architecture-memory §3.1). trainer는 architecture adapter에 넘기는 모든 `SequenceShape`에 `has_padding`을 정합니다.
+
+| forward | `has_padding` | 근거 |
+|---|---|---|
+| SFT, microbatch 1행 | `false` (`pad_to_multiple_of` > 1이면 길이에 따라 padding될 수 있어 `null`) | collator가 1행을 늘리지 않음 |
+| SFT, 여러 행 | `true` | 가장 긴 행까지 오른쪽 padding. batch shape에 행별 길이가 없어 모든 행이 같은 길이인 경우를 구별하지 않음 |
+| DPO 정책·reference forward, reference precompute | `true` | chosen B행과 rejected B행을 더 긴 branch까지 padding. branch별 길이가 batch shape에 없음 |
+| GRPO update, old/reference log-prob pass | `true` | generation batch의 최대 P·L 폭으로 padding(prompt 왼쪽, completion 오른쪽, EOS 뒤 mask 0)하고 TRL이 `attention_mask = cat(prompt_mask, completion_mask)`를 넘김 (trl `grpo_trainer.py:1947-1951, 2554, 3086`, trl-grpo §6.4) |
+
+`null`은 "알 수 없음(가능)"이며 adapter가 mask가 있는 경우와 없는 경우를 범위로 계산합니다. 같은 규칙을 schedule 가정 `padding`으로 표시합니다.
+
 <a id="load-phase"></a>
 ## 4. 모델 로딩
 
@@ -93,13 +107,14 @@ S_load = Σ_4bit 0.5 × n + Σ_나머지 n × bytes(load dtype)    # transformer
   `S_load`는 architecture adapter가 제공합니다(예시 MiMo QLoRA bf16: 7,765,103,072 B → 가용 8.93 GiB 필요, research §3.5 V9와 일치). adapter가 제공하지 않으면 상주 가중치 bytes(4-bit metadata 포함, `S_load` 이상)로 대신 계산하고 보수적이라고 표시합니다.
 
   이 값은 실제 할당이 아니라 로딩 직전 필요한 **가용 메모리 요구량**입니다. `*_device_map_check` timepoint에만 있고, 그 시점에 이미 상주한 모델(예: reference를 로드할 때의 정책)과 함께 합산됩니다. 4-bit는 부족하면 로딩이 `ValueError`로 실패하고, 비양자화 모델은 CPU로 offload됩니다.
+- **로딩 예산 적합 판정**: 하드웨어 용량을 알면 정책 로딩을 따로 판정합니다. `S_load > f × capacity`(정확한 분수 비교)이면 적합 판정은 `exceeds` / `load_budget_insufficient`이고 `LOAD_BUDGET_EXCEEDED` 경고를 `MemoryEstimate.issues`에 넣습니다. CUDA context가 가용 메모리를 capacity보다 더 줄이므로, 이 조건이면 context 크기와 무관하게 로딩이 실패합니다(4-bit: `ValueError`, 비양자화: 일부 모듈 CPU offload로 이 계산의 전체 GPU 상주 가정이 깨짐). 메시지는 `model_init_kwargs`의 `device_map={"": 0}`(예산 검사 없이 GPU 0에 로드)과 `max_memory`(transformers의 0.9배가 빠지고 bitsandbytes의 0.9배만 남음)를 해결책으로 안내합니다. 예: MiMo QLoRA bf16 `S_load` = 7,765,103,072 B이면 capacity 9,586,547,003 B(8.93 GiB)에서 통과하고 1 B 작으면 실패입니다. adapter가 `S_load`를 정하지 못하면 이 판정을 하지 않습니다(상주 가중치로 실패를 단정하지 않음).
 - `standalone_model` reference와 GRPO reference 모델은 정책과 같은 `model_init_kwargs`·`quantization_config`로 정책 다음에 로드합니다.
 
 <a id="trainable-state"></a>
 ## 5. 학습 상태
 
 - architecture adapter의 `TrainableGroup`(LoRA, `modules_to_save`, full, bias)이 크기와 dtype을 정합니다. LoRA와 `modules_to_save` 사본은 adapter 가중치로 상주하고, full FT와 bias는 base 가중치 자체입니다.
-- **실행되지 않는 학습 파라미터**: TRL은 비전 타워를 freeze하지 않지만 텍스트 데이터에서는 실행되지 않으므로, 그 파라미터는 가중치만 상주하고 gradient·optimizer state가 없습니다(loading-quantization-peft §Q8.4, trl-sft-dpo V-19, trl-grpo #15). 그룹을 inventory(실제 모듈 차원, component)와 대응시켜 실행 부분을 구하고, 대응하지 못하면 그룹 전체를 실행된 것으로 계산합니다(보수적, 가정으로 표시).
+- **실행되지 않는 학습 파라미터**: TRL은 비전 타워를 freeze하지 않지만 텍스트 데이터에서는 실행되지 않으므로, 그 파라미터는 가중치만 상주하고 gradient·optimizer state가 없습니다(loading-quantization-peft §Q8.4, trl-sft-dpo V-19, trl-grpo #15). architecture adapter는 그룹마다 계약 필드 `receives_grad`(실행 여부)와 `is_embedding`(nn.Embedding 여부, §5.2의 8-bit 규칙)을 보고하고, trainer는 그룹 이름을 해석하지 않고 이 값을 씁니다. `receives_grad`가 없는 그룹만 inventory(실제 모듈 차원, component, tensor role)와 대응시키고, 대응하지 못하면 그룹 전체를 실행된 것으로 계산합니다(보수적, 가정으로 표시).
 - LoRA 파라미터 수: `P = Σ_j r_j × (in_j + out_j)` (r_j는 PEFT `rank_pattern` 규칙, alpha와 무관).
 
 <a id="gradients"></a>
@@ -134,7 +149,7 @@ bnb 8-bit (adamw_8bit, paged_adamw_8bit): tensor별  n ≥ 4096이고 nn.Embeddi
 <a id="lm-head-input"></a>
 ## 6. LM head와 loss
 
-lm_head가 학습되면(full FT, `modules_to_save`에 lm_head) 입력(최종 norm 출력)을 weight gradient용으로 저장합니다: `positions × H × bytes(residual)`. 이 tensor는 architecture adapter가 보고하는 최종 hidden state(storage alias `policy.final_hidden`)와 같은 storage이므로 같은 alias로 한 번만 셉니다. frozen lm_head는 입력을 저장하지 않습니다(architecture-memory §10.1 행 27). GRPO는 `logits_to_keep`이 hidden의 view라 `(B, P+L, H)` 전체 storage가 남습니다.
+lm_head가 학습되면(full FT, `modules_to_save`에 lm_head) 입력(최종 norm 출력)을 weight gradient용으로 저장합니다: `positions × H × bytes(residual)`. 이 tensor는 architecture adapter가 보고하는 최종 hidden state(architecture 계약 `final_hidden_alias("policy")` = storage alias `policy.final_hidden`)와 같은 storage이므로 같은 alias로 한 번만 셉니다. frozen lm_head는 입력을 저장하지 않습니다(architecture-memory §10.1 행 27). GRPO는 `logits_to_keep`이 hidden의 view라 `(B, P+L, H)` 전체 storage가 남습니다.
 
 residual dtype = load dtype입니다(embedding은 autocast 대상이 아니고 Linear4bit는 입력 dtype으로 되돌림, loading-quantization-peft §Q9.3).
 
@@ -245,7 +260,7 @@ n_logp = (old pass) + (ref pass)
 |---|---|
 | 미지정 | `REWARD` 제외(`GRPO_REWARD_UNSPECIFIED`), readiness `conditional`, 실행용 설정 없음 |
 | CPU 규칙 / 원격 | 학습 GPU 밖으로 보고 제외. 그 자원이 0이라는 뜻이 아님. readiness `conditional` |
-| local 모델, 학습 GPU | reward 가중치(전 구간)와 `C × T_reward` forward가 그 모델 inventory 없이는 `null` → 범위 `null`, 적합 판정 보류 |
+| local 모델, 학습 GPU | reward 가중치(전 구간)와 `C × T_reward` forward가 그 모델 inventory 없이는 `null`(미상 항목) → 범위 `null`, 적합 판정 보류. reward 모델을 아직 분석하지 않으므로 readiness `conditional`(`UNKNOWN_MEMORY_COMPONENT` 경고)이며 `ready`가 되지 않음 |
 | local 모델, 다른 장치 | 이 GPU 계산에서 제외, readiness `conditional` |
 
 <a id="workspace-assumptions"></a>
@@ -271,6 +286,7 @@ profile의 allocator slack과 운영 margin(§9)은 별도 항목입니다(plan 
 | 해당 없음 | 그 학습 방식에 없는 단계 (예: SFT의 rollout) | 단계 `included=false`, "해당 없음" |
 
 - 평가·checkpoint 저장은 기본 제외입니다. 범위에 넣으면 평가 batch 계획이 없고 저장 경로의 GPU 임시값이 조사되지 않았으므로 미상으로 계산합니다.
+- trainer schedule이 낸 issue와 로딩 예산 경고(`LOAD_BUDGET_EXCEEDED`)는 `MemoryEstimate.issues`로 보고하고 가정(assumption)으로 바꾸지 않습니다. 여러 시나리오에서 같은 issue는 한 번만 넣습니다.
 - 결과를 "전체 수명주기 검증 완료"로 표현하지 않습니다(plan §9.2).
 
 <a id="margin-policy"></a>
@@ -299,20 +315,25 @@ utilization = (scenario_high + margin) / capacity      # 1을 넘을 수 있음
 | 1 | 하드웨어 미선택 (`capacity_only`) 또는 용량 정보 없음 | `not_evaluated` / `not_evaluated` |
 | 2 | readiness `unsupported` | `unknown` / `unsupported` |
 | 3 | known floor > capacity (미상 항목이 있어도 판정) | `exceeds` / `floor_exceeds_capacity` |
-| 4 | 미상 항목 때문에 high가 `null` | `unknown` / `unknown_components` |
-| 5 | high > capacity | `exceeds` / `high_exceeds_capacity` |
-| 6 | high ≤ capacity < high + margin | `low_margin` / `margin_insufficient` |
-| 7 | high + margin ≤ capacity | `expected_fit` / `fits_with_margin` (readiness `conditional`이면 조건부라고 표시) |
+| 4 | 정책 `S_load` > f × capacity (§4, 미상 항목이 있어도 판정) | `exceeds` / `load_budget_insufficient` |
+| 5 | 근거 등급 `metadata_only` (전체 VRAM 판정 금지, plan §11.4) | `unknown` / `unsupported` |
+| 6 | 미상 항목 때문에 high가 `null` | `unknown` / `unknown_components` |
+| 7 | high > capacity | `exceeds` / `high_exceeds_capacity` |
+| 8 | high ≤ capacity < high + margin | `low_margin` / `margin_insufficient` |
+| 9 | high + margin ≤ capacity | `expected_fit` / `fits_with_margin` (readiness `conditional`이면 조건부라고 표시) |
 
-GPU preset의 공칭 용량은 nvidia-smi 총량·실사용 가능량보다 큽니다. 가능하면 사용 가능 용량을 직접 입력합니다.
+- 피크 timepoint가 `*_device_map_check`이면 7·8의 메시지에 "로딩 직전 device_map 예산 검사 시점(실제 할당이 아니라 필요한 가용 메모리)"이라고 덧붙입니다.
+- GPU preset의 공칭 용량은 nvidia-smi 총량·실사용 가능량보다 큽니다. 가능하면 사용 가능 용량을 직접 입력합니다.
 
 <a id="evidence"></a>
 ## 11. 근거 등급
 
+`MemoryEstimate.evidence_level`은 계산에 쓴 profile의 objective × strategy **지원 등급**입니다(plan §11.4, [support-matrix.md](support-matrix.md)). 상수가 아닙니다. 결과의 `profile_id`가 registry에 없거나 그 조합을 지원하지 않으면 `metadata_only`입니다. 어떤 등급인지와 그 이유는 가정 `evidence_level`로 표시합니다.
+
 | 수준 | 의미 | 현재 |
 |---|---|---|
-| `metadata_only` | 구조·inventory만, 메모리 수치 없음 | 등록되지 않은 구조 |
-| `analytic` | 명시적 allocation·workspace 가정을 가진 정적 시나리오 | 등록된 모든 profile |
+| `metadata_only` | 구조·inventory만, 전체 VRAM 적합 판정 없음 (floor·로딩 예산 초과만 판정) | 등록되지 않은 구조, profile이 이 등급으로 표시한 조합 |
+| `analytic` | 명시적 allocation·workspace 가정을 가진 정적 시나리오 | 등록된 모든 profile의 지원 조합 |
 | `calibrated` | 등록 GPU·버전 영역에서 보정된 값 | 없음 (`profiles/calibrated/` 비어 있음) |
 | `measured` | 해당 job의 단계별 관측 peak | 없음 (GPU worker 미연결) |
 
@@ -351,16 +372,23 @@ RAM 결과의 `bytes_low`는 단계별 최대값으로 본 **확인된 하한**�
 
 - **load dtype**: 기본 `bfloat16`(내보내는 설정에 고정). `float32`는 TRL 기본값이며 명시적 선택지입니다.
 - **로딩 범위**: TRL은 `config.architectures[0]` 클래스로 로드하므로 Qwen3.5 VLM checkpoint는 비전 타워까지 상주(`full_checkpoint`)합니다. text_only는 검증되지 않아 차단합니다.
-- **effective dtype**: compute bf16, adapter·gradient·optimizer state는 위 §5, logits·loss fp32(accelerate), KV cache = load dtype, recurrent state fp32.
+- **effective dtype**: compute bf16, adapter·gradient·optimizer state는 위 §5, logits·loss fp32(accelerate), KV cache = load dtype, recurrent state fp32, conv state(GRPO rollout, linear attention 층) = rollout forward dtype(full FT bf16 autocast, PEFT는 load dtype).
+- **mixed precision**: `bf16`(TRL 기본, accelerate native AMP). fp16·fp32 요청은 `fp16`·`none`(autocast 없음, 연산 = load dtype)으로 기록하지만 메모리 모델이 없어 차단합니다.
+- **SFT loss mask**: `assistant_only_loss` = false(내보내는 설정에 고정). `completion_only_loss`는 prompt-completion 형식이면 true(TRL 기본값이 completion만 학습), 그 밖의 형식과 매핑이 정해지지 않은 경우는 `null`(TRL 기본값). DPO·GRPO에는 해당 없음(`null`).
+- **packing**: 요청값을 기록합니다. 엄격 무절단 모드에서 차단하고, linear attention의 torch fallback은 packing된 sequence 경계(`cu_seqlens`)를 버려 conv·recurrent state가 이웃 sample과 섞이므로 별도 차단 사유를 냅니다(architecture-memory §2.1).
+- **processing class**: chat template이 processor 파일(`chat_template.json`·`processor_config.json`)에만 있으면 `processor`(AutoProcessor)입니다. AutoTokenizer에는 그 template이 없으므로 대신 내보내지 않습니다. 고정 환경에 Pillow·torchvision이 없어 `PROFILE_SCOPE_INCOMPLETE` 경고와 함께 readiness `conditional`이고, schedule 가정 `processing_class`로 표시합니다. 그 밖에는 `tokenizer`(VLM도 AutoTokenizer를 명시).
+- **LoRA target 기록**: `lora.target_module_patterns`는 PEFT 0.21.2 의미(`architectures.trainable.peft_target_spec`)를 따릅니다. `all-linear`나 정규식 하나는 1개짜리 list로 기록하고 PEFT에는 문자열로 넘깁니다(list 안의 `all-linear`·정규식은 이름으로 비교되어 아무 모듈도 찾지 못함). 그 밖에는 정확한 이름 또는 `.suffix`로 비교하는 list이고, `auto_verified`는 PEFT가 보는 모듈(로드되지 않는 MTP 제외) 중 해석된 모듈만 고를 때 leaf 이름, 아니면 전체 모듈 이름입니다.
 - **4-bit preset**: NF4 + double quant(blocksize 64/256), compute bf16, `lm_head` 제외.
 - **preset**: microbatch/accumulation SFT·DPO 1/8, GRPO 1/4.
-- **DPO 기록**(plan §5.3): reference 전략·모델, β, loss type, reference sync, precompute batch, 2B행 batch 배치와 **실효 dropout**. TRL `DPOConfig.disable_dropout=True`(기본, 내보내는 설정에 고정)가 LoRA dropout까지 p = 0으로 만들므로 요청한 LoRA dropout은 0으로 해석하고(요청 무효로 기록) dropout activation을 넣지 않습니다.
-- **GRPO 기록**(plan §5.4): generation batch(전체 process 합 단위), spg, reference mode(β = 0 → 없음, PEFT → adapter off, full FT → 두 번째 모델), 정책과 별도의 rollout dtype(K/V = load dtype, full FT는 autocast로 conv state bf16·step logits fp32, PEFT는 load dtype).
+- **DPO 기록**(plan §5.3): reference 전략·모델, β, loss type, reference sync, precompute batch, 2B행 batch 배치와 **실효 dropout**. TRL `DPOConfig.disable_dropout=True`(기본, 내보내는 설정에 고정)가 LoRA dropout까지 p = 0으로 만들므로 요청한 LoRA dropout은 0으로 해석하고(요청 무효로 기록) dropout activation을 넣지 않습니다. `DpoResolved.reference_model`은 정책과 다른 checkpoint일 때만 그 이름이고, 아니면 `null`(정책 checkpoint)입니다.
+- **GRPO 기록**(plan §5.4): generation batch(전체 process 합 단위), spg, reference mode(β = 0 → 없음, PEFT → adapter off, full FT → 두 번째 모델), 정책과 별도의 rollout dtype(K/V = load dtype, full FT는 autocast로 conv state bf16·step logits fp32, PEFT는 load dtype), reward 배치(`GrpoResolved.reward_on_training_gpu`는 local reward 모델이 학습 GPU에 있을 때만 true).
+- trainer는 reference 모델과 reward 배치를 이 typed field에서 읽습니다. `resolutions`(requested → resolved + 사유)는 감사 기록으로만 남습니다.
 - **GRPO batch**(TRL `GRPOConfig.__post_init__`): spg = K (둘 다 미지정), spg = gbs / (B_update × W) (gbs 지정, 나누어떨어져야 함), gbs = B_update × W × spg; gbs mod G = 0, G ≥ 2, gbs와 spg 동시 지정 불가; U = gbs / G, C = B_update × spg. 예: G=4, gbs=4, B=1, K=4 → spg=4, C=4, U=1.
-- **차단(오류)**: 4-bit와 strategy 모순, 다중 GPU, 엄격 모드의 packing, 실행 경로나 메모리 모델이 없는 옵션(offload, compile, liger, flash-attn, vLLM rollout, DoRA, bf16 외 precision), DPO reference 충돌, 정보가 빠진 local reward.
+- **차단(오류)**: 4-bit와 strategy 모순, 다중 GPU, 엄격 모드의 packing(linear attention torch fallback이면 경계 혼합 사유 추가), 실행 경로나 메모리 모델이 없는 옵션(offload, compile, liger, flash-attn, vLLM rollout, DoRA, bf16 외 precision), DPO reference 충돌, 정보가 빠진 local reward, GPU preset과 다른 총 용량(`CONFLICTING_OPTIONS`), 총 용량(입력 또는 preset)보다 큰 사용 가능 용량.
+- **하드웨어 입력**: GPU preset과 그 preset의 총 용량을 함께 보내면 일관된 입력입니다(웹 폼이 둘 다 보냄). 다른 총 용량만 충돌입니다.
 - **요청 무효(경고)**: 설치되지 않은 linear-attention kernel 요청(실제 실행 경로인 torch fallback으로 계산), `max_live_sequences`, template이 쓰지 않는 template 옵션.
 - **reference 경고**: adapter를 끈 같은 모델을 reference로 쓰는 경로(DPO `frozen_base_switch`, PEFT GRPO β ≠ 0)에서 LoRA `bias`가 `all`·`lora_only`이면 학습된 base bias가 reference에도 남아 원래 base 모델과 달라집니다(plan §5.3, peft 0.21.2 `disable_adapter_layers` 경고). precompute는 학습 전에 계산하므로 해당하지 않습니다.
-- readiness: 차단 항목이 있으면 `unsupported`, reward가 GPU 밖이거나 미지정이면 `conditional`, 평가 split을 지정했는데 평가 단계를 계산 범위에서 뺐으면 `conditional`, 그 외 `ready`.
+- readiness: 차단 항목이 있으면 `unsupported`; reward가 미지정이거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 `conditional`; chat template이 processor에만 있고 환경에 Pillow·torchvision이 없으면 `conditional`; 평가 split을 지정했는데 평가 단계를 계산 범위에서 뺐으면 `conditional`; 그 외 `ready`.
 
 ## 15. 참고
 

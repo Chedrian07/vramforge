@@ -120,3 +120,38 @@ def test_relative_links_resolve() -> None:
         if Path(target).name in OTHER_AGENT_DOCS and not path.exists():
             continue
         assert path.exists(), target
+
+
+def test_every_fit_reason_the_engine_returns_is_documented() -> None:
+    engine = (
+        ROOT / "packages" / "estimator" / "src" / "vramforge_estimator" / "memory" / "engine.py"
+    )
+    reasons = set(re.findall(r'reason="([a-z_]+)"', engine.read_text(encoding="utf-8")))
+    assert {"load_budget_insufficient", "floor_exceeds_capacity", "unsupported"} <= reasons
+    text = DOC.read_text(encoding="utf-8")
+    assert {r for r in reasons if f"`{r}`" not in text} == set()
+
+
+def test_load_budget_example_matches_the_engine() -> None:
+    from vramforge_estimator.memory.engine import LoadBudget
+
+    text = DOC.read_text(encoding="utf-8")
+    budget = LoadBudget(s_load=7_765_103_072, quantized=True)
+    assert "7,765,103,072 B" in text and "9,586,547,003 B" in text
+    assert not budget.exceeded(9_586_547_003) and budget.exceeded(9_586_547_002)
+    assert 'device_map={"": 0}' in text and "max_memory" in text
+
+
+def test_padding_and_evidence_rules_are_documented() -> None:
+    assert {"padding", "evidence", "hardware-fit"} <= anchors()
+    text = DOC.read_text(encoding="utf-8")
+    for needle in (
+        "has_padding",
+        "cat(prompt_mask, completion_mask)",
+        "`evidence_level`",
+        "is_embedding",
+        "receives_grad",
+        "peft_target_spec",
+        "LOAD_BUDGET_EXCEEDED",
+    ):
+        assert needle in text, needle
