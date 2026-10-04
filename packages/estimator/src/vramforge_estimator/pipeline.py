@@ -33,11 +33,14 @@ or preservation violated → unsupported; preservation unknown → conditional; 
 was cancelled or needs input is never `ready`), `estimate_evidence` from the memory estimate
 (`metadata_only` when only the inventory exists) and `hardware_fit` from the primary scenario —
 or, when there is no primary scenario (e.g. GRPO without an explicit completion budget), the worst
-outcome over all scenarios (exceeds > unknown > low_margin > expected_fit). A fit verdict is
-withheld (unknown) for every scenario while some row lengths are unverified (sample scan or failed
-rows; plan §10.3). GRPO context is checked per scenario (prompt + budget, plan §8.3): the result-
-level check uses the chosen budget or the smallest candidate, and a larger candidate that exceeds
-the context only withholds its own scenario's fit.
+outcome over all scenarios (exceeds > unknown > low_margin > expected_fit). No scenario keeps a
+length-dependent verdict while row lengths are unverified (plan §10.3): an incomplete or sample
+scan turns them into unknown with reason `scan_incomplete` (a run that stopped on an incomplete
+scan reports that reason as its summary fit), failed rows withhold positive verdicts; verdicts that
+do not depend on lengths (resident floor or loading budget over capacity) stay. Issues of the memory
+estimate are reported in the result like every other stage's. GRPO context is checked per scenario
+(prompt + budget, plan §8.3): the result-level check uses the chosen budget or the smallest
+candidate, and a larger candidate that exceeds the context only withholds its own scenario's fit.
 
 The signatures are owned by the orchestrator; the body is implemented by the api agent.
 """
@@ -53,7 +56,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from vramforge_estimator import (
     __version__,
@@ -154,6 +157,15 @@ _NEEDS_INPUT_CODES = frozenset(
     }
 )
 _ROLE_FIELDS = ("system", "prompt", "chosen", "rejected", "completion", "messages", "text")
+# Fit verdicts that do not depend on row lengths: the resident floor, the loading budget, an
+# unsupported setup and "no hardware selected" stay when lengths are unverified (plan §10.3).
+_LENGTH_INDEPENDENT_FITS = frozenset(
+    {"not_evaluated", "floor_exceeds_capacity", "load_budget_insufficient", "unsupported"}
+)
+SCAN_INCOMPLETE_FIT_MESSAGE = (
+    "데이터셋 전체를 분석하지 않아(샘플 분석 또는 끝나지 않은 스캔) 적합 판정을 보류합니다. 확인한 "
+    "row의 최대 길이는 데이터셋 전체의 최대 길이가 아닐 수 있습니다."
+)
 # Column kinds (`DatasetColumn.kind`) each role accepts; "other" (e.g. all-null preview) passes.
 # Same rule as the inspector's mapping analysis (inspection.dataset_mapping.ROLE_KINDS).
 _ROLE_KINDS: dict[str, frozenset[str]] = {
@@ -1298,38 +1310,61 @@ class _Run:
             margin_policy=request.margin_policy,
             readiness=readiness,
         )
-        estimate = self.guard_unverified_fits(estimate)
         estimate = self.guard_context_fits(estimate)
+        estimate = self.guard_unverified_fits(estimate)
         self.result.memory = estimate
         self.result.hardware_fit = _summary_fit(estimate)
         self.collect_estimate_notes(estimate)
         self.secondary_estimates()
 
-    def guard_unverified_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
-        """No fit verdict unless every row's length is known (plan §10.3: a fit needs the full
-        analysis). Applies to every scenario of sample scans and of scans with rows that failed
-        to tokenize, so neither the summary nor a scenario card claims a fit."""
+    def scan_incomplete(self) -> bool:
+        """Not every row of the split was analyzed (partial/failed coverage or a sample scan)."""
         scan_result = self.result.dataset_scan
-        if (
-            scan_result is not None
-            and scan_result.coverage is ScanCoverage.COMPLETE
-            and not scan_result.rows_failed
-        ):
-            return estimate
-        message = (
-            "일부 row의 길이를 확인하지 못해(샘플 분석 또는 처리 실패 row) 적합 판정을 보류합니다."
+        return scan_result is not None and (
+            scan_result.coverage is not ScanCoverage.COMPLETE
+            or self.request.dataset.scan_mode is ScanMode.SAMPLE
         )
+
+    def guard_unverified_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
+        """No fit verdict that depends on unverified row lengths (plan §10.3: an expected fit
+        needs the full analysis), for every scenario so neither the summary nor a card claims one.
+
+        - Not every row was analyzed (partial coverage or a sample scan): each length-dependent
+          verdict (expected fit, low margin, peak over capacity) becomes UNKNOWN with reason
+          `scan_incomplete`. Verdicts that do not depend on lengths stay (the resident floor alone
+          over capacity, the loading budget, unsupported, not evaluated).
+        - Every row was read but some failed to tokenize: positive verdicts (expected fit, low
+          margin) become UNKNOWN (`unknown_components`); a peak over capacity stays exceeded.
+        """
+        scan_result = self.result.dataset_scan
+        reason: Literal["scan_incomplete", "unknown_components"]
+        if self.scan_incomplete():
+            reason = "scan_incomplete"
+            message = SCAN_INCOMPLETE_FIT_MESSAGE
+            detail = "scan_incomplete"
+            statuses = {HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN, HardwareFit.EXCEEDS}
+        elif scan_result is not None and scan_result.rows_failed:
+            reason = "unknown_components"
+            message = (
+                "처리하지 못한 row가 있어 데이터셋의 최대 길이를 확인하지 못했으므로 적합 판정을 "
+                "보류합니다."
+            )
+            detail = "lengths_unverified"
+            statuses = {HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN}
+        else:
+            return estimate
         withheld = False
         scenarios = []
         for scenario in estimate.scenarios:
             fit = scenario.hardware_fit
-            if fit.status in (HardwareFit.EXPECTED_FIT, HardwareFit.LOW_MARGIN):
+            if fit.status in statuses and fit.reason not in _LENGTH_INDEPENDENT_FITS:
                 withheld = True
                 fit = fit.model_copy(
                     update={
                         "status": HardwareFit.UNKNOWN,
-                        "reason": "unknown_components",
+                        "reason": reason,
                         "message": message,
+                        "utilization_ratio": None,  # computed from unverified lengths
                     }
                 )
             scenarios.append(scenario.model_copy(update={"hardware_fit": fit}))
@@ -1341,10 +1376,25 @@ class _Run:
                 message,
                 severity=Severity.WARNING,
                 stage=Stage.ESTIMATING,
-                reason="lengths_unverified",
+                reason=detail,
             )
         )
         return estimate.model_copy(update={"scenarios": scenarios})
+
+    def withhold_unestimated_fit(self) -> None:
+        """A run that stopped on an incomplete scan has no scenario to judge: the summary still
+        says why the fit is unknown (unless no hardware was selected)."""
+        if (
+            self.result.hardware_fit is None
+            and self.request.hardware.mode is not HardwareMode.CAPACITY_ONLY
+            and self.scan_incomplete()
+            and self.can_estimate()
+        ):
+            self.result.hardware_fit = HardwareFitResult(
+                status=HardwareFit.UNKNOWN,
+                reason="scan_incomplete",
+                message=SCAN_INCOMPLETE_FIT_MESSAGE,
+            )
 
     def guard_context_fits(self, estimate: MemoryEstimate) -> MemoryEstimate:
         """A GRPO budget whose prompt + completion exceeds the context gets no positive fit."""
@@ -1385,6 +1435,8 @@ class _Run:
                     unknown.setdefault(u.name, u)
         result.excluded_components = list(excluded.values())
         result.unknown_components = list(unknown.values())
+        for issue in estimate.issues:  # e.g. a loading-budget warning of the memory engine
+            self.note(issue)
         primary = next(
             (s for s in estimate.scenarios if s.scenario_id == estimate.primary_scenario_id),
             estimate.scenarios[0] if estimate.scenarios else None,
@@ -1535,6 +1587,7 @@ def analyze(request: AnalysisRequest, ctx: JobContext) -> AnalysisResult:
         stopped = halting_issue(run.result)
         if stopped is not None and stopped.code is ErrorCode.CANCELLED:
             run.halted_status = JobStatus.CANCELLED
+    run.withhold_unestimated_fit()
     run.result.status = run.status_axes()
     return run.result
 
@@ -1731,6 +1784,7 @@ def _recompute(
             run.estimate(plan)
     except _Halt:
         pass
+    run.withhold_unestimated_fit()
     result.status = run.status_axes()
     return result
 

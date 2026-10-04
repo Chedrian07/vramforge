@@ -39,6 +39,7 @@ from vramforge_estimator.schemas import (
     ErrorCode,
     EvidenceLevel,
     HardwareFit,
+    HardwareFitResult,
     JobStatus,
     ScanCoverage,
     Stage,
@@ -590,6 +591,13 @@ def test_sample_scan_withholds_the_fit_verdict(
     assert result.status.scan_coverage is ScanCoverage.PARTIAL
     assert result.status.hardware_fit is HardwareFit.UNKNOWN
     assert result.status.training_readiness is TrainingReadiness.CONDITIONAL
+    (card,) = result.memory.scenarios
+    assert card.hardware_fit.reason == "scan_incomplete"
+    assert card.hardware_fit.utilization_ratio is None
+    assert result.hardware_fit.reason == "scan_incomplete"
+    assert "적합 판정을 보류" in result.hardware_fit.message
+    reasons = [w.details.get("reason") for w in result.warnings]
+    assert reasons.count("scan_incomplete") == 1
 
 
 def test_compatibility_blockers_and_warnings_are_surfaced(
@@ -888,3 +896,118 @@ def test_unreadable_split_is_not_called_empty(
     assert stopped.code is ErrorCode.SCAN_PARTIAL
     assert stopped.user_message == read_error.user_message
     assert result.status.scan_coverage is ScanCoverage.FAILED
+
+
+def _fit(status: HardwareFit, reason: str) -> HardwareFitResult:
+    return HardwareFitResult(
+        status=status, reason=reason, message="엔진 판정", capacity_bytes=80 * GiB
+    )
+
+
+def test_incomplete_scan_withholds_length_dependent_verdicts_only(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """plan §10.3: on partial data no expected fit, low margin or peak-over-capacity verdict; the
+    resident floor (and loading budget) over capacity does not depend on lengths and stays."""
+    verdicts = {
+        "budget_1024": _fit(HardwareFit.EXPECTED_FIT, "fits_with_margin"),
+        "budget_2048": _fit(HardwareFit.LOW_MARGIN, "margin_insufficient"),
+        "budget_4096": _fit(HardwareFit.EXCEEDS, "high_exceeds_capacity"),
+        "budget_8192": _fit(HardwareFit.EXCEEDS, "floor_exceeds_capacity"),
+    }
+    scenarios = [
+        scenario(sid).model_copy(update={"hardware_fit": fit}) for sid, fit in verdicts.items()
+    ]
+    FakeModules(
+        scan_coverage=ScanCoverage.PARTIAL,
+        estimate_memory=lambda *a, **k: memory_estimate(scenarios, primary=None),
+    ).install(monkeypatch)
+    request = example_request(
+        **{
+            "dataset.scan_mode": "sample",
+            "dataset.sample_rows": 2,
+            "hardware": {"mode": "custom", "device_total_bytes": 80 * GiB},
+        }
+    )
+    result = analyze(request, ctx)
+    fits = {
+        s.scenario_id: (s.hardware_fit.status, s.hardware_fit.reason)
+        for s in result.memory.scenarios
+    }
+    assert fits == {
+        "budget_1024": (HardwareFit.UNKNOWN, "scan_incomplete"),
+        "budget_2048": (HardwareFit.UNKNOWN, "scan_incomplete"),
+        "budget_4096": (HardwareFit.UNKNOWN, "scan_incomplete"),
+        "budget_8192": (HardwareFit.EXCEEDS, "floor_exceeds_capacity"),
+    }
+    assert result.hardware_fit.status is HardwareFit.EXCEEDS  # worst: the floor never fits
+
+
+def test_sample_scan_that_read_every_row_still_withholds_the_fit(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeModules(
+        estimate_memory=lambda *a, **k: memory_estimate(
+            [
+                scenario("budget_1024").model_copy(
+                    update={"hardware_fit": _fit(HardwareFit.EXPECTED_FIT, "fits_with_margin")}
+                )
+            ]
+        )
+    ).install(monkeypatch)
+    request = example_request(
+        **{
+            "dataset.scan_mode": "sample",
+            "dataset.sample_rows": 100,
+            "hardware": {"mode": "custom", "device_total_bytes": 80 * GiB},
+        }
+    )
+    result = analyze(request, ctx)
+    assert result.status.scan_coverage is ScanCoverage.COMPLETE
+    assert result.hardware_fit.status is HardwareFit.UNKNOWN
+    assert result.hardware_fit.reason == "scan_incomplete"
+
+
+@pytest.mark.parametrize(
+    ("hardware", "expected"),
+    [
+        ({"mode": "custom", "device_total_bytes": 80 * GiB}, "scan_incomplete"),
+        ({"mode": "capacity_only"}, None),
+    ],
+)
+def test_run_stopped_by_an_incomplete_scan_says_why_the_fit_is_unknown(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch, hardware: dict, expected: str | None
+) -> None:
+    FakeModules(scan_coverage=ScanCoverage.PARTIAL).install(monkeypatch)
+    result = analyze(example_request(hardware=hardware), ctx)
+    assert terminal_status(result) is JobStatus.PARTIAL and result.memory is None
+    if expected is None:
+        assert result.hardware_fit is None
+        assert result.status.hardware_fit is HardwareFit.NOT_EVALUATED
+    else:
+        assert result.hardware_fit.status is HardwareFit.UNKNOWN
+        assert result.hardware_fit.reason == expected
+        assert result.status.hardware_fit is HardwareFit.UNKNOWN
+
+
+def test_memory_estimate_issues_are_reported(
+    ctx: CachingContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vramforge_estimator.schemas import Severity
+
+    budget = issue(
+        ErrorCode.LOAD_BUDGET_EXCEEDED,
+        "모델 로딩 단계의 임시 메모리가 가용량에 가깝습니다.",
+        stage=Stage.ESTIMATING,
+    ).model_copy(update={"severity": Severity.WARNING})
+    unknown = issue(ErrorCode.UNKNOWN_MEMORY_COMPONENT, "커널 workspace를 산정할 수 없습니다.")
+
+    def estimate(*args, **kwargs):
+        return memory_estimate().model_copy(update={"issues": [budget, unknown]})
+
+    FakeModules(estimate_memory=estimate).install(monkeypatch)
+    result = analyze(example_request(), ctx)
+    assert terminal_status(result) is JobStatus.COMPLETED
+    assert budget in result.warnings
+    assert unknown in result.errors  # severity decides where it is listed
+    assert budget in ctx.warnings  # streamed as a warning event while running
