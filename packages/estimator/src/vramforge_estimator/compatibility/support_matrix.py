@@ -185,6 +185,8 @@ def render_support_matrix(registry: ProfileRegistry | None = None) -> str:
         "- `calibrated`, `measured`: 아직 등록된 profile이 없습니다 (GPU 검증 M5, "
         "`profiles/calibrated/README.md`).",
         "- `unsupported`: 지원하지 않는 조합. 숫자 대신 원인을 반환합니다.",
+        "- 결과의 근거 등급(`MemoryEstimate.evidence_level`)은 이 표의 objective × strategy "
+        "등급을 그대로 씁니다. `metadata_only` 등급이면 전체 VRAM 적합 판정을 하지 않습니다.",
         "- readiness `ready`는 backend 조합 기준입니다. 요청 단위 조건(예: GRPO reward 미지정)은 "
         "결과를 `conditional`로 바꿉니다.",
         "- 등록되지 않은 구조(adapter 없음)는 metadata만 반환하며 메모리 수치를 만들지 않습니다.",

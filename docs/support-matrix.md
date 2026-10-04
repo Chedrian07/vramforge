@@ -9,6 +9,7 @@ objective × architecture × strategy × backend 조합의 지원 등급입니�
 - `analytic`: 명시적 allocation·workspace 가정을 가진 정적 추정 (GPU 실측 아님).
 - `calibrated`, `measured`: 아직 등록된 profile이 없습니다 (GPU 검증 M5, `profiles/calibrated/README.md`).
 - `unsupported`: 지원하지 않는 조합. 숫자 대신 원인을 반환합니다.
+- 결과의 근거 등급(`MemoryEstimate.evidence_level`)은 이 표의 objective × strategy 등급을 그대로 씁니다. `metadata_only` 등급이면 전체 VRAM 적합 판정을 하지 않습니다.
 - readiness `ready`는 backend 조합 기준입니다. 요청 단위 조건(예: GRPO reward 미지정)은 결과를 `conditional`로 바꿉니다.
 - 등록되지 않은 구조(adapter 없음)는 metadata만 반환하며 메모리 수치를 만들지 않습니다.
 
@@ -18,12 +19,12 @@ objective × architecture × strategy × backend 조합의 지원 등급입니�
 
 | objective | architecture adapter | profile | environment | full | lora | qlora |
 |---|---|---|---|---|---|---|
-| sft | `dense_decoder` | dense-decoder@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
-| sft | `qwen3_5_hybrid` | qwen3_5-hybrid@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
-| dpo | `dense_decoder` | dense-decoder@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
-| dpo | `qwen3_5_hybrid` | qwen3_5-hybrid@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
-| grpo | `dense_decoder` | dense-decoder@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
-| grpo | `qwen3_5_hybrid` | qwen3_5-hybrid@1.0.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| sft | `dense_decoder` | dense-decoder@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| sft | `qwen3_5_hybrid` | qwen3_5-hybrid@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| dpo | `dense_decoder` | dense-decoder@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| dpo | `qwen3_5_hybrid` | qwen3_5-hybrid@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| grpo | `dense_decoder` | dense-decoder@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
+| grpo | `qwen3_5_hybrid` | qwen3_5-hybrid@1.1.0 | cuda-trl-1.14.1 | analytic / ready | analytic / ready | analytic / ready |
 
 ## 학습 환경
 
@@ -55,7 +56,7 @@ objective × architecture × strategy × backend 조합의 지원 등급입니�
 
 ## Profile 상세
 
-### dense-decoder (1.0.0) — `dense_decoder`
+### dense-decoder (1.1.0) — `dense_decoder`
 
 Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) profile
 
@@ -68,7 +69,7 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 - load dtype 기본값: `bfloat16`
   - `bfloat16`: 제품 기본값. 내보내는 설정에 model_init_kwargs.dtype=bfloat16을 고정합니다.
   - `float32`: TRL 1.14.1 기본값(model_init_kwargs.dtype 미지정). 비양자화 모듈·residual·rollout KV cache가 fp32가 됩니다.
-- device_map `auto` 예산 계수: quantized 0.81, dense 0.9. 단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5).
+- device_map `auto` 예산 계수: quantized 0.81, dense 0.9. 단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5). 용량을 알면 S_load가 계수 x 용량을 넘을 때 load_budget_insufficient로 판정합니다 (해결: model_init_kwargs의 device_map={"": 0} 또는 max_memory).
 - 4-bit preset: bitsandbytes nf4/fp4 (기본 nf4), double quant on, compute `bfloat16`, storage `uint8`, blocksize 64/256, 제외 모듈 lm_head. 정확히 nn.Linear인 모듈만 4-bit로 바뀌고 embedding·norm·lm_head는 load dtype을 유지합니다 (docs/research/loading-quantization-peft.md §Q2).
 - attention 경로: `full_attention` → `sdpa` (지원: full_attention: sdpa, eager)
 - loss 경로 dpo: 기본 `trl_fused_logprob`, 지원 trl_fused_logprob. 전 위치 fp32 logits + TRL Triton fused log-prob kernel (chunked 경로는 liger-kernel 필요).
@@ -96,9 +97,9 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 | dpo | full | analytic | ready | reference 기본값은 두 번째 전체 모델(standalone_model)입니다. |
 | dpo | lora | analytic | ready | reference 기본값은 adapter를 끈 같은 모델(frozen_base_switch)입니다. |
 | dpo | qlora | analytic | ready | reference 기본값은 adapter를 끈 같은 4-bit 모델(frozen_base_switch)입니다. |
-| grpo | full | analytic | ready | beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없으면 조건부 결과입니다. |
-| grpo | lora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다. |
-| grpo | qlora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다. |
+| grpo | full | analytic | ready | beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
+| grpo | lora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
+| grpo | qlora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
 
 | 지원하지 않는 옵션 | 이유 |
 |---|---|
@@ -123,6 +124,7 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 | `training.lora.dropout (dpo)` | TRL DPOConfig.disable_dropout=True가 LoRA dropout을 포함한 모든 dropout을 0으로 만들므로 0으로 계산하고 요청 무효로 기록합니다. |
 | `training.template` | chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다. |
 | `training.loss_kernel (sft)` | chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남). |
+| `training.processing_class` | chat template이 processor 파일에만 있으면 AutoProcessor(processor)로 기록하고, 이 환경에 Pillow·torchvision이 없어 조건부 결과로 표시합니다. template이 없는 AutoTokenizer로 대체하지 않습니다. |
 | `unsupported_options` | 실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3). |
 
 | workspace 가정 (ASSUMPTION) | low | high | 근거 |
@@ -131,7 +133,7 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 | library workspace | 4 MiB (4,194,304 B) | 128 MiB (134,217,728 B) | docs/research/loading-quantization-peft.md §Q10.2 |
 | allocator slack (할당량 대비) | 5% | 15% | 가정 (docs/research/loading-quantization-peft.md §Q10.2: 단편화 미정) |
 
-### qwen3_5-hybrid (1.0.0) — `qwen3_5_hybrid`
+### qwen3_5-hybrid (1.1.0) — `qwen3_5_hybrid`
 
 Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) profile
 
@@ -146,7 +148,7 @@ Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/G
 - load dtype 기본값: `bfloat16`
   - `bfloat16`: 제품 기본값. 내보내는 설정에 model_init_kwargs.dtype=bfloat16을 고정합니다.
   - `float32`: TRL 1.14.1 기본값(model_init_kwargs.dtype 미지정). 비양자화 모듈·residual·rollout cache가 fp32가 됩니다.
-- device_map `auto` 예산 계수: quantized 0.81, dense 0.9. 단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5).
+- device_map `auto` 예산 계수: quantized 0.81, dense 0.9. 단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5). 용량을 알면 S_load가 계수 x 용량을 넘을 때 load_budget_insufficient로 판정합니다 (해결: model_init_kwargs의 device_map={"": 0} 또는 max_memory).
 - 4-bit preset: bitsandbytes nf4/fp4 (기본 nf4), double quant on, compute `bfloat16`, storage `uint8`, blocksize 64/256, 제외 모듈 lm_head. nn.Linear만 4-bit로 바뀌고(비전 Linear 포함) embedding·norm·conv1d·A_log·dt_bias·lm_head는 load dtype을 유지합니다 (docs/research/loading-quantization-peft.md §Q2).
 - attention 경로: `full_attention` → `sdpa`, `linear_attention` → `torch_fallback` (지원: full_attention: sdpa, eager; linear_attention: torch_fallback)
 - loss 경로 dpo: 기본 `trl_fused_logprob`, 지원 trl_fused_logprob. 전 위치 fp32 logits + TRL Triton fused log-prob kernel (chunked 경로는 liger-kernel 필요).
@@ -174,13 +176,14 @@ Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/G
 | dpo | full | analytic | ready | reference 기본값은 두 번째 전체 모델(standalone_model)입니다. |
 | dpo | lora | analytic | ready | reference 기본값은 adapter를 끈 같은 모델(frozen_base_switch)입니다. |
 | dpo | qlora | analytic | ready | reference 기본값은 adapter를 끈 같은 4-bit 모델(frozen_base_switch)입니다. |
-| grpo | full | analytic | ready | beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없으면 조건부 결과입니다. |
-| grpo | lora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다. |
-| grpo | qlora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다. |
+| grpo | full | analytic | ready | beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
+| grpo | lora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
+| grpo | qlora | analytic | ready | Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다. |
 
 | 지원하지 않는 옵션 | 이유 |
 |---|---|
-| `training.packing` | packing은 max_length 정수가 필수이고 bfd(절단)·bfd_split(분할)·wrapped(중간 절단) 모두 엄격 무절단 계약을 위반합니다. linear attention의 packed 경계 처리도 미확인입니다. |
+| `training.packing` | packing은 max_length 정수가 필수이고 bfd(절단)·bfd_split(분할)·wrapped(중간 절단) 모두 엄격 무절단 계약을 위반합니다. linear attention torch fallback은 packed 경계도 지키지 않습니다(다음 항목). |
+| `training.packing (linear_attention torch_fallback)` | torch fallback 경로는 packing된 sequence 경계(cu_seqlens)를 버려 conv·recurrent state가 이웃 sample과 섞입니다 (docs/research/architecture-memory.md §2.1). |
 | `training.offload` | 단일 GPU TRL 경로에는 parameter/optimizer offload가 없고 activation offloading 메모리 모델은 구현되지 않았습니다. |
 | `training.compile` | torch.compile 메모리 profile이 없습니다. |
 | `training.loss_kernel=liger` | liger-kernel이 학습 환경에 없습니다 (TRL ImportError). |
@@ -203,6 +206,7 @@ Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/G
 | `training.lora.dropout (dpo)` | TRL DPOConfig.disable_dropout=True가 LoRA dropout을 포함한 모든 dropout을 0으로 만들므로 0으로 계산하고 요청 무효로 기록합니다. |
 | `training.template` | chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다. |
 | `training.loss_kernel (sft)` | chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남). |
+| `training.processing_class` | chat template이 processor 파일에만 있으면 AutoProcessor(processor)로 기록하고, 이 환경에 Pillow·torchvision이 없어 조건부 결과로 표시합니다. template이 없는 AutoTokenizer로 대체하지 않습니다. |
 | `unsupported_options` | 실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3). |
 
 | workspace 가정 (ASSUMPTION) | low | high | 근거 |

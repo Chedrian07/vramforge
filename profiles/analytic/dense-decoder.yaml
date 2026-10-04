@@ -3,7 +3,7 @@
 # Matching is structural (vramforge_estimator.architectures.match_adapter); model_types and
 # architectures below are informational. Facts cite docs/research/*.md.
 id: dense-decoder
-version: "1.0.0"
+version: "1.1.0"
 description: "Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) profile"
 architecture_adapter: dense_decoder
 environment: cuda-trl-1.14.1
@@ -46,17 +46,17 @@ support:
     strategy: full
     grade: analytic
     readiness: ready
-    note: "beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없으면 조건부 결과입니다."
+    note: "beta != 0이면 reference 전체 모델이 추가로 상주합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다."
   - objective: grpo
     strategy: lora
     grade: analytic
     readiness: ready
-    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다."
+    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다."
   - objective: grpo
     strategy: qlora
     grade: analytic
     readiness: ready
-    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없으면 조건부 결과입니다."
+    note: "Transformers 공유 policy rollout만 지원합니다. reward가 없거나 GPU 밖이거나 아직 분석하지 않은 local reward 모델이면 조건부 결과입니다."
 
 loading:
   entrypoint: trl_model_id
@@ -73,7 +73,7 @@ loading:
     float32: "TRL 1.14.1 기본값(model_init_kwargs.dtype 미지정). 비양자화 모듈·residual·rollout KV cache가 fp32가 됩니다."
   device_map: auto
   device_map_budget_factor: { quantized: 0.81, dense: 0.9 }
-  device_map_note: "단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5)."
+  device_map_note: "단일 GPU, max_memory 미지정: get_balanced_memory 0.9 x bnb 4-bit 0.90 (docs/research/loading-quantization-peft.md §4.5). 용량을 알면 S_load가 계수 x 용량을 넘을 때 load_budget_insufficient로 판정합니다 (해결: model_init_kwargs의 device_map={\"\": 0} 또는 max_memory)."
 
 quantization:
   library: bitsandbytes
@@ -189,6 +189,8 @@ fallback_rules:
     behavior: "chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다."
   - option: training.loss_kernel (sft)
     behavior: "chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남)."
+  - option: training.processing_class
+    behavior: "chat template이 processor 파일에만 있으면 AutoProcessor(processor)로 기록하고, 이 환경에 Pillow·torchvision이 없어 조건부 결과로 표시합니다. template이 없는 AutoTokenizer로 대체하지 않습니다."
   - option: unsupported_options
     behavior: "실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3)."
 

@@ -226,3 +226,18 @@ def test_validation_presets_match_every_profile() -> None:
         for objective, preset in prof.presets.items():
             assert PRESET_MICROBATCH[objective] == preset.microbatch
             assert PRESET_ACCUMULATION[objective] == preset.accumulation
+
+
+def test_profiles_document_the_processor_and_packing_rules() -> None:
+    reg = load_registry()
+    for prof in reg.analytic.values():
+        assert "training.processing_class" in {r.option for r in prof.fallback_rules}
+        assert "load_budget_insufficient" in prof.loading.device_map_note
+        grpo = [s for s in prof.support if s.objective.value == "grpo"]
+        assert all("local reward" in s.note for s in grpo)
+    hybrid = reg.profile_for_adapter("qwen3_5_hybrid")
+    assert hybrid is not None
+    options = {u.option for u in hybrid.unsupported_options}
+    assert "training.packing (linear_attention torch_fallback)" in options
+    env = reg.environment_for(hybrid)
+    assert {"pillow", "torchvision"} <= set(env.kernels.absent)  # AutoProcessor is conditional
