@@ -100,9 +100,9 @@ def test_report_is_korean_escaped_and_html_free(
         assert section in text
     assert "<script>" not in text and "<img" not in text
     assert "&lt;script&gt;" in text
-    assert "\\[click\\]\\(javascript:alert\\(1\\)\\)" in text
+    assert "\\[click\\](javascript:alert(1))" in text  # no link can form
     assert "\\*\\*bold\\*\\*" in text
-    assert "hf:&lt;script&gt;alert\\(1\\)&lt;/script&gt;\\|x" in text  # pipe cannot split a cell
+    assert "hf:&lt;script&gt;alert(1)&lt;/script&gt;\\|x" in text  # pipe cannot split a cell
     assert SECRET not in text and "/home/alice" not in text
     assert "10.0 GiB (10,737,418,240 bytes)" in text
     assert "정적 추정 결과입니다" in text

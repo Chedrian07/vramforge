@@ -25,7 +25,9 @@ from vramforge_estimator.units import GiB
 
 from .sanitize import redact_text
 
-_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+!|~])")
+# Characters that can start inline Markdown constructs (code, emphasis, links/images, tables,
+# strikethrough). With "[" and "]" escaped no link or image can form, so "(", "!" stay readable.
+_MD_SPECIAL = re.compile(r"([\\`*_\[\]|~])")
 
 COVERAGE_KO = {
     ScanCoverage.NOT_STARTED: "시작 전",
@@ -235,9 +237,11 @@ def render_report(result: AnalysisResult) -> str:
                 lines += ["분위수는 근사값입니다 (근사 분위수). count와 max는 정확한 값입니다.", ""]
     context = result.context_validation
     if context is not None:
+        observed = context.max_observed_length
+        limit = context.effective_limit
         lines.append(
-            f"- context: 관측 최대 {context.max_observed_length or '-'} 토큰, "
-            f"상한 {context.effective_limit or '미상'} "
+            f"- context: 관측 최대 {f'{observed:,}' if observed is not None else '-'} 토큰, "
+            f"상한 {f'{limit:,}' if limit is not None else '미상'} "
             f"({esc(context.limit_source or '근거 없음')}), "
             f"상태 {esc(context.status)}"
         )
