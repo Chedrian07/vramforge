@@ -720,6 +720,8 @@ def _build(
         dependency_lock_digest=env.dependency_lock_digest,
         architecture_adapter=profile.architecture_adapter,
         trainer_adapter=trainer_id_for(t.objective),
+        # preprocessing adapters follow the same "trl-<version>-<objective>" naming
+        preprocessing_adapter=trainer_id_for(t.objective),
         objective=t.objective,
         strategy=t.strategy,
         loading_scope=scope,

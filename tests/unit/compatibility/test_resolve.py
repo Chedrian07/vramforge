@@ -68,7 +68,7 @@ def test_plan_example_grpo_resolution(adapter) -> None:
     cfg, report = resolve(request(), inv, None)
     assert cfg is not None and report.blockers == []
     assert (cfg.profile_id, cfg.architecture_adapter) == ("qwen3_5-hybrid", HYBRID)
-    assert cfg.trainer_adapter == "trl-1.14.1-grpo"
+    assert cfg.trainer_adapter == cfg.preprocessing_adapter == "trl-1.14.1-grpo"
     assert cfg.dependency_lock_digest and cfg.dependency_lock_digest.startswith("sha256:")
     assert cfg.loading_scope == "full_checkpoint"
     assert cfg.load_dtype == "bfloat16"
