@@ -1,0 +1,15 @@
+{%- for message in messages -%}
+    {%- if message.role == 'assistant' -%}
+        {%- generation -%}
+        {{- '<|im_start|>assistant\n<think></think>' ~ message.content ~ '<|im_end|>' -}}
+        {%- endgeneration -%}
+    {%- else -%}
+        {{- '<|im_start|>' ~ message.role ~ '\n' ~ message.content ~ '<|im_end|>' -}}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<|im_start|>assistant\n' -}}
+    {%- if enable_thinking is false -%}
+        {{- '<think></think>' -}}
+    {%- endif -%}
+{%- endif -%}
