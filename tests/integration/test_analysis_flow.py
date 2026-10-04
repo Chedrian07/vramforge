@@ -105,7 +105,20 @@ def test_full_flow_from_upload_to_delete(
         assert resp.headers["content-disposition"] == f'attachment; filename="{filename}"'
         assert resp.headers["x-content-type-options"] == "nosniff"
     exported = json.loads(client.get(f"/api/v1/analyses/{aid}/export?format=json").content)
-    assert exported["memory"] == result["memory"]  # export matches the stored numbers
+    # plan §19.4: byte numbers, fingerprints, settings and warnings match what the UI shows
+    for key in (
+        "memory",
+        "analysis_fingerprint",
+        "requested_config",
+        "resolved_config",
+        "status",
+        "warnings",
+        "errors",
+        "dataset_scan",
+    ):
+        assert exported[key] == result[key], key
+    report = client.get(f"/api/v1/analyses/{aid}/export?format=md").text
+    assert result["analysis_fingerprint"] in report.replace("\\_", "_")
     trainer = yaml.safe_load(
         client.get(f"/api/v1/analyses/{aid}/export?format=trainer-config").content
     )
