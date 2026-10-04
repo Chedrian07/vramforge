@@ -89,12 +89,7 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
     }
   };
 
-  const field = register("datasetReference", {
-    onBlur: () => {
-      trigger(false);
-      editedFrom.current = null;
-    },
-  });
+  const field = register("datasetReference");
   const data: DatasetInspection | null = inspection.state.status === "done" ? inspection.state.data : null;
   const inspectedRef = referenceOfKey(inspection.state.key);
   const outdated = inspectedRef != null && inspectedRef !== reference.trim();
@@ -118,6 +113,11 @@ export function DatasetSection({ inspection }: { inspection: Inspection }) {
             aria-describedby={describedBy(id, { hint, error })}
             onFocus={() => {
               editedFrom.current = getValues("datasetReference").trim();
+            }}
+            onBlur={(event) => {
+              void field.onBlur(event);
+              trigger(false);
+              editedFrom.current = null;
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
