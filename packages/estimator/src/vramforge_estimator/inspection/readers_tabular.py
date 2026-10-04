@@ -2,7 +2,9 @@
 
 - CSV: `pandas.read_csv` with the builder's exact keyword arguments (`CsvConfig.pd_read_csv_kwargs`)
   in 10,000-row chunks, each chunk `pa.Table.from_pandas`; the first chunk locks the schema like
-  datasets' ArrowWriter.
+  datasets' ArrowWriter. What pandas may buffer is bounded before it builds a chunk: no physical
+  line beyond `max_row_bytes` (a record is at least as long as each of its lines) and no chunk
+  beyond `max_batch_bytes` read.
 - Parquet: one row group at a time, cast to the schema of the split's first file.
 - Arrow: IPC stream, falling back to the IPC file format, one record batch at a time.
 
@@ -12,9 +14,10 @@ Columnar formats inside a compression wrapper and builder options that drop rows
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator, Mapping
 from dataclasses import fields as dataclass_fields
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 from .readers import (
     FileSource,
@@ -62,12 +65,21 @@ def iter_csv_file(
         }
     info.file_format = "csv"
     stream = open_decoded(source, spec.compression, limits)
+    # A custom record terminator makes physical lines meaningless as a bound.
+    guard = _CsvGuard(
+        stream,
+        max_line=None if config.lineterminator else limits.max_row_bytes,
+        max_chunk=limits.max_batch_bytes,
+    )
     try:
         try:
-            reader = pd.read_csv(stream, iterator=True, dtype=dtype, **config.pd_read_csv_kwargs)
+            reader = pd.read_csv(
+                io.BufferedReader(guard), iterator=True, dtype=dtype, **config.pd_read_csv_kwargs
+            )
         except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as exc:
             raise ShardBroken("csv_unreadable") from exc
         while True:
+            guard.start_chunk()
             try:
                 df = next(reader)
             except StopIteration:
@@ -89,6 +101,52 @@ def iter_csv_file(
             yield from _emit(table, limits, schema, info)
     finally:
         stream.close()
+
+
+class _CsvGuard(io.RawIOBase):
+    """Byte stream for pandas that raises `QuotaExceeded` before an oversized record or chunk is
+    buffered (module docstring). Lines inside one read block are bounded by the block size, so
+    only the line still open across blocks is tracked."""
+
+    def __init__(self, raw: IO[bytes], *, max_line: int | None, max_chunk: int) -> None:
+        super().__init__()
+        self._raw = raw
+        self._max_line = max_line
+        self._max_chunk = max_chunk
+        self._line = 0  # bytes of the line still open after the last block
+        self._chunk = 0  # bytes read since `start_chunk`
+
+    def readable(self) -> bool:
+        return True
+
+    def start_chunk(self) -> None:
+        self._chunk = 0
+
+    def readinto(self, buffer: Any) -> int:
+        view = memoryview(buffer).cast("B")
+        data = self._raw.read(len(view))
+        n = len(data)
+        view[:n] = data
+        self._chunk += n
+        if self._chunk > self._max_chunk:
+            raise QuotaExceeded("max_batch_bytes", self._max_chunk)
+        if self._max_line is not None and n:
+            breaks = [i for i in (data.find(b"\n"), data.find(b"\r")) if i >= 0]
+            if breaks:
+                if self._line + min(breaks) > self._max_line:
+                    raise QuotaExceeded("max_row_bytes", self._max_line)
+                self._line = n - max(data.rfind(b"\n"), data.rfind(b"\r")) - 1
+            else:
+                self._line += n
+            if self._line > self._max_line:
+                raise QuotaExceeded("max_row_bytes", self._max_line)
+        return n
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        finally:
+            super().close()
 
 
 def iter_parquet_file(

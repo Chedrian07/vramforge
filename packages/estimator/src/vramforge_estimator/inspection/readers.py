@@ -52,7 +52,8 @@ class ReaderLimits:
     max_file_bytes: int = 512 * GiB  # per data file (download and read)
     json_array_max_bytes: int = 256 * MiB  # larger JSON arrays are parsed incrementally
     max_failed_rows: int = 100_000  # unparseable records before the stream gives up
-    max_batch_bytes: int = 2 * GiB  # one Parquet row group / Arrow record batch (uncompressed)
+    # one Parquet row group / Arrow record batch (uncompressed) / CSV 10,000-row chunk (read)
+    max_batch_bytes: int = 2 * GiB
     preview_rows: int = 100
 
 

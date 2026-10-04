@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bz2
 import gzip
+import io
 import json
 import lzma
 from collections.abc import Callable
@@ -413,3 +414,53 @@ def test_records_pyarrow_cannot_read_are_row_failures(
     assert (info.rows, info.errors) == (2, 3)
     with pytest.raises(Exception):  # noqa: B017 - pyarrow rejects them, so datasets fails
         datasets_rows(path, "json")
+
+
+class _CountingReader(io.RawIOBase):
+    def __init__(self, raw: Any) -> None:
+        super().__init__()
+        self.raw = raw
+        self.count = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        n = self.raw.readinto(buffer)
+        self.count += n
+        return n
+
+
+def test_csv_giant_field_stops_before_pandas_buffers_it(tmp_path: Path) -> None:
+    path = tmp_path / "giant.csv"
+    path.write_bytes(b'text\n"' + b"x" * (8 << 20) + b'"\nok\n')
+    counter = _CountingReader(path.open("rb"))
+    source = FileSource(path.name, opener=lambda: io.BufferedReader(counter), size=None)
+    spec = FileSpec("csv", {}, None)
+    limits = ReaderLimits(max_row_bytes=64 * 1024)
+    with pytest.raises(QuotaExceeded) as excinfo:
+        list(iter_file(source, spec, limits, SchemaState(), ReadInfo()))
+    assert excinfo.value.limit == "max_row_bytes"
+    assert counter.count < 2 << 20  # stopped long before the 8 MiB field was buffered
+
+
+def test_csv_chunk_quota(tmp_path: Path) -> None:
+    path = tmp_path / "many.csv"
+    path.write_text("text\n" + "".join(f"row {i:06d}\n" for i in range(20_000)), encoding="utf-8")
+    with pytest.raises(QuotaExceeded) as excinfo:
+        read_all(path, "csv", limits=ReaderLimits(max_batch_bytes=64 * 1024))
+    assert excinfo.value.limit == "max_batch_bytes"
+    rows, _ = read_all(path, "csv", limits=ReaderLimits(max_batch_bytes=1 << 20))
+    assert len(rows) == 20_000
+
+
+def test_csv_custom_line_terminator_is_not_bounded_by_physical_lines(
+    tmp_path: Path, datasets_rows: Oracle
+) -> None:
+    path = tmp_path / "tilde.csv"
+    path.write_text("text~" + "~".join(f"r{i}" for i in range(500)) + "~", encoding="utf-8")
+    rows, _ = read_all(
+        path, "csv", options={"lineterminator": "~"}, limits=ReaderLimits(max_row_bytes=64)
+    )
+    assert len(rows) == 500
+    assert rows == datasets_rows(path, "csv", lineterminator="~")["train"]
