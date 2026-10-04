@@ -182,6 +182,22 @@ def test_profile_constants_match_the_trainer_code() -> None:
         }
 
 
+def test_registry_records_hardware_support_fallbacks_and_unpinned_runtime() -> None:
+    # plan §11.2: supported_hardware_capabilities, fallback_rules, container image digest and
+    # driver conditions are registry fields; unknown runtime pins stay null, never invented.
+    reg = load_registry()
+    env = reg.environments[ENV_ID]
+    assert env.cuda is None and env.driver is None and env.container_image_digest is None
+    for prof in reg.analytic.values():
+        assert prof.hardware.min_compute_capability == "8.0" and prof.hardware.reason
+        options = {r.option for r in prof.fallback_rules}
+        assert {"grpo.max_live_sequences", "unsupported_options"} <= options
+        assert all(r.behavior for r in prof.fallback_rules)
+    hybrid = reg.profile_for_adapter("qwen3_5_hybrid")
+    assert hybrid is not None
+    assert "training.linear_attention_kernel" in {r.option for r in hybrid.fallback_rules}
+
+
 def test_hybrid_profile_runs_linear_attention_on_the_torch_fallback() -> None:
     prof = load_registry().profile_for_adapter("qwen3_5_hybrid")
     assert prof is not None

@@ -95,6 +95,8 @@ class EnvironmentProfile(_Profile):
     platform: str
     python: str
     cuda: str | None = None
+    driver: str | None = None  # NVIDIA driver condition (plan §11.2); None = not pinned yet
+    container_image_digest: str | None = None  # None = no training image is published
     packages: dict[str, str]
     kernels: KernelInventory
     dependency_lock_digest: str
@@ -208,6 +210,20 @@ class UnsupportedOption(_Profile):
     reason: str
 
 
+class HardwareSupport(_Profile):
+    """`supported_hardware_capabilities` of plan §11.2."""
+
+    min_compute_capability: str
+    reason: str
+
+
+class FallbackRule(_Profile):
+    """`fallback_rules` of plan §11.2: what the estimate uses when a request cannot run as asked."""
+
+    option: str
+    behavior: str
+
+
 class WorkspaceRange(_Profile):
     low: float = Field(ge=0)
     high: float = Field(ge=0)
@@ -246,7 +262,9 @@ class AnalyticProfile(_Profile):
     dpo_reference_auto: dict[Literal["peft", "full"], ReferenceStrategy]
     rollout_backends: list[RolloutBackend]
     presets: dict[Objective, BatchPreset]
+    hardware: HardwareSupport
     unsupported_options: list[UnsupportedOption] = Field(default_factory=list)
+    fallback_rules: list[FallbackRule] = Field(default_factory=list)
     workspace: WorkspaceRules
     calibration_coverage: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
@@ -405,8 +423,10 @@ __all__ = [
     "PROFILES_DIR_ENV",
     "AnalyticProfile",
     "EnvironmentProfile",
+    "FallbackRule",
     "GpuProfile",
     "HardwareCatalog",
+    "HardwareSupport",
     "OptimizerRule",
     "ProfileError",
     "ProfileRegistry",

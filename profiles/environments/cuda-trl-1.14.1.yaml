@@ -10,6 +10,8 @@ description: "단일 NVIDIA GPU, PyTorch 2.14.1 + Transformers 5.18.0 + TRL 1.14
 platform: linux-cuda
 python: "3.12"
 cuda: null # CUDA toolkit/driver는 아직 고정하지 않음 (GPU 보정 M5에서 고정)
+driver: null # NVIDIA driver 조건도 GPU 보정(M5)에서 고정
+container_image_digest: null # 학습용 컨테이너 이미지는 아직 배포하지 않음 (GPU worker, M5)
 packages:
   accelerate: "1.15.0"
   bitsandbytes: "0.50.2"

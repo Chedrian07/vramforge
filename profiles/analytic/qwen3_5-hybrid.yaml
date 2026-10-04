@@ -153,6 +153,10 @@ presets:
   dpo: { microbatch: 1, accumulation: 8 }
   grpo: { microbatch: 1, accumulation: 4 }
 
+hardware:
+  min_compute_capability: "8.0"
+  reason: "bf16 autocast와 flash/memory-efficient SDPA 경로를 가정합니다. compute capability 8.0 미만 GPU는 SDPA math backend(O(T²))로 바뀔 수 있어 이 profile로 계산하지 않습니다 (docs/research/architecture-memory.md 구현 시사점 G)."
+
 unsupported_options:
   - option: training.packing
     reason: "packing은 max_length 정수가 필수이고 bfd(절단)·bfd_split(분할)·wrapped(중간 절단) 모두 엄격 무절단 계약을 위반합니다. linear attention의 packed 경계 처리도 미확인입니다."
@@ -184,6 +188,20 @@ unsupported_options:
     reason: "분산 topology adapter가 없습니다 (총 용량을 GPU 수로 나누지 않습니다)."
   - option: model.loading_scope=text_only
     reason: "비전 타워가 있는 checkpoint의 text-only 로딩은 검증하지 않았습니다."
+
+fallback_rules:
+  - option: training.linear_attention_kernel
+    behavior: "설치되지 않은 kernel(fla) 요청은 실제로 실행되는 torch fallback 경로로 계산하고 요청 무효로 기록합니다."
+  - option: grpo.max_live_sequences
+    behavior: "Transformers 생성 경로는 device의 generation batch 전체(C)를 한 번에 생성하므로 C로 계산하고 요청 무효로 기록합니다."
+  - option: training.lora.dropout (dpo)
+    behavior: "TRL DPOConfig.disable_dropout=True가 LoRA dropout을 포함한 모든 dropout을 0으로 만들므로 0으로 계산하고 요청 무효로 기록합니다."
+  - option: training.template
+    behavior: "chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다."
+  - option: training.loss_kernel (sft)
+    behavior: "chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남)."
+  - option: unsupported_options
+    behavior: "실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3)."
 
 workspace:
   cuda_context_bytes:
