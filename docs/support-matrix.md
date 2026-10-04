@@ -44,8 +44,9 @@ objective × architecture × strategy × backend 조합의 지원 등급입니�
 | transformers | 5.18.0 |
 | trl | 1.14.1 |
 
-- Python: 3.12, platform: linux-cuda, CUDA: 미고정 (GPU 보정 M5에서 고정)
+- Python: 3.12, platform: linux-cuda, CUDA: 미고정 (GPU 보정 M5에서 고정), NVIDIA driver: 미고정 (GPU 보정 M5에서 고정)
 - `dependency_lock_digest`: `sha256:ccd37fedde9c120a68463ded39d0925353779d48665408c54869ea67b210cc87`
+- 학습 컨테이너 image digest: 없음 (미배포)
 - 설치된 선택 kernel: 없음
 - 설치되지 않은 패키지: flash-linear-attention, causal-conv1d, liger-kernel, flash-attn, kernels, vllm, pillow, torchvision
 - linear attention 경로: `torch_fallback`, log-prob kernel: `trl_triton_fused`
@@ -78,6 +79,7 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 - GRPO rollout backend: transformers_shared_policy
 - batch preset (microbatch / accumulation): dpo 1/8, grpo 1/4, sft 1/8
 - calibration: 없음 (analytic만)
+- 지원 하드웨어: compute capability ≥ 8.0. bf16 autocast와 flash/memory-efficient SDPA 경로를 가정합니다. compute capability 8.0 미만 GPU는 SDPA math backend(O(T²))로 바뀔 수 있어 이 profile로 계산하지 않습니다 (docs/research/architecture-memory.md 구현 시사점 G).
 
 | optimizer | state | 비고 |
 |---|---|---|
@@ -115,6 +117,14 @@ Dense decoder (self-attention + MLP), TRL 1.14.1 SFT/DPO/GRPO 정적(analytic) p
 | `training.num_devices>1` | 분산 topology adapter가 없습니다 (총 용량을 GPU 수로 나누지 않습니다). |
 | `model.loading_scope=text_only` | 비전 타워가 있는 checkpoint의 text-only 로딩은 검증하지 않았습니다. |
 
+| fallback 규칙 | 계산에 쓰는 경로 |
+|---|---|
+| `grpo.max_live_sequences` | Transformers 생성 경로는 device의 generation batch 전체(C)를 한 번에 생성하므로 C로 계산하고 요청 무효로 기록합니다. |
+| `training.lora.dropout (dpo)` | TRL DPOConfig.disable_dropout=True가 LoRA dropout을 포함한 모든 dropout을 0으로 만들므로 0으로 계산하고 요청 무효로 기록합니다. |
+| `training.template` | chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다. |
+| `training.loss_kernel (sft)` | chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남). |
+| `unsupported_options` | 실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3). |
+
 | workspace 가정 (ASSUMPTION) | low | high | 근거 |
 |---|---|---|---|
 | CUDA context | 307 MiB (322,122,547 B) | 1.00 GiB (1,073,741,824 B) | docs/research/loading-quantization-peft.md §Q10.2 |
@@ -147,6 +157,7 @@ Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/G
 - GRPO rollout backend: transformers_shared_policy
 - batch preset (microbatch / accumulation): dpo 1/8, grpo 1/4, sft 1/8
 - calibration: 없음 (analytic만)
+- 지원 하드웨어: compute capability ≥ 8.0. bf16 autocast와 flash/memory-efficient SDPA 경로를 가정합니다. compute capability 8.0 미만 GPU는 SDPA math backend(O(T²))로 바뀔 수 있어 이 profile로 계산하지 않습니다 (docs/research/architecture-memory.md 구현 시사점 G).
 
 | optimizer | state | 비고 |
 |---|---|---|
@@ -184,6 +195,15 @@ Qwen3.5 hybrid decoder (linear attention + full attention), TRL 1.14.1 SFT/DPO/G
 | `dpo.loss_type=sft` | chosen 위치 cross-entropy의 추가 logits·log_softmax 버퍼를 모델링하지 않았습니다. |
 | `training.num_devices>1` | 분산 topology adapter가 없습니다 (총 용량을 GPU 수로 나누지 않습니다). |
 | `model.loading_scope=text_only` | 비전 타워가 있는 checkpoint의 text-only 로딩은 검증하지 않았습니다. |
+
+| fallback 규칙 | 계산에 쓰는 경로 |
+|---|---|
+| `training.linear_attention_kernel` | 설치되지 않은 kernel(fla) 요청은 실제로 실행되는 torch fallback 경로로 계산하고 요청 무효로 기록합니다. |
+| `grpo.max_live_sequences` | Transformers 생성 경로는 device의 generation batch 전체(C)를 한 번에 생성하므로 C로 계산하고 요청 무효로 기록합니다. |
+| `training.lora.dropout (dpo)` | TRL DPOConfig.disable_dropout=True가 LoRA dropout을 포함한 모든 dropout을 0으로 만들므로 0으로 계산하고 요청 무효로 기록합니다. |
+| `training.template` | chat template이 쓰지 않는 template 옵션은 무시되는 그대로 계산하고 요청 무효로 기록합니다. |
+| `training.loss_kernel (sft)` | chunked_nll을 쓸 수 없는 조합(lm_head LoRA)도 nll로 자동 전환하지 않고 차단합니다 (logits 메모리가 크게 늘어남). |
+| `unsupported_options` | 실행 경로나 메모리 모델이 없는 옵션을 조용히 무시한 채 절감량을 유지하지 않고, 수치 대신 차단 사유를 반환합니다 (plan §11.3). |
 
 | workspace 가정 (ASSUMPTION) | low | high | 근거 |
 |---|---|---|---|

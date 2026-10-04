@@ -50,8 +50,11 @@ def _environment(env: EnvironmentProfile) -> list[str]:
         *[f"| {name} | {ver} |" for name, ver in sorted(env.packages.items())],
         "",
         f"- Python: {env.python}, platform: {env.platform}, CUDA: "
-        f"{env.cuda or '미고정 (GPU 보정 M5에서 고정)'}",
+        f"{env.cuda or '미고정 (GPU 보정 M5에서 고정)'}, NVIDIA driver: "
+        f"{env.driver or '미고정 (GPU 보정 M5에서 고정)'}",
         f"- `dependency_lock_digest`: `{env.dependency_lock_digest}`",
+        "- 학습 컨테이너 image digest: "
+        + (f"`{env.container_image_digest}`" if env.container_image_digest else "없음 (미배포)"),
         f"- 설치된 선택 kernel: {', '.join(env.kernels.installed) or '없음'}",
         f"- 설치되지 않은 패키지: {', '.join(env.kernels.absent)}",
         f"- linear attention 경로: `{env.kernels.linear_attention}`, "
@@ -127,6 +130,8 @@ def _profile(p: AnalyticProfile) -> list[str]:
             f"{o.value} {b.microbatch}/{b.accumulation}" for o, b in sorted(p.presets.items())
         ),
         f"- calibration: {', '.join(p.calibration_coverage) or '없음 (analytic만)'}",
+        f"- 지원 하드웨어: compute capability ≥ {p.hardware.min_compute_capability}. "
+        f"{p.hardware.reason}",
         "",
         "| optimizer | state | 비고 |",
         "|---|---|---|",
@@ -145,6 +150,8 @@ def _profile(p: AnalyticProfile) -> list[str]:
         )
     lines += ["", "| 지원하지 않는 옵션 | 이유 |", "|---|---|"]
     lines += [f"| `{_esc(u.option)}` | {_esc(u.reason)} |" for u in p.unsupported_options]
+    lines += ["", "| fallback 규칙 | 계산에 쓰는 경로 |", "|---|---|"]
+    lines += [f"| `{_esc(r.option)}` | {_esc(r.behavior)} |" for r in p.fallback_rules]
     ws = p.workspace
     lines += [
         "",
