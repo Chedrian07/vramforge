@@ -1,8 +1,10 @@
 """Row-length artifact: Parquet part files of `LengthRecord` columns (plan.md §7.6, §16.2).
 
 Layout under ``<artifact_dir>/lengths/``: ``part-00000.parquet``, ... written atomically
-(temp file + rename) and ``manifest.json`` once the scan ends. Raw text and token ids are never
-stored. pyarrow is imported lazily so the core package imports without the analysis extra.
+(temp file + rename) and ``manifest.json`` once the scan ends. Every part's Parquet schema
+metadata carries the artifact schema id and the ``preprocess_key`` of the scan that wrote it, so
+a loaded table knows which preprocessing produced it (plan §16.3). Raw text and token ids are
+never stored. pyarrow is imported lazily so the core package imports without the analysis extra.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ LENGTHS_DIR = "lengths"
 MANIFEST = "manifest.json"
 PART_GLOB = "part-*.parquet"
 SCHEMA_ID = "vramforge/length-record@1"
+SCHEMA_META = "vramforge.schema"  # Parquet schema metadata keys of every part
+PREPROCESS_KEY_META = "vramforge.preprocess_key"
 
 COLUMNS: tuple[str, ...] = tuple(LengthRecord.model_fields)
 _INT_COLUMNS = frozenset(
@@ -99,20 +103,33 @@ def part_paths(artifact_path: Path) -> list[Path]:
     return sorted(artifact_path.glob(PART_GLOB))
 
 
-def iter_columns(paths: list[Path], columns: list[str]) -> Iterator[dict[str, list[Any]]]:
-    """Yield the requested columns of each part as Python lists."""
+def iter_parts(
+    paths: list[Path], columns: list[str]
+) -> Iterator[tuple[dict[str, list[Any]], dict[str, str]]]:
+    """Yield the requested columns of each part as Python lists, with the part's metadata."""
     import pyarrow.parquet as pq
 
     for path in paths:
         table = pq.read_table(path, columns=columns)
-        yield {c: table.column(c).to_pylist() for c in columns}
+        raw = table.schema.metadata or {}
+        metadata = {k.decode("utf-8"): v.decode("utf-8") for k, v in raw.items()}
+        yield {c: table.column(c).to_pylist() for c in columns}, metadata
+
+
+def iter_columns(paths: list[Path], columns: list[str]) -> Iterator[dict[str, list[Any]]]:
+    """Yield the requested columns of each part as Python lists."""
+    for cols, _metadata in iter_parts(paths, columns):
+        yield cols
 
 
 __all__ = [
     "COLUMNS",
     "LENGTHS_DIR",
+    "PREPROCESS_KEY_META",
     "SCHEMA_ID",
+    "SCHEMA_META",
     "iter_columns",
+    "iter_parts",
     "part_name",
     "part_paths",
     "read_manifest",

@@ -49,9 +49,13 @@ from vramforge_estimator.schemas import (
 from .artifact import (
     COLUMNS,
     LENGTHS_DIR,
+    PREPROCESS_KEY_META,
     SCHEMA_ID,
+    SCHEMA_META,
     iter_columns,
+    iter_parts,
     part_paths,
+    read_manifest,
     remove_parts,
     write_manifest,
     write_part,
@@ -343,7 +347,7 @@ def full_scan(
     state = _restore(ctx, identity, lengths_dir)
     for branch, _getter in BRANCHES[objective]:
         state.accumulators.setdefault(branch, LengthAccumulator())
-    metadata = {"vramforge.schema": SCHEMA_ID, "vramforge.preprocess_key": preprocess_key}
+    metadata = {SCHEMA_META: SCHEMA_ID, PREPROCESS_KEY_META: preprocess_key}
     constant = {
         "split": stream.split,
         "objective": objective.value,
@@ -832,7 +836,11 @@ def _literal_tokens_issue(state: _State, rows: int) -> Issue:
 
 
 def load_lengths(artifact_path: Path) -> LengthTable:
-    """Read the row-length artifact written by `full_scan` (successful rows, source order)."""
+    """Read the row-length artifact written by `full_scan` (successful rows, source order).
+
+    `LengthTable.preprocess_key` comes from the artifact itself (every part's metadata and the
+    manifest), so batch keys chain source -> preprocess -> batch (plan §16.3). Parts written by
+    different preprocessing runs are never mixed into one table."""
     wanted = [
         "row_id",
         "processing_status",
@@ -844,7 +852,13 @@ def load_lengths(artifact_path: Path) -> LengthTable:
         "rejected_total_tokens",
     ]
     table = LengthTable()
-    for cols in iter_columns(part_paths(artifact_path), wanted):
+    found: set[str] = set()
+    manifest = read_manifest(artifact_path) if artifact_path.is_dir() else None
+    if manifest is not None and isinstance(manifest.get("preprocess_key"), str):
+        found.add(manifest["preprocess_key"])
+    for cols, metadata in iter_parts(part_paths(artifact_path), wanted):
+        if metadata.get(PREPROCESS_KEY_META):
+            found.add(metadata[PREPROCESS_KEY_META])
         for i, status in enumerate(cols["processing_status"]):
             if status != "ok":
                 continue
@@ -855,4 +869,16 @@ def load_lengths(artifact_path: Path) -> LengthTable:
             table.loss_token_count.append(cols["loss_token_count"][i])
             table.chosen_total_tokens.append(cols["chosen_total_tokens"][i])
             table.rejected_total_tokens.append(cols["rejected_total_tokens"][i])
+    if len(found) > 1:
+        raise EstimatorError(
+            make_issue(
+                ErrorCode.INTERNAL_ERROR,
+                "row 길이 기록 파일에 서로 다른 전처리 결과가 섞여 있어 사용할 수 없습니다. "
+                "데이터를 다시 분석해 주세요.",
+                stage=Stage.PLANNING_BATCHES,
+                component="scan.load_lengths",
+                preprocess_keys=sorted(found),
+            )
+        )
+    table.preprocess_key = found.pop() if found else None
     return table

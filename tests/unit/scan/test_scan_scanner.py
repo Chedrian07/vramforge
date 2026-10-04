@@ -70,6 +70,44 @@ def test_artifact_has_length_record_columns_and_round_trips(make_stream, adapter
     lengths = load_lengths(out.artifact_path)
     assert lengths.sequence_tokens == LENGTHS and len(lengths) == 7
     assert (out.artifact_path / "manifest.json").is_file()
+    assert lengths.preprocess_key == "pre_a"  # read back from the artifact (plan §16.3)
+
+
+def test_preprocess_key_is_read_from_part_metadata(make_stream, adapter, make_ctx) -> None:
+    ctx = make_ctx(limits=ScanLimits(checkpoint_every_rows=3))
+    out = scan(make_stream(rows()), adapter, ctx, key="pre_parts")
+    parts = sorted(out.artifact_path.glob("part-*.parquet"))
+    assert len(parts) == 3
+    for part in parts:
+        assert pq.read_schema(part).metadata[b"vramforge.preprocess_key"] == b"pre_parts"
+    (out.artifact_path / "manifest.json").unlink()  # parts alone still identify the scan
+    assert load_lengths(out.artifact_path).preprocess_key == "pre_parts"
+    assert load_lengths(parts[0]).preprocess_key == "pre_parts"  # a single part file
+
+
+def test_empty_artifact_keeps_the_manifest_key(make_stream, adapter, ctx) -> None:
+    out = scan(make_stream([]), adapter, ctx, key="pre_empty")
+    table = load_lengths(out.artifact_path)
+    assert len(table) == 0 and table.preprocess_key == "pre_empty"
+
+
+def test_parts_of_different_scans_are_never_mixed(make_stream, adapter, make_ctx, tmp_path) -> None:
+    import shutil
+
+    from vramforge_estimator.errors import EstimatorError
+
+    first = scan(make_stream(rows()), adapter, make_ctx(), key="pre_one")
+    other_ctx = make_ctx()
+    other_ctx.artifact_dir = tmp_path / "other"
+    other = scan(make_stream(rows()), adapter, other_ctx, key="pre_two")
+    shutil.copy(
+        other.artifact_path / "part-00000.parquet", first.artifact_path / "part-00001.parquet"
+    )
+    (first.artifact_path / "manifest.json").unlink()
+    with pytest.raises(EstimatorError) as err:
+        load_lengths(first.artifact_path)
+    assert err.value.issue.code is ErrorCode.INTERNAL_ERROR
+    assert err.value.issue.details["preprocess_keys"] == ["pre_one", "pre_two"]
 
 
 def test_artifact_keeps_the_token_digest_of_ok_rows_only(make_stream, adapter, ctx) -> None:
