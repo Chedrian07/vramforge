@@ -13,6 +13,7 @@ import {
   shortDigest,
 } from "@/lib/format/bytes";
 import { FIT_REASON_LABEL, PROGRESS_STEPS } from "@/lib/format/labels";
+import { formatDateTime } from "@/lib/format/time";
 
 describe("byte formatting", () => {
   it("shows 1 GiB for 1,073,741,824 bytes (plan §19.1)", () => {
@@ -66,6 +67,15 @@ describe("byte formatting", () => {
   it("shortens digests", () => {
     expect(shortDigest("sha256:0123456789abcdef0123")).toBe("0123456789ab…");
     expect(shortDigest("abc")).toBe("abc");
+  });
+});
+
+describe("date formatting", () => {
+  it("formats ISO timestamps in Korean and refuses unreadable ones", () => {
+    expect(formatDateTime("2026-10-12T05:00:00Z")).toMatch(/2026/);
+    expect(formatDateTime(null)).toBeNull();
+    expect(formatDateTime("")).toBeNull();
+    expect(formatDateTime("later")).toBeNull();
   });
 });
 
