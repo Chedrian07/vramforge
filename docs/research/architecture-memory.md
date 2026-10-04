@@ -8,6 +8,7 @@
 | 예시 모델 | `XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B` @ `2367e865d009c13ac81713a2878291d33ab28177` (config/header만 사용, weight 미다운로드) |
 | 작성일 | 2026-10-04 |
 | 작성 | research-arch-memory (Milestone M0) |
+| 검증 | verify-architecture-memory (2026-10-04). 원 저자와 다른 harness(autograd graph의 `_saved_*` 순회 + `TorchDispatchMode`/`StorageWeakRef` live-storage tracker, `FakeTensorMode`로 예시 모델 실제 차원 T=4096 측정)로 재검증했다. 고친 항목과 근거는 문서 끝 "검증 로그" 참고 |
 | 방법 | (1) 설치된 site-packages 소스 정독, (2) CUDA 전용 C++/Triton 경로는 tag `v2.14.1`의 torch 소스와 PyPI 배포본 소스 정독, (3) macOS arm64 CPU에서 tiny random-init 모델로 `torch.autograd.graph.saved_tensors_hooks` 기반 saved-tensor 측정과 `torch.profiler` `MemoryProfile` 기반 live-bytes timeline 측정, (4) `huggingface_hub.get_safetensors_metadata` header 조회와 meta-device 인스턴스화 |
 | 실험 코드 | `/tmp/vf-research/scratch/arch-memory/` (저장소 밖 scratch). 핵심: `vfmem.py`(측정 harness), `formulas.py`(검증된 닫힌식), `e1`–`e13*.py` |
 
@@ -133,6 +134,7 @@ output = self.out_proj(core_attn_out.reshape(batch_size, seq_len, -1))
 
 - `Qwen3_5TextModel.forward` (`:1236-1306`): embedding `[B,T,H]` b → position_ids가 없으면 `arange(T)`를 `[4,B,T]`로 expand (text 1 + mrope 3) → mask dict `{"full_attention": create_causal_mask(...), "linear_attention": create_recurrent_attention_mask(...)}` → 레이어 → final `norm`. VERIFIED
 - **`use_cache` 기본값 함정**: `use_cache`가 `True`이고 `past_key_values`가 없으면 학습 forward에서도 `DynamicCache(config=self.config)`를 만든다 (`:1255-1256`). config의 `use_cache=True`이므로 호출자가 `use_cache=False`를 넘기지 않으면 학습 중에도 cache가 생긴다. TRL SFT는 `inputs["use_cache"] = False`를 넣는다 (trl==1.14.1 `trainer/sft_trainer.py:1795`). gradient checkpointing이 켜지면 `GradientCheckpointingLayer.__call__`이 레이어에 `use_cache=False`, `past_key_values=None`을 넘긴다 (`modeling_layers.py:53-109`). VERIFIED
+  - (검증 보충) 모델 수준에서도 막힌다: `@merge_with_config_defaults`가 `self.gradient_checkpointing and self.training and use_cache`이면 `use_cache=False`로 바꾸므로(`utils/generic.py:1028-1033`) GC가 켜진 모델은 `DynamicCache` 자체를 만들지 않는다. tiny 모델 실측: train 모드에서 `use_cache` 미지정 → `DynamicCache`, `use_cache=False` → `None`, GC 활성 + 미지정 → `None`(검증 로그 V18). VERIFIED
 - `Qwen3_5ForConditionalGeneration.forward` (`:1803-1894`)는 text 경로가 동일하고 `logits = self.lm_head(hidden_states[:, slice_indices, :])`로 logits를 만든다. `logits_to_keep=0`(기본)이면 전 위치. VERIFIED
 - vision tower는 `pixel_values`/`pixel_values_videos`/`mm_encoder_outputs`가 있을 때만 호출된다 (`:1611-1623`, §9). VERIFIED
 
@@ -153,7 +155,7 @@ linear-attn의 네 함수는 `use_kernel_func_from_hub_with_fallback`으로 장�
 | `Qwen3_5RMSNormGated` (class) | — | — | `RMSNormGated` → `kernels-community/fla` `FusedRMSNormGated` | `:216`, `hub_kernels.py:511-537` |
 | `Qwen3_5GatedDeltaNet` (class 전체) | — | — | `Atlas-Inference/gdn` — **CUDA capability 12.1(GB10) 또는 ROCm gfx1151에서만** | `:499`, `hub_kernels.py:162-183` |
 
-결정 규칙 — transformers==5.18.0 `integrations/hub_kernels.py:984-1037 (use_kernel_func_from_hub_with_fallback)`:
+결정 규칙 — transformers==5.18.0 `integrations/hub_kernels.py:984-1044 (use_kernel_func_from_hub_with_fallback)` (kwarg 필터는 `:1039-1040`):
 
 ```python
 try:
@@ -173,6 +175,7 @@ return implementation(*args, **kwargs)
 - hub kernel은 `kernels` 패키지(버전 `0.17.0 ≤ v < 0.18.0`)가 있고 `USE_HUB_KERNELS`가 참이며 사용자가 `from_pretrained(..., use_kernels=True)`(또는 `kernel_config`)로 kernelize를 요청할 때만 적용된다 (`hub_kernels.py:61-62, 83-140`; `modeling_utils.py:4095, 4237-4342`). `kernels`가 없으면 데코레이터는 identity stub이다 (`hub_kernels.py:740-760`). VERIFIED(소스), 실제 교체 동작은 INFERRED(`kernels` 미설치)
 - 학습 forward(`use_cache=False` 또는 첫 forward)는 항상 chunk 경로를 탄다. recurrent(`fused_recurrent`/torch recurrent) 경로는 cache에 이전 상태가 있고 `seq_len == 1`인 decode에서만 쓴다 (`modeling_qwen3_5.py:560-562, 573-582, 624-649`). VERIFIED
 - **packing 주의**: transformers는 `cu_seqlens=kwargs.pop("cu_seq_lens_q", None)`을 넘기지만 torch fallback 함수 시그니처에는 `cu_seqlens`가 없어 wrapper가 이를 버린다 (`applicable_params` 필터). torch `causal_conv1d_fn`도 `seq_idx`를 쓰지 않는다. 따라서 padding-free/packing 입력에서 torch 경로는 sequence 경계에서 conv·recurrent 상태가 섞인다. 메모리 문제는 아니지만 "torch fallback + packing" 조합은 지원 불가로 표시해야 한다. 소스 VERIFIED, 수치적 영향은 INFERRED
+  - (검증 보충) 필터 동작은 실험으로 확인했다: torch fallback의 `inspect.signature` 파라미터에 `cu_seqlens`가 없어 버려지고, 가짜 `fla` 패키지를 `PYTHONPATH`에 두면 CPU tensor로도 그 구현이 호출되며 `cu_seqlens`는 전달되고 모르는 kwarg는 버려진다(검증 로그 V4). `seq_idx`는 `TransformersKwargs` 필드라 호출자(예: `DataCollatorWithFlattening(return_seq_idx=True)`)가 넘길 때만 `causal_conv1d` package에 전달된다(transformers==5.18.0 `utils/generic.py:828-867`, `data/data_collator.py:1374-1420`). VERIFIED(소스)
 
 ### 2.2 torch fallback chunk 경로 (`torch_chunk_gated_delta_rule`, `modeling_qwen3_5.py:299-433`)
 
@@ -180,6 +183,7 @@ return implementation(*args, **kwargs)
 - chunk 내부 양: `pairwise_decay`, `k_beta@kᵀ`, `q@kᵀ`, `ut_system`, `intra_chunk_attn`이 모두 `[B,Hv,nc,64,64]` fp32, `torch.linalg.solve_triangular` 두 번(`:393-395`).
 - chunk 간 순차 scan(`:417-424`)에서 매 chunk의 recurrent state `S_i` `[B,Hv,dk,dv]` fp32가 matmul에 의해 **saved**된다. 즉 chunk 수만큼 state가 쌓인다: `nc · f · B·Hv·dk·dv` (예시 `T=4096`: 64 × 2 MiB = 128 MiB/레이어).
 - 마지막 상태는 `output_final_state=False`(cache 없음)이면 버려지고, 그 branch만 저장하던 tensor(예: chunk가 1개일 때 `key_decayed`)는 forward 중에 해제된다. cache가 있으면(`use_cache=True`) 마지막 state-update branch가 cache buffer의 graph로 남아 그 tensor들이 유지된다.
+  - (검증 정정) chunk가 1개(T ≤ 64)이고 cache가 없으면 `key_decayed`만이 아니라 key decay용 `(cum_decay[..., -1:] - cum_decay).exp()` 결과(`f·Np·Hv`)와 `chunk_decay`(`f·B·Hv·nc`)도 dead branch에만 속해 해제된다. 원 측정은 pack hook이 tensor 자신을 반환해 saved output이 reference cycle로 살아남는 artifact 때문에 이 둘을 살아 있다고 셌다(검증 로그 V2). 크기는 무시할 만하다(예시 차원 T=64에서 8.1 KiB).
 - 측정으로 검증한 레이어 saved byte 식(§4.2)에서 linear-attn mixer는 예시 모델 `B=1,T=4096`에서 **1,444.8 MiB**(autocast 시 1,616.8 MiB)로, full-attn mixer(369.6 MiB)의 약 4배다. VERIFIED(CPU 측정, dtype·shape 규칙은 device 무관)
 
 ### 2.3 fla + causal-conv1d 경로 (CUDA 전용, INFERRED)
@@ -197,6 +201,7 @@ ctx.save_for_backward(q, q_rstd, k, k_rstd, v, g, beta_raw, beta, A, initial_sta
 ```
 
 - saved: l2-normalized q, k (`l2norm_fwd`의 `y = torch.empty_like(x)` → 입력 dtype b, `[B,T,Hv,dk]` — transformers가 `repeat_interleave`로 Hv head를 만든 뒤 호출하므로 Hk가 아니라 **Hv** 기준), `rstd` fp32 `[B·T·Hv]` 두 개 (`fla/modules/l2norm.py:157-168`), v, chunk-local cumsum `g` fp32 `[B,T,Hv]`(`chunk_local_cumsum(..., output_dtype=torch.float)`), beta, `A = torch.zeros(B,T,HV,64, dtype=k.dtype)` (`fla/ops/gated_delta_rule/chunk_fwd.py:382`). INFERRED
+  - (검증 보충, PyPI wheel sha256 `5e830c85…0761` 재다운로드 후 정독) transformers는 `use_gate_in_kernel`을 넘기지 않으므로 `g_input = None`(`chunk.py:51`), `use_beta_sigmoid_in_kernel=False`이므로 `beta_raw`는 `beta`와 같은 tensor(`chunk.py:285`)이고 `A_log`/`dt_bias`도 `None`이다. `chunk_local_cumsum`의 `output_dtype` 기본값이 `torch.float`(`fla/ops/utils/cumsum.py:446-453`). fla 0.5.2 kernel은 `H < HV`(GVA)를 직접 지원하지만(`chunk_fwd.py:88`, `k += (bos*H + i_h // (HV // H)) * K`) transformers 5.18이 먼저 `repeat_interleave`하므로 q/k 저장량은 Hv 기준이 맞다. 실제 Hv=32, `T=4096` 기준 mixer 499.25 MiB, 레이어 1,171.31 MiB를 독립 산술로 재현했다. INFERRED(CUDA 미실행)
 - 저장하지 않는 것: chunk state `h` `[B,NT,HV,K,V]`(k dtype, `fla/ops/common/chunk_delta_h.py:703-708`), `w`, `u`, `v_new`, 출력 `o`. backward에서 다시 계산한다(`chunk_gated_delta_rule_bwd`). 따라서 chunk-state 비용은 saved가 아니라 **transient**다 (`T=4096`: `64·32·128·128·2` B = 64 MiB). INFERRED
 - `@input_guard`가 모든 tensor 인자를 contiguous로 만든다 (`fla/utils/_decorators.py:97-140`). transformers가 넘기는 v는 conv 출력의 split view라 non-contiguous이므로 **`[B,T,Hv,dv]` b 복사본**이 저장된다. INFERRED
 - `causal-conv1d==1.7.0` `causal_conv1d/causal_conv1d_interface.py:9-61 (CausalConv1dFn)`: `ctx.save_for_backward(x, weight, bias, seq_idx, initial_states)`, SiLU는 kernel 안에서 융합하고 출력은 저장하지 않는다. torch 경로가 저장하던 conv 출력(`b·B·C·(T+K−1)`)이 사라진다. INFERRED
@@ -269,6 +274,7 @@ derivatives: torch v2.14.1 `tools/autograd/derivatives.yaml:2931-2941, 2955-2957
 ### 3.4 SDPA 출력 layout과 "contiguous 복사"
 
 - Qwen3.5는 partial rotary의 `torch.cat`이 q를 `[B,nq,T,d]` 물리 layout으로 만든다. SDPA 출력은 q의 stride를 따르므로(CPU flash `empty_like(query)`, CUDA flash `out = at::empty_like(q_padded)` 후 `output.transpose(1,2)` — `flash_api.cpp:480-501`, `attention.cu:942-972`) `transpose(1,2).contiguous()`가 **복사본 `b·N·nq·d`**를 만들고, 이 복사본을 output gate의 `mul`이 저장한다. VERIFIED(CPU), CUDA INFERRED
+- (검증 정정) 이 복사는 **출력이 q layout을 따르는 backend에만** 생긴다. CUDA flash(`out = at::empty_like(q_padded)`, torch v2.14.1 `flash_api.cpp:498-500`)와 cuDNN(`alloc_with_matching_layout(q, o, ...)`, torch v2.14.1 `aten/src/ATen/native/cudnn/MHA.cpp:1519`, 정의 `aten/src/ATen/native/transformers/sdp_utils.h:7-41`)은 복사가 생기지만, **CUDA mem-efficient는 출력을 `at::empty({B, M, num_heads, Kv})`로 `[B,T,nq,d]` contiguous하게 할당**하므로(`attention.cu:1860-1863` CUDA cutlass 경로, ROCm 경로 `:1656, 1708`도 같은 layout, 래퍼 `:1309-1331`에서 transpose) HF의 `transpose(1,2).contiguous()`가 no-op이고 복사본이 없다. 따라서 padding mask 때문에 mem-efficient가 선택되는 CUDA 배치에서는 `S_fullmix`에서 `b·N·nq·d`(예시 T=4096에서 full 레이어당 32 MiB)를 뺀다. CPU에서 RoPE 후 q의 stride를 직접 확인했다: Qwen3.5 partial rotary q_embed는 `[B,nq,T,d]` contiguous, Qwen3 full rotary q_embed는 `[B,T,nq,d]` 물리 layout 유지(검증 로그 V7). 소스 INFERRED
 - Llama/Qwen3는 q가 `[B,T,nq,d]` layout을 유지해 복사가 없고 `o_proj` 입력이 SDPA 출력과 storage를 공유한다(dense 측정에서 `o_proj` 별도 항목 없음). VERIFIED
 
 ---
@@ -278,11 +284,17 @@ derivatives: torch v2.14.1 `tools/autograd/derivatives.yaml:2931-2941, 2955-2957
 ### 4.1 방법
 
 - harness `vfmem.py`: (a) 모든 module에 pre/post forward hook을 걸어 module stack을 유지하고, `TorchFunctionMode`로 현재 torch 함수 이름을 기록하며, `saved_tensors_hooks`의 pack hook에서 `(module, func, shape, dtype, untyped_storage().nbytes(), data_ptr, weakref)`를 남긴다. (b) **forward가 끝난 시점에 살아 있는** tensor만 세고(죽은 branch 제외), parameter/buffer storage는 제외하고, `data_ptr`로 dedup한다. 모두 동시에 살아 있으므로 주소 재사용 오류가 없다(weakref 필터 없이 `use_cache=False`로 셀 때는 forward 중 해제된 tensor의 주소 재사용으로 9건이 틀렸다. 필터 후 남은 18건은 단일 chunk에서 `key_decayed`가 해제되는 것을 식에 반영해 0건이 되었다). (c) `torch.profiler.profile(profile_memory=True, record_shapes=True, with_stack=True)`의 `MemoryProfile.timeline`으로 CPU allocator 수준 live bytes를 재구성하고, 고유 크기 sentinel 할당으로 구간(forward/backward)을 표시한다. profile 이전에 만든 tensor의 해제는 무시한다.
+- (검증 주의) (a)의 pack hook은 tensor 자신을 반환한다. 이 경우 **saved output**(예: `ExpBackward0`의 `result`)은 tensor → grad_fn → SavedVariable → 같은 PyObject로 이어지는 reference cycle이 되어, 원래 dead branch에서 해제될 tensor가 살아남는다. hook 없이 `TorchDispatchMode` + `StorageWeakRef`로 실제 생존 storage를 추적하면 이 tensor들은 forward 끝에 해제되어 있다(검증 로그 V2). 영향은 dead branch가 있는 경우(cache 없는 nc=1 linear 레이어)뿐이며 크기는 무시할 만하다. 또한 (a)는 `tensor * python_float`가 저장하는 0-dim float64 wrapped scalar(8 B)를 세지 않는다. 독립 검증은 이 8 B를 세므로 비교 시 "8 B × 해당 곱셈 수" 차이가 난다.
 - 모델: `Qwen3_5ForCausalLM`(text) tiny config A `{H=96, I=176, nq=6, nkv=2, d=40, r=10, Hk=3, Hv=9, dk=24, dv=28, K=4, V=1000}`, config B `{H=112, I=200, nq=4, nkv=1, d=48, Hk=2, Hv=6, dk=20, dv=36, K=3, 4 layers}`, dense Qwen3/Llama tiny 2종, 그리고 **¼ 스케일 실측 비율 config** `{H=1024, I=3072, nq=4, nkv=1, d=256, Hk=4, Hv=8, dk=dv=128, K=4}`(모든 항이 정확히 1/4로 줄어드는 config, 측정값이 식과 일치하고 실제 차원 식/¼식 = 3.9995·3.9878). 전부 bf16(`model.to(torch.bfloat16)`), `attn_implementation="sdpa"`(CPU flash), 별도 표기 없으면 `use_cache=False`, full fine-tune.
 
 ### 4.2 검증된 레이어별 saved byte 식 (gradient checkpointing 없음)
 
-검증 범위: Qwen3.5 torch 경로 216점(2 config × B∈{1,2,3} × T∈{40,64,100,128,150,200} × layer × `use_cache`∈{F,T}) 일치, autocast 216점 일치, dense 120점 일치, ¼ 스케일 2점 일치. 오차 0 byte. VERIFIED
+검증 범위(원 저자): Qwen3.5 torch 경로 216점(2 config × B∈{1,2,3} × T∈{40,64,100,128,150,200} × layer × `use_cache`∈{F,T}) 일치, autocast 216점 일치, dense 120점 일치, ¼ 스케일 2점 일치. 오차 0 byte.
+
+(검증 정정) 독립 harness(graph walk, §4.1 주의 참고)로 다시 재면 결과는 다음과 같다. 아래 식은 정정을 반영한 것이다. VERIFIED
+- nc ≥ 2(T > 64)이거나 cache가 있으면 **byte 단위 일치**한다. 차이는 `query * scaling`이 저장하는 8 B wrapped scalar뿐이다(tiny 2 config × B∈{1,2,3} × T∈{65,100,128,150,200}, autocast 포함. full/dense/norm-frozen/cache 변형도 확인).
+- nc = 1(T ≤ 64)이고 cache가 없으면(= TRL 학습 경로) 원래 식이 `f·B·Hv·(64+1)` byte만큼 **과대**였다(config A B=1에서 2,340 B). key-decay `exp`와 `chunk_decay`가 dead branch에 속하기 때문이다(§2.2). 아래 식에 조건을 넣었다.
+- **예시 모델 실제 차원(FakeTensorMode, B=1, T=4096) 직접 측정**: linear(torch) 2,219,700,488 B = 2,116.87 MiB, linear(torch+autocast) 2,288.87 MiB, full(cos/sin 포함) 1,041.63 MiB로 §10.2 값과 일치한다. 32층 `Qwen3_5ForCausalLM` 전체를 loss graph에서 재면 61.940 GiB다. 여기서 log_softmax 3,880 MiB와 fake mode가 만드는 full 레이어당 32 MiB additive mask(실제 CPU에서는 padding이 없으면 mask가 None이다)를 빼면 §10.2의 57.90 GiB와 32,780 B 차이(int64 `[N]` 사본 1개 + scalar)로 일치한다.
 
 **공통 부품**
 
@@ -292,7 +304,7 @@ RMSNorm_llama(rows, w) = f·rows·w + f·rows       + [b·rows·w  if norm weigh
 MLP(N)                 = b·N·H (gate/up 입력) + 4·b·N·I   (SiLU 입력, SiLU 출력, up 출력, 곱=down 입력)
 ```
 
-**Qwen3.5 full-attention mixer** (SDPA flash류, mask 없음; cos/sin `2·b·N·r`은 모든 full 레이어가 같은 storage를 공유하므로 모델당 1번)
+**Qwen3.5 full-attention mixer** (SDPA flash류, mask 없음; cos/sin `2·b·N·r`은 모든 full 레이어가 같은 storage를 공유하므로 모델당 1번. CUDA mem-efficient backend이면 `contiguous 복사` 항을 뺀다 — §3.4 검증 정정)
 
 ```
 S_fullmix = b·N·H
@@ -311,12 +323,13 @@ S_linmix = b·N·H + b·N·C + b·B·C·(T+K−1) + b·N·Hv + 2·f·N·Hv
          + f·Np·Hv + f·Np·Hv·dv + f·Np·Hv·dk                        # padded beta, v, k
          + 5·f·Np·Hv·64                                             # [.,64,64] 5개
          + 3·f·Np·Hv·dk + [f·Np·Hv·dk if nc≥2 or cache] + [f·Np·Hv·dk if nc≥2]
-         + 3·f·Np·Hv + f·B·Hv·nc + 2·f·Np·Hv·dv
+         + (2 + [1 if nc≥2 or cache])·f·Np·Hv                       # cum_decay.exp() 2개 (+ key-decay exp)  ← 검증 정정
+         + [f·B·Hv·nc if nc≥2 or cache] + 2·f·Np·Hv·dv              # chunk_decay (← 검증 정정), new_values + v_new
          + nc·f·B·Hv·dk·dv                                          # chunk state S_0..S_{nc-1}
          + 64·64 + 2·f·Hv
 ```
 
-autocast 변형(`q35_linear_attn_torch_autocast`)과 fla 변형(`q35_linear_attn_fla`, INFERRED)은 `formulas.py`에 같은 형식으로 있다. 레이어 합계는 `2·RMSNorm_q35(N,H) + MLP(N) + mixer`.
+autocast 변형(`q35_linear_attn_torch_autocast`)과 fla 변형(`q35_linear_attn_fla`, INFERRED)은 `formulas.py`에 같은 형식으로 있다. 레이어 합계는 `2·RMSNorm_q35(N,H) + MLP(N) + mixer`. (검증 정정) autocast 변형의 `3·f·Np·Hv + f·B·Hv·nc` 항에도 위와 같은 nc=1·cache 없음 조건을 적용해야 한다(독립 측정에서 같은 `f·B·Hv·65` 과대가 나옴, 그 밖의 점은 8 B scalar 외 일치).
 
 **최소제곱 적합으로 본 구조**(`e13_gc_and_fit.py`, basis `[B·T, B·T², B·Tp, B·nc, B, 1]`, config A, B∈1..4 × T∈{70..300}, max 오차 1e-4 B):
 
@@ -340,6 +353,7 @@ autocast 변형(`q35_linear_attn_torch_autocast`)과 fla 변형(`q35_linear_attn
 | LoRA, adapter fp32, **bf16 autocast** (TRL 비양자화 LoRA의 CUDA 기본) | autocast cast 복사 **`b·N·in`/모듈**(공유 안 됨), bf16 base 입력은 저장 안 됨 | `b·N·r` | cast된 weight 복사 `b·(in·r + r·out)`/모듈 저장 | VERIFIED(CPU autocast) |
 | `lora_dropout>0` | 모듈마다 dropout 출력 + mask | | CPU는 mask가 입력 dtype(`_dropout_impl`), CUDA `native_dropout`은 bool 1 byte | CPU VERIFIED, CUDA INFERRED |
 
+- (검증 보충) 위 규칙으로 delta를 미리 계산한 뒤 graph walk로 재면 모두 byte 단위로 맞았다(3-layer `[lin,lin,full]`, r=8, B=1, T=100, 모듈당 `scaling` wrapped scalar 8 B 포함). linear L1 기준 frozen base 대비 bf16 adapter +136,864, fp32 adapter(autocast 없음) +427,264, fp32 adapter+autocast +249,088(= `Σ b·N·in + Σ b·N·r + Σ b·(in·r + r·out)` + 8·8). full L2 기준은 각각 +132,856 / +380,856 / +223,736. PEFT 기본 `autocast_adapter_dtype=True`가 bf16 adapter를 fp32로 올리는 것도 확인했다(`peft/tuners/tuners_utils.py:2705-2763 (cast_adapter_dtype)`, 실측 adapter dtype float32). 예시 실제 차원(T=4096, r=16)에서는 S_lin = bf16 adapter 1,957.37 / bf16+autocast 2,129.37 / fp32+autocast **2,260.00** MiB, S_full = 833.50 / 833.50 / **931.94** MiB다(§10.2 정정 참고). VERIFIED
 - "all-linear"는 conv1d를 대상으로 하지 않지만 **frozen conv1d도 입력을 저장**한다(ConvolutionBackward). frozen `A_log/dt_bias`이면 softplus 출력(`f·N·Hv`)과 `[Hv]` tensor 2개가 빠진다. frozen RMSNorm은 fp32 normalized 항이 빠진다. VERIFIED
 - gradient checkpointing 없이 LoRA를 쓰면 첫 레이어의 input_layernorm은 입력이 grad를 요구하지 않아 아무것도 저장하지 않는다(L0가 L1보다 39,184 B 작음). TRL은 GC+PEFT일 때 `enable_input_require_grads()`를 호출해 이 차이를 없앤다 (`sft_trainer.py:1157-1158`). VERIFIED
 - fp32 weight + bf16 autocast(마스터 fp32 full FT): Linear/conv마다 **weight의 bf16 cast 복사본이 saved**된다(tiny 측정 합계 743,136 B = 2 byte × 행렬 파라미터 수, lm_head 포함). 예시 모델에서는 lm_head만 1.89 GiB다. 입력도 Linear마다 따로 cast 저장된다. VERIFIED(CPU autocast)
@@ -359,6 +373,18 @@ autocast 변형(`q35_linear_attn_torch_autocast`)과 fla 변형(`q35_linear_attn
 | GC, full FT, autocast, T=1024 | 0.26 S | 1.51 S (grad 포함), 0.95 S(grad 제외 추정) | full FT는 param grad가 누적 |
 
 CUDA caching allocator의 block 반올림·단편화는 포함되지 않는다. VERIFIED(CPU 측정), CUDA 비율은 UNKNOWN(보정 필요)
+
+(검증 보충) 방법을 바꿔 독립으로 다시 유도했다. 예시 모델 **실제 차원**(H=4096, I=12288, Hv=32 …, vocab만 1000)의 3-layer `[lin,lin,full]`을 FakeTensorMode에서 B=1로 돌리고, dispatch 수준 live-storage tracker로 forward/backward peak를 쟀다. allocator와 kernel 내부 workspace는 빠진 tensor 수준 값이고, `S` = 같은 조건의 linear 레이어 saved다.
+
+| 조건 (T=4096. LoRA 행은 T=1024에서도 ±0.02 이내) | (pf−ret)/S | (pb−ret)/S |
+|---|---|---|
+| GC, LoRA bf16 adapter (autocast 없음 / 있음) | 0.42 / 0.39 | 1.05 / 1.05 |
+| GC, LoRA fp32 adapter + autocast | 0.37 | 1.14–1.16 |
+| GC, full FT + autocast | 0.32 | T=4096: 1.39(param grad 포함) / 0.84(grad 제외). T=1024: 2.79 / 0.60. param grad는 T와 무관해 포함 값은 T에 따라 크게 변한다 |
+| GC 없음, LoRA bf16 / fp32+autocast | 0.09 / 0.20 | 0.14–0.16 / 0.14 |
+| GC 없음, full FT + autocast | 0.05 | grad 할당이 activation 해제와 겹쳐 grad 제외 값은 음수(T=4096 −0.45) |
+
+원 저자의 CPU allocator 값(1.14–1.36)이 조금 큰 것은 kernel workspace와 작은 T 때문으로 보인다. 제안 기본값 `k_bwd=1.35`, `k_fwd=0.45`, `k_nogc=0.15`는 실제 차원 tensor 수준 값보다 크거나 같으므로(보수적) 유지한다. 단 fake mode에서는 autograd `InputBuffer`가 tensor subclass에 out-of-place 누적을 하므로(torch v2.14.1 `torch/csrc/autograd/input_buffer.cpp:120-173`) backward 값이 실제보다 약간 클 수 있다. VERIFIED(CPU 의미론, 실제 차원), CUDA UNKNOWN
 
 ### 4.5 CPU 측정이 CUDA와 다른 지점
 
@@ -397,7 +423,7 @@ fp32로 학습(모델 fp32)하면 `x.float()`가 복사하지 않고 입력 자�
 ### 6.1 logits
 
 - `logits = self.lm_head(hidden_states[:, slice_indices, :])`, `slice_indices = slice(-logits_to_keep, None)`(정수) 또는 index tensor. `logits_to_keep=0`이면 전 위치 `[B,T,V]`. hidden slice는 view라 복사가 없다 (`modeling_qwen3_5.py:1875-1879`, CausalLM `:1731-1734`). VERIFIED
-- dtype: bf16 모델이면 bf16. bf16 autocast(accelerate native_amp)에서도 `linear`가 lower-precision이므로 bf16이다(측정: autocast 하에서 logits bf16). 그 뒤 accelerate의 `convert_outputs_to_fp32`가 출력 안의 bf16 tensor를 `.float()`로 바꾼 **fp32 logits `f·N·V`**를 output에 넣는다 (accelerate==1.15.0 `utils/operations.py:889-910`, `accelerator.py:1829-1835`). VERIFIED(소스), CUDA INFERRED
+- dtype: bf16 모델이면 bf16. bf16 autocast(accelerate native_amp)에서도 `linear`가 lower-precision이므로 bf16이다(측정: autocast 하에서 logits bf16). 그 뒤 accelerate의 `convert_outputs_to_fp32`가 출력 안의 bf16 tensor를 `.float()`로 바꾼 **fp32 logits `f·N·V`**를 output에 넣는다 (accelerate==1.15.0 `utils/operations.py:889-910`, `accelerator.py:1829-1835`). VERIFIED(소스), CUDA INFERRED. (검증 보충) CPU에서 `Accelerator(mixed_precision="bf16", cpu=True).prepare(model)`을 실행하면 `native_amp=True`이고, 감싼 forward가 float32 logits를, `_original_forward`가 bf16 logits를 돌려준다. Trainer는 autocast를 직접 걸지 않고(`autocast_smart_context_manager`가 `nullcontext`, transformers==5.18.0 `trainer.py:2178-2183`) `accelerator.prepare(model)`(`:1715-1730`)에 맡긴다. VERIFIED(CPU 실행)
 - generate prefill은 `logits_to_keep=1`을 넣는다 (`generation/utils.py:2920-2924`). VERIFIED
 
 ### 6.2 transformers `ForCausalLMLoss` — `loss/loss_utils.py:32-70`
@@ -422,12 +448,14 @@ loss = fixed_cross_entropy(logits, shift_labels, num_items_in_batch, ignore_inde
 | forward 후 유지 | 4·N·V (+2 bf16 logits를 output이 들고 있으면 6) | log_softmax(saved) |
 | backward 피크 | **12·N·V** (logits 유지 시 14) | saved 4 + nll grad 4 + log_softmax grad 4, 이후 bf16 grad 2로 축소 |
 
-accelerate fp32 변환이 있으면 forward 직후 `compute_loss`가 끝날 때까지 4(lsm)+4(fp32 logits)=8·N·V가 유지되고(forward 피크는 10 그대로), Trainer가 output을 버린 뒤(`trainer.py:2004-2045`, `compute_loss(..., return_outputs=False)`) 4·N·V만 남는다. 연산 op가 같으므로 CUDA에서도 같은 tensor들이 할당된다고 본다. CPU VERIFIED, CUDA INFERRED
+accelerate fp32 변환이 있으면 forward 직후 `compute_loss`가 끝날 때까지 4(lsm)+4(fp32 logits)=8·N·V가 유지되고(forward 피크는 10 그대로), Trainer가 output을 버린 뒤(`trainer.py:2004-2045`, `compute_loss(..., return_outputs=False)`) 4·N·V만 남는다. 연산 op가 같으므로 CUDA에서도 같은 tensor들이 할당된다고 본다. CPU VERIFIED, CUDA INFERRED. (검증 보충) 다른 방법(dispatch 수준 live-storage tracker, bf16 logits leaf 제외)으로 다시 쟀다. (B,T,V) ∈ {(1,512,4000), (2,700,6000), (1,2000,8000)}에서 forward peak 8.00·N·V(+bf16 logits 2 = **10.00**), forward 후 유지 **4.00**·N·V, backward peak **12.00**·N·V(`_log_softmax_backward_data` 시점, logits 유지 시 14)로 일치한다. VERIFIED
 
 ### 6.3 TRL SFT `chunked_nll` (SFT 기본)
 
 - `SFTConfig.loss_type` 기본이 `None → "chunked_nll"`(liger 미사용 시) (`trl/trainer/sft_config.py:281, 333-334`). patched forward가 lm_head를 부르지 않고, valid token을 앞으로 모은 뒤 256개씩 `torch.utils.checkpoint`로 감싼 `_chunk`에서 `(h @ w.to(h.dtype).t()).float()` → `log_softmax` → `nll_loss`, argmax, entropy를 계산한다 (`sft_trainer.py:87, 100-232, 235-387`). VERIFIED (상세 수명은 `docs/research/trl-sft-dpo.md` §5)
 - 측정(`e6b_chunked.py`, chunk C=256): forward 피크 ≈ **16.1–16.7·C·V**, backward 피크 ≈ **16.7–17.7·C·V**(N과 무관), forward 후 유지 = gather된 hidden 복사 `b·N'·H` + 정렬 index/labels(int64). 예시 V=248,320에서 0.95–1.05 GiB. VERIFIED(CPU)
+- (검증 보충) 독립 측정(dispatch tracker, frozen lm_head): forward peak 16.0–16.6·C·V, backward peak 16.4–17.6·C·V. **예시 실제 차원**(V=248,320, H=4096, N=4096, FakeTensorMode, trip count만 host에서 계산하고 TRL `_chunk` 본문은 그대로 사용)에서는 forward 0.979 GiB, 유지 32.1 MiB(gather hidden 32 MiB + index), backward **1.010 GiB**다. lm_head가 frozen(LoRA)이면 위 주장과 일치한다. VERIFIED(CPU 의미론)
+- (검증 정정, 신규) **lm_head가 학습되는 경우(full FT)는 위 피크가 맞지 않는다.** chunk마다 `h @ w.t()`의 backward가 `[V,H]` weight grad를 따로 만들고, autograd `InputBuffer`가 이를 누적한다. 실측(op trace)에서 이 누적은 in-place `add_`가 아니라 out-of-place `add.Tensor`로 일어나고, 누적 순간 `[V,H]` tensor 3개(이전 buffer, 새 chunk grad, 합)가 공존한다. 원인은 추정이다: grad가 `t()` view로 전달되어 `can_accumulate_inplace`의 "last reference + storage use_count==1" 조건을 만족하지 못하는 것으로 보인다(torch v2.14.1 `torch/csrc/autograd/input_buffer.cpp:120-173`, INFERRED). 측정 결과는 다음과 같다. 실제 CPU tensor, H/C=16(예시와 같은 비율), 3 chunk: trainable − frozen backward peak 차 = **2.36 × (2·V·H)**. 예시 실제 차원(fake): backward peak **5.748 GiB**(`add.Tensor` 시점, 그중 1.895 GiB가 최종 `lm_head.weight.grad`) vs frozen 1.010 GiB. HF `ForCausalLMLoss` 경로는 lm_head backward가 grad를 한 번만 만들어 AccumulateGrad가 훔쳐 가므로 이 추가분이 없다. VERIFIED(CPU), CUDA INFERRED(`InputBuffer` 로직은 device 무관)
 - 측정 함정: `correct`/`entropy_sum` 출력을 backward 동안 잡고 있으면 non-reentrant checkpoint holder가 살아 recompute된 entropy용 tensor(`8·C·V`/chunk)가 backward 끝까지 누적된다(N=4096에서 137·C·V). TRL `compute_loss`는 이 값들을 `.item()`으로 소비하고 output을 반환하지 않으므로 해당하지 않는다. VERIFIED(CPU, 재현과 해소 모두 측정)
 
 ### 6.4 그 밖의 logits 경로 (다른 조사 범위, 포인터만)
@@ -443,6 +471,7 @@ accelerate fp32 변환이 있으면 forward 직후 `compute_loss`가 끝날 때�
 - `generate()`는 `cache_implementation`이 없으면 `DynamicCache(config=self.config.get_text_config(decoder=True))`를 만든다 (`generation/utils.py:2261, 2298-2300`). `DynamicCache.__init__`은 `layer_types`를 읽어 `DYNAMIC_LAYER_TYPE_MAPPING`으로 레이어를 만든다: `"full_attention" → DynamicLayer`, `"linear_attention" → LinearAttentionLayer` (`cache_utils.py:1249-1268, 1728-1761, 1807-1849`). `number_of_states = getattr(config, "number_of_conv_states", 1)`. VERIFIED
 - `DynamicLayer.update`는 `torch.cat([self.keys, key_states], dim=-2)`로 자란다 (`cache_utils.py:129-148`). 저장되는 K는 k_norm·RoPE를 거친 값이다. decode step마다 해당 레이어 K/V의 이전 버전과 새 버전이 잠깐 공존한다. VERIFIED(소스)
 - `LinearAttentionLayer.update_conv_state`는 prefill 입력(conv 이전 `mixed_qkv`, `[B,C,T]`)의 마지막 `conv_kernel_size`(=K, **K−1 아님**) 위치를 `[B,C,K]` buffer에 `copy_`한다. recurrent state는 `zeros_like(recurrent_states)`로 lazy 초기화 후 `copy_` (`cache_utils.py:1029-1117`). VERIFIED
+  - (검증 보충) `activate_past_recording()`으로 `record_past=True`가 되면(rollback이 필요한 decode 경로) conv state를 `[B,C,K]`로 자르지 않고 `crop` 전까지 전체를 들고 있다(`cache_utils.py:989-995, 1093-1098`, 종료 시 `generation/utils.py:479-481`에서 해제). 기본 `generate()`는 False다. 독립 tiny generate(`mamba_ssm_dtype="bfloat16"`을 일부러 설정)에서도 recurrent state는 float32, conv state는 `(B, C, 4)` bf16, full K/V 길이는 `prompt+generated−1`이었다. VERIFIED
 - 실측(`e7_generate_cache.py`, tiny 4-layer `[lin,lin,lin,full]`, greedy):
 
 | B, prompt, new | full layer K/V | linear layer conv_states | recurrent_states |
@@ -523,7 +552,7 @@ cos/sin       = 2·b·T·d  (모델당 1번, position_ids 미지정 시)
 | 12 | attention out, lse | `[B,nq,T,d]`, `[B,nq,T]` | b, f | 예 | layer[i] | flash/cuDNN/CPU-flash | 32 MiB + 256 KiB |
 | 12m | (mask 시) K/V 확장, additive mask | `[B,nq,T,d]`×2, `[B,1,T,T]` | b | 예 | layer[i] | CUDA mem-eff | (B=2: 96 + 64 MiB) |
 | 12e | (eager) softmax, probs | `[B,nq,T,T]` | f, b | 예 | layer[i] | eager | 1,536 MiB |
-| 13 | contiguous 복사, o_proj 입력 | `[N,nq·d]` 각 | b | 예 | layer[i] | Qwen3.5 full | 32 + 32 MiB |
+| 13 | contiguous 복사, o_proj 입력 | `[N,nq·d]` 각 | b | 예 | layer[i] | Qwen3.5 full (복사는 flash/cuDNN/CPU-flash만, CUDA mem-eff는 없음 — 검증 정정) | 32 + 32 MiB |
 | 14 | in_proj_* 입력 | `[N,H]` | b | 예(공유) | layer[i] | linear | 32 MiB |
 | 15 | in_proj_qkv 출력 = conv 입력 | `[B,C,T]` view | b | 예(torch conv·causal_conv1d 모두) | layer[i] | linear | 64 MiB |
 | 16 | conv 출력(+K−1) | `[B,C,T+K−1]` | b | 예(SiLU 입력) | layer[i] | **torch만** | 64.05 MiB |
@@ -542,7 +571,7 @@ cos/sin       = 2·b·T·d  (모델당 1번, position_ids 미지정 시)
 | 27 | lm_head 입력 | `[N,H]` | b | lm_head trainable일 때만 | | HF loss | 32 MiB |
 | 28 | logits | `[N_k,V]` | b (+accelerate fp32 복사) | 아니오 | output 수명(Trainer가 backward 전 해제) | HF loss | 1,940 MiB (+3,880) |
 | 29 | loss fp32 복사, log_softmax | `[N,V]` 각 | f | log_softmax 예 | forward 피크 10NV / backward 12NV | HF loss | 9.47 / 11.37 GiB 피크 |
-| 30 | chunked CE | `[256,V]` 단위 | b→f | gather hidden만 | chunk별 (checkpoint) | TRL chunked_nll | 0.95–1.05 GiB 피크 |
+| 30 | chunked CE | `[256,V]` 단위 | b→f | gather hidden만 | chunk별 (checkpoint) | TRL chunked_nll | 0.95–1.05 GiB 피크 (frozen lm_head). lm_head 학습 시 `[V,H]` grad 누적으로 5.75 GiB(1.89 GiB param grad 포함) — 검증 정정 |
 | 31 | gen KV (full) | `[B,nkv,L,d]`×2 | b | — | rollout 단계 | generate | 32 KiB/token/seq (8 layers) |
 | 32 | gen conv / recurrent (linear) | `[B,C,K]` / `[B,Hv,dk,dv]` | b / **f** | — | rollout 단계, L 무관 | generate | 49.5 MiB/seq |
 
@@ -558,12 +587,15 @@ cos/sin       = 2·b·T·d  (모델당 1번, position_ids 미지정 시)
 | LoRA bf16 adapter | torch | 1,957.4 MiB | 833.5 MiB | 52.45 GiB | 1,089.1 MiB | 1,957.4 MiB |
 | LoRA bf16 adapter | torch + autocast | 2,129.4 MiB | 833.5 MiB | 56.48 GiB | 1,089.1 MiB | 2,129.4 MiB |
 | LoRA bf16 adapter | fla (INFERRED) | 1,011.8 MiB | 833.5 MiB | 30.29 GiB | 1,089.1 MiB | 1,011.8 MiB |
-| LoRA fp32 adapter + autocast | torch + autocast | 2,257.4 MiB | 929.5 MiB | 60.23 GiB | 1,089.1 MiB | 2,257.4 MiB |
-| LoRA fp32 adapter + autocast | fla (INFERRED) | 1,139.8 MiB | 929.5 MiB | 34.04 GiB | 1,089.1 MiB | 1,139.8 MiB |
+| LoRA fp32 adapter + autocast | torch + autocast | **2,260.0 MiB** (원 2,257.4) | **931.9 MiB** (원 929.5) | **60.31 GiB** (원 60.23) | 1,089.1 MiB | **2,260.0 MiB** |
+| LoRA fp32 adapter + autocast | fla (INFERRED) | **1,142.4 MiB** (원 1,139.8) | **931.9 MiB** (원 929.5) | **34.12 GiB** (원 34.04) | 1,089.1 MiB | **1,142.4 MiB** |
+
+(검증 정정) 원래 `calc_sanity.py`의 "LoRA fp32 adapter + autocast" 행은 §4.3 표에 적힌 autocast cast weight 복사 `b·(in·r + r·out)`/모듈(linear 레이어 2.63 MiB, full 레이어 2.44 MiB, r=16)을 빠뜨렸다. FakeTensorMode 실제 차원 측정(S_lin 2,260.00 / S_full 931.94 MiB)으로 정정했다. 나머지 행(full FT torch/torch+autocast, LoRA bf16 torch/torch+autocast)은 실측과 0.01 MiB 안에서 일치하고, fla 행은 소스 기반 산술로 재현했다(INFERRED). 아래 조합 예의 반올림 결과(≈4.1 / ≈2.6 GiB)는 바뀌지 않는다.
 
 조합 예(활성값·loss 부분만, weight·grad·optimizer 제외, allocator 여유 제외):
 - TRL SFT 기본(GC + chunked_nll), LoRA fp32 adapter + autocast: torch 경로 ≈ 1.06 GiB + max(chunk CE ≈1.0 GiB, 1.36 × 2.20 GiB) ≈ **4.1 GiB**, fla 경로 ≈ 1.06 + 1.36 × 1.11 ≈ **2.6 GiB**. calibrated(CPU)
 - full FT, GC 없음, HF loss(`nll`), autocast, torch 경로: 61.93 GiB + 12·N·V(11.37 GiB, backward 시작 시점, log_softmax 포함) ≈ **73 GiB**. analytic
+- (검증 추가) full FT, GC + `chunked_nll`(TRL SFT 기본), autocast, torch 경로: GC retained 1.16 GiB + max(loss backward 5.75 GiB, 1.35 × 2.24 = 3.02 GiB) ≈ **6.9 GiB**. 이 값은 lm_head param grad 1.89 GiB를 포함한다. grad ledger가 그 grad를 이미 센다면 activation 쪽 loss 항은 3.86 GiB이고 합계는 ≈ 5.0 GiB다. 다른 레이어 param grad는 grad 담당 문서에서 다룬다. frozen lm_head 가정(loss 1.0 GiB)을 쓰면 loss 항이 3.02 GiB에 가려져 ≈ 4.2 GiB가 되어 0.8–2.7 GiB 과소 추정한다. analytic(구성 항은 §6.3 검증 측정)
 
 ---
 
@@ -591,7 +623,8 @@ cos/sin       = 2·b·T·d  (모델당 1번, position_ids 미지정 시)
 2. `evidence` 값: Qwen3.5 torch 경로·dense·SDPA(CPU flash와 동형인 flash/cuDNN)·loss는 `analytic`(CPU 측정으로 byte 단위 검증), fla/causal-conv1d·mem-efficient·cuDNN의 lse 크기는 `analytic`이지만 출처를 "source-inferred"로 표기, transient 계수는 `calibrated`(CPU), hub kernels·FA2 varlen·liger·fla 대체 backend는 `unknown`(수치 대신 null, plan §19.1의 Unknown 규칙).
 3. Hybrid 모델은 full-attn 레이어 수(예시 8)에만 attention 식과 KV 식을 적용하고, linear 레이어(24)는 별도 식을 호출한다. 32개 전부에 일반 KV/attention 식을 적용하면 테스트가 실패해야 한다(plan §19.3).
 4. cos/sin은 모델당 1번(Qwen3.5 `2·b·B·T·r`, dense `2·b·T·d`).
-5. `T`는 padding 포함 길이, linear 레이어는 추가로 64 배수 `Tp`를 쓴다(`nc = ceil(T/64)`). chunk가 1개(T ≤ 64)이면 `query_decayed` 항이 항상 빠지고, 거기에 cache까지 없으면 `key_decayed` 항도 빠진다.
+5. `T`는 padding 포함 길이, linear 레이어는 추가로 64 배수 `Tp`를 쓴다(`nc = ceil(T/64)`). chunk가 1개(T ≤ 64)이면 `query_decayed` 항이 항상 빠지고, 거기에 cache까지 없으면 `key_decayed` 항과 (검증 정정) key-decay `exp`(`f·Np·Hv`), `chunk_decay`(`f·B·Hv·nc`) 항도 빠진다.
+6. (검증 추가) full-attn의 `contiguous 복사` 항(`b·N·nq·d`)은 `sdpa_backend ∈ {flash, cudnn, cpu_flash}`일 때만 넣고 CUDA `mem_efficient`이면 뺀다(§3.4).
 
 ### C. Phase별 피크 조합 (plan §9.1, §9.2)
 
@@ -604,6 +637,10 @@ GC (every_layer):
   M_retained  = n_ckpt · b·N·H + S_outside + kwargs(cos/sin, bool mask)
   M_fwd_peak  = M_retained + max(k_fwd · S_max, loss_fwd_peak)     # k_fwd ≈ 0.45 (측정 0.26–0.42)
   M_bwd_peak  = M_retained + max(loss_bwd_peak, k_bwd · S_max)      # k_bwd 기본 1.35 (측정 1.14–1.36)
+  # (검증 추가) loss_bwd_peak(chunked_nll):
+  #   lm_head frozen  : ≈ 17.7·256·V
+  #   lm_head 학습    : ≈ max(17.7·256·V, 3·b_w·V·H + ε)   # b_w = lm_head weight dtype byte, 1개분은 최종 param grad
+  #                     (예시: 5.75 GiB, 그중 1.89 GiB = lm_head.weight.grad)
   (full FT는 여기에 그 시점까지 누적된 param grad를 더한다 — grad 담당 문서)
 every_n: checkpoint 안 된 레이어는 S_layer 전체를 retained에 더한다(vision block 선카운트 규칙 주의).
 offload: ckpt 입력을 host pinned memory로 옮긴다 → device retained에서 n_ckpt·b·N·H를 빼고 host RAM에 더한다.
@@ -617,6 +654,7 @@ S_outside = final norm(`RMSNorm_q35(N,H)`) + lm_head 입력(hf_ce이고 lm_head 
 
 - `hf_ce`: `M_logits = b·N_k·V`(N_k = `logits_to_keep` 반영). forward 피크 `10·N·V`, 유지 `4·N·V`(+`2·N·V` bf16 logits가 살아 있으면, +`4·N·V` accelerate fp32 복사가 살아 있으면), backward 피크 `12·N·V`. plan §9.5의 `M_logits_tensor` 하나로 대체하지 않는다.
 - `trl_chunked_nll`: peak `≈ 17.7·256·V` byte(보수값), 유지 `b·N'·H + 16·N'`. full logits 없음. lm_head가 LoRA 대상이면 TRL이 거부하므로 profile을 `unsupported`로.
+- (검증 정정) `trl_chunked_nll` + **lm_head 학습(full FT)** (PEFT `modules_to_save=["lm_head"]`도 구조상 같을 것으로 보이나, TRL이 이 조합을 허용하는지는 `ModulesToSaveWrapper`가 `BaseTunerLayer`인지에 달려 있어 미확인 — trl==1.14.1 `trainer/sft_trainer.py:1349-1358`, INFERRED): chunk별 `[V,H]` weight grad가 out-of-place로 누적되어 backward 피크가 `≈ 3·b_w·V·H + ε`까지 오른다(예시 5.75 GiB vs frozen 1.01 GiB). 이 중 `b_w·V·H`는 최종 param grad이므로 grad ledger와 중복되지 않게 `loss_bwd_transient = max(17.7·256·V, 2·b_w·V·H + ε)`(ε ≈ 0.06 GiB, 예시 기준)로 넣는다. HF `hf_ce` 경로에는 이 항이 없다. VERIFIED(CPU), CUDA INFERRED
 - label이 `-100`인 prompt 위치: `hf_ce`는 메모리가 줄지 않는다(전 위치 logits). chunked는 valid token chunk만 돈다(최소 1 chunk). activation은 두 경우 모두 전 위치(plan §8.1).
 
 ### E. Generation cache 규칙 (plan §9.7)
@@ -637,9 +675,11 @@ tiny config A(`vfmem.TINY_Q35`), bf16, full FT, SDPA, `use_cache=False`, no GC:
 |---|---|---|---|---|---|
 | 1, 100 | 3,737,584 | 3,370,096 | 872,288 | 620,800 | 425,600 |
 | 2, 200 | 14,930,776 | 13,739,608 | 3,485,888 | 2,483,200 | 1,702,400 |
-| 1, 40 | 1,648,036 | 1,505,188 | 349,568 | 248,320 | 170,240 |
+| 1, 40 | **1,645,696** (원 1,648,036) | **1,502,848** (원 1,505,188) | 349,568 | 248,320 | 170,240 |
 
-추가 fixture 제안: (a) LoRA fp32 adapter(autocast 없음) L1 = 3,909,948 / bf16 adapter L1 = 3,619,548 (3-layer `[lin,lin,full]`, r=8, B=1,T=100), (b) eager full 레이어의 `B·T²` 계수 = `6·nq`, (c) generate 후 cache dtype/shape(§7 표), (d) vision tower 파라미터 456,010,480.
+(검증 정정) 독립 harness로 표의 모든 값을 다시 쟀다. full·Qwen3·Llama 열은 그대로 일치한다. linear 열은 nc≥2 행에서 측정값이 +8 B인데, 이는 `query * scaling`이 저장하는 0-dim float64 wrapped scalar다(측정 3,737,592 / 3,370,104 / 14,930,784 / 13,739,616). `(1,40)` 행은 nc=1·cache 없음이라 원래 값이 2,340 B 과대였고, 정정값은 wrapped scalar를 뺀 값이다(측정 1,645,704 / 1,502,856). fixture는 "0-dim wrapped scalar 제외" 규약으로 정의할 것을 권한다(위 값 = 정정된 식 값).
+
+추가 fixture 제안: (a) LoRA fp32 adapter(autocast 없음) L1 = 3,909,948 / bf16 adapter L1 = 3,619,548 (3-layer `[lin,lin,full]`, r=8, B=1,T=100. scalar 포함 측정은 각 +72 B = 3,910,020 / 3,619,620, 검증 로그 V10), (b) eager full 레이어의 `B·T²` 계수 = `6·nq`, (c) generate 후 cache dtype/shape(§7 표), (d) vision tower 파라미터 456,010,480.
 
 ### G. 지원 범위 판정
 
@@ -660,4 +700,39 @@ tiny config A(`vfmem.TINY_Q35`), bf16, full FT, SDPA, `use_cache=False`, no GC:
 7. DynamicCache의 `torch.cat` 성장이 긴 rollout에서 만드는 단편화 크기. INFERRED
 8. 학습 중 `use_cache=True`(TRL 밖 사용)일 때 cache 객체가 graph를 잡아 두는 추가 수명(최종 state branch, K/V 복사본)을 profile로 넣을지. 측정상 byte 차이는 작지만 수명이 길어진다. INFERRED
 9. fp32 master weight + autocast의 weight cast 복사본(`2·P` byte, backward까지 saved)을 weight 담당 ledger와 어느 쪽에 둘지(중복 계산 방지). VERIFIED(CPU)지만 소유권 미정
-10. 예시 모델 실제 차원의 직접 측정은 CPU bf16 GEMM이 너무 느려 ¼ 스케일로 대체했다(식이 정확히 선형이라 대체 가능하나, 전체 32층·실제 vocab의 end-to-end 피크는 GPU 측정 대상). INFERRED
+10. 예시 모델 실제 차원의 직접 측정은 CPU bf16 GEMM이 너무 느려 ¼ 스케일로 대체했다(식이 정확히 선형이라 대체 가능하나, 전체 32층·실제 vocab의 end-to-end 피크는 GPU 측정 대상). INFERRED. (검증 보충) saved byte(레이어별·32층 합)는 FakeTensorMode로 실제 차원에서 직접 측정해 식과 일치함을 확인했다. allocator·kernel workspace를 포함한 end-to-end 피크만 GPU 측정 대상으로 남는다.
+11. (검증 추가) `chunked_nll` + 학습되는 lm_head에서 chunk별 `[V,H]` weight grad 누적이 out-of-place가 되는 원인(view 전달로 `can_accumulate_inplace` 불충족 추정)과, CUDA에서도 `[V,H]` 3개 공존 피크(예시 5.75 GiB)가 나타나는지 GPU에서 확인해야 한다. INFERRED
+12. (검증 추가) SDPA backend별 출력 layout에 따른 `contiguous 복사` 유무(flash·cuDNN 있음, mem-efficient 없음)는 소스 추론이다. CUDA에서 `S_fullmix` 실측으로 확정해야 한다. INFERRED
+
+---
+
+## 검증 로그 (Verification log)
+
+- 검증자: verify-architecture-memory, 2026-10-04. 실험 스크립트: `/tmp/vf-research/scratch/verify-arch-memory/`(저장소 밖). 원 저자의 harness(`vfmem.py`)는 쓰지 않았고, 원 저자의 `formulas.py`는 "검증 대상 주장"으로만 import했다.
+- 독립 방법은 세 가지다. (1) `vh.py`: forward 뒤 autograd graph의 `_saved_*`/`saved_tensors`를 순회하고 StorageImpl(`untyped_storage()._cdata`) 단위로 dedup하며 parameter는 제외한다. (2) `live.py`: hook 없이 `TorchDispatchMode` + `StorageWeakRef`로 실제 생존 storage와 op 단위 peak를 잰다. (3) `FakeTensorMode`(fake CPU device)로 예시 모델 실제 차원을 측정한다. tiny 24점에서 fake = 실제 CPU byte 일치를 먼저 확인했다.
+- 외부 소스 재확인: torch tag `v2.14.1` → commit `5c48869…`가 설치본 `torch.version.git_version`과 같다(GitHub API). C++ 소스를 GitHub raw에서 직접 다시 받았고, 원 저자 사본과 byte 동일했다(`cmp`). `fla_core-0.5.2-py3-none-any.whl` sha256 `5e830c85…6920761`, `causal_conv1d-1.7.0.tar.gz` sha256 `32027584…bfcd32b`가 PyPI JSON digest와 일치한다.
+
+| # | 주장 (원문 위치) | 판정 | 근거 (한 줄) |
+|---|---|---|---|
+| V1 | torch fallback delta rule: q/k/v/beta/g fp32 contiguous 변환, 64 배수 zero-pad, chunk마다 recurrent state `S_i [B,Hv,dk,dv]` fp32 saved(nc개) (§2.2) | VERIFIED | `modeling_qwen3_5.py:337-352, 417-424` 정독. 실제 차원 T=4096 fake 측정에서 `[32,128,128]` fp32 `BmmBackward0._saved_mat2`가 정확히 64개 = 128 MiB (`t16b_states.py`) |
+| V2 | 레이어 saved 식이 216+216점에서 byte 단위 일치(§4.2) | CORRECTED | nc≥2 또는 cache 있음: 일치(+8 B wrapped scalar). nc=1·cache 없음: 식이 `f·B·Hv·65` B 과대(dead branch의 key-decay exp, `chunk_decay`). 원 harness는 pack hook이 tensor를 반환해 saved output이 reference cycle로 살아남아 일치로 보였다. 실제 생존 storage 추적(`t1e_truth.py`)이 graph walk와 일치한다. 점 수: tiny config A·B × B∈{1,2,3} × T∈{40,64,65,100,128,150,200} × {linear, full}, torch 84점(`t25_cfgB_torch.py`) + autocast 84점(`t21_autocast_grid.py`)에서 full 42점 0 B, linear nc≥2 30점 +8 B, linear nc=1 12점 −(`f·B·Hv·65` − 8) B. cache 변형 16점은 모두 +8 B(`t22_cache_variant.py`) |
+| V3 | 예시 모델 B=1,T=4096: linear 2,116.9 / autocast 2,288.9 / full 1,040.6 MiB, 32층 57.90 / 61.93 GiB, GC retained 1,185.1 MiB (§10.2) | VERIFIED | fake 실제 차원: 2,116.87 / 2,288.87 / 1,041.63(cos/sin 1 MiB 포함) MiB(`t3_realdims.py`). 32층 전체 61.940 GiB − log_softmax 3,880 MiB − fake-mode mask 8×32 MiB = 식과 32,780 B 차(`t4_wholemodel.py`, `t4b_mask.py`). GC retained 구성(ckpt 입력 + final norm + head 입력 + cos/sin)은 3층 실측 288.7 MiB로 확인(`t10_transients.py`) |
+| V4 | kernel 선택: import 시점 해석, hub > package > torch, device 검사 없음, torch 경로는 `cu_seqlens` 버림 (§2.1) | VERIFIED (인용 행 정정) | `hub_kernels.py:984-1044`(필터 `:1039-1040`, 원문 `:984-1037`은 필터 행 누락). 가짜 `fla` 패키지 실험: CPU tensor로 호출, q/k `(1,50,9,24)`(Hv head), `cu_seqlens` 전달, 모르는 kwarg 제거. torch fallback 시그니처에 `cu_seqlens` 없음(`t5_kernel_select.py`) |
+| V5 | fla-core 0.5.2 saved set(정규화 q,k / rstd / v 복사 / g cumsum fp32 / beta / A), h는 backward 재계산 (§2.3) | UNVERIFIABLE (CUDA 전용, 소스 일치) | wheel 정독: `chunk.py:51, 253-335, 395-588`, `chunk_fwd.py:382`, `utils/cumsum.py:446-453`, `modules/l2norm.py:151-168`, `common/chunk_delta_h.py:703-707`, `utils/_decorators.py:97-140`. `g_input=None`, `beta_raw is beta`. 산술 재현 mixer 499.25 / 레이어 1,171.31 MiB. INFERRED 유지 |
+| V6 | causal-conv1d 1.7.0은 x만 저장(SiLU 융합) (§2.3) | UNVERIFIABLE (CUDA 전용, 소스 일치) | `causal_conv1d_interface.py:9-61`: `save_for_backward(x, weight, bias, seq_idx, initial_states)`, activation flag는 kernel 인자. 출력 미저장 |
+| V7 | full-attn: q_proj가 query+gate(2·nq·d), gate 항상 적용, partial rotary `cat` 때문에 `contiguous()` 복사 `b·N·nq·d` 저장, dense는 복사 없음 (§1.2, §3.4) | CORRECTED (범위) | CPU에서 RoPE 후 stride 확인: Qwen3.5 q_embed `[B,nq,T,d]` contiguous, Qwen3 `[B,T,nq,d]` 물리 layout(`t15_dense.py`). full 레이어 식 일치. 단 CUDA mem-efficient는 `at::empty({B,M,nh,Kv})`(`attention.cu:1860-1863`)라 복사가 없다. cuDNN(`MHA.cpp:1519`)과 flash(`flash_api.cpp:498-500`)는 복사가 있다 |
+| V8 | HF SDPA wrapper: mask 없을 때만 `enable_gqa`, mask 있으면 `repeat_kv` 실복사, bool mask → query dtype additive mask가 레이어마다 저장, macOS는 MPS flag로 GQA 유지 (§3.1, §3.3) | VERIFIED | `sdpa_attention.py:29-36, 96-102, 124`. torch `attention.cpp:579-592, 820`, `derivatives.yaml:2931-2941`. CUDA 규칙 재현 B=2,T=100: +40,000 B(mask) + 128,000 B(K/V 확장), MPS flag 그대로면 +40,000 B만(`t14_sdpa_mask.py`). padding 없으면 `attn_mask=None, is_causal=True`(`t4b_mask.py`) |
+| V9 | torch 2.14.1 CUDA SDPA: flash GQA·head_dim ≤ 256, sm86/89/120/121 학습 제한은 (192,224] 또는 >224+dropout, mem-eff GQA, cuDNN 우선(sm90/100, cuDNN > 9.15) (§3.2) | VERIFIED (소스) / 실행은 INFERRED | `sdp_utils.cpp:94-135`(CUDA < 13 wheel은 minor 0 또는 3만), `:196-249`, `:413-468`(flash sm80–sm121), `:530-562`, `:1047-1096`, `:1098-1183`. 기본 우선순위 `Context.h:483-488` = flash → efficient → math → cudnn |
+| V10 | LoRA saved 규칙(frozen base 입력 미저장, bf16 adapter 입력 공유 + `b·N·r`, fp32 adapter 모듈별 복사, autocast cast 입력·weight), TRL adapter dtype 결정 (§4.3) | VERIFIED | 규칙으로 미리 계산한 delta가 측정과 byte 일치: L1 +136,864 / +427,264 / +249,088, L2 +132,856 / +380,856 / +223,736(`t7_lora.py`). 원 fixture 값과는 +72 B(scalar 9개) 차. frozen conv1d 입력 저장 확인(`t19_frozen_conv.py`). PEFT `tuners_utils.py:2705-2763`, TRL `sft_trainer.py:1131-1134, 1157-1158, 1164-1167` |
+| V11 | TRL `bf16=True` → accelerate native_amp → forward를 autocast와 `convert_outputs_to_fp32`로 감쌈(fp32 logits 복사). CPU/CUDA autocast 목록 일치 (§2.4, §6.1) | VERIFIED | `accelerator.py:586-597, 1824-1835`, `operations.py:889-948`, Trainer `trainer.py:1715-1730, 2178-2183`. CPU 실행: native_amp=True, 감싼 forward의 logits float32, 원래 forward bf16(`t18_accel.py`). `autocast_mode.h:819-852`, `autocast_mode.cpp:338-363`에 conv1d/mm/bmm/matmul/linear/sdpa 포함 |
+| V12 | `Qwen3_5RMSNorm`/gated norm saved set(gated norm full FT `16·N·Vd + 4·N·Hv`) (§1.1, §5) | VERIFIED | `modeling_qwen3_5.py:216-233, 839-854`. full FT 식 일치(tiny 84점 중 nc≥2 모두), norm weight만 frozen인 변형 12점 일치(`t20_norm_frozen.py`). 실제 차원 그룹 목록에 fp32 `[1,4096,4096]` 4개(=x 복사 2 + normalized 2) |
+| V13 | GC 기본 `use_reentrant=False`, `every_n_layers`는 vision block을 먼저 셈(`(27+i)%n==0`), TRL 기본 `gradient_checkpointing=True` (§4.4) | VERIFIED | `modeling_utils.py:3113-3216`, `trainer.py:1489-1501`, trl `base_config.py:61-66, 104-105`. depth-27 tiny CondGen에서 n=2,3,4 모두 예측과 일치, partial keywords `{'use_reentrant': False}`(`t6_gc_every_n.py`). 예외: PEFT + ZeRO-3이면 TRL이 reentrant로 강제(`sft_trainer.py:1139-1153`) |
+| V14 | transient 계수(GC bwd 1.14–1.36, fwd 0.26–0.42, no-GC 0.12)와 기본값 1.35/0.45/0.15 (§4.4, §C) | VERIFIED (CPU 의미론, 보수적) / CUDA UNKNOWN | 실제 차원 tensor 수준 재유도(T=4096, 1024): GC bwd LoRA bf16 1.05, fp32+autocast 1.14–1.16, full FT grad 제외 0.60–0.84. fwd 0.32–0.42. no-GC bwd 0.09–0.16(`t10_transients.py`, `t10b_transients.py`). 기본값은 이보다 크거나 같다 |
+| V15 | `ForCausalLMLoss`: 항상 `logits.float()`, labels shift, forward 10·N·V, 유지 4·N·V, backward 12·N·V (§6.2) | VERIFIED | `loss/loss_utils.py:49-71`. live tracker 3점에서 8.00(+2) / 4.00 / 12.00 ·N·V(`t8_loss.py`) |
+| V16 | TRL SFT 기본 `chunked_nll`, 피크 ≈16–17.7·256·V(N과 무관), 예시 0.95–1.05 GiB (§6.3) | VERIFIED (frozen lm_head) / CORRECTED (lm_head 학습) | `sft_config.py:281, 332-334`, `sft_trainer.py:87, 100-232, 1897-1917`(metric은 `.item()`). frozen: fwd 16.0–16.6, bwd 16.4–17.6 ·C·V, 실제 차원 0.979 / 1.010 GiB(`t9_chunked.py`, `t9e_chunked_real.py`). 학습되는 lm_head: chunk별 `[V,H]` grad의 out-of-place 누적으로 실제 CPU(H/C=16)에서 +2.36×(2·V·H)(`t9f_chunked_wgrad_real.py`, op trace `t9g_timeline.py`), 실제 차원 5.748 GiB |
+| V17 | generation cache: full `DynamicLayer` K/V bf16 cat 성장, linear conv `[B,C,K]` bf16 + recurrent fp32(`mamba_ssm_dtype` 무시), 예시 `51,904,512 + 32,768·L` B/seq (§7) | VERIFIED | `generation/utils.py:2261, 2298-2300`, `cache_utils.py:129-148, 1029-1117`. tiny generate에서 `mamba_ssm_dtype="bfloat16"`이어도 rec float32, L=prompt+gen−1(`t11_gen_cache.py`). 예시 산술 재현. `record_past` 예외 추가 |
+| V18 | 학습 forward도 `use_cache=True`(config 기본)면 DynamicCache 생성, TRL SFT는 `use_cache=False`, GC면 꺼짐 (§1.5) | VERIFIED (+메커니즘 보충) | `modeling_qwen3_5.py:1255-1256`, `utils/generic.py:1000-1046`(GC면 모델 수준에서 False), `sft_trainer.py:1795`. 실측 DynamicCache / None / None(`t17_use_cache.py`) |
+| V19 | vision tower 456,010,480 params(912,020,960 B), 합계 9,409,813,744, text-only 8,953,803,264, TRL은 CondGen 로드 (§9) | VERIFIED | safetensors header만 조회: 4 파일, 760 tensor, BF16, group 합 일치. meta-device CondGen/CausalLM 집계 일치(`t12_vision.py`). trl `utils.py:1306-1320`, `modeling_auto.py:854` |
+| V20 | fp32 master weight + bf16 autocast는 Linear/conv weight마다 bf16 cast 복사 저장(2·P B, tiny 743,136 B) (§4.3) | VERIFIED | tiny fp32 모델 + CPU autocast: weight 모양 bf16 saved 17개 = 743,136 B = 2 × 371,568(`t13_fp32_master.py`) |
+| V21 | §10.2 "LoRA fp32 adapter + autocast" 행 (S_lin 2,257.4 / S_full 929.5 MiB, Σ 60.23 / 34.04 GiB) | CORRECTED | cast weight 복사 누락. 실제 차원 측정 S_lin 2,260.00 / S_full 931.94 MiB, Σ 60.31 / 34.12 GiB(`t23_lora_realdims.py`). LoRA bf16 행(1,957.37 / 833.50, autocast 2,129.37)은 일치 |
+| V22 | dense Qwen3/Llama 레이어 식(120점), cos/sin `[1,T,d]` (§8) | VERIFIED | 독립 18점(B∈{1,2,3}, T∈{40,100,200}, 두 모델) 0 또는 +8 B 차(`t15_dense.py`). §F golden의 Qwen3/Llama/full 열 정확히 재현(`t24_golden.py`) |
