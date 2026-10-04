@@ -1,0 +1,3 @@
+{"id": 1, "messages": [{"role": "system", "content": "You are concise."}, {"role": "user", "content": "2+2?"}, {"role": "assistant", "content": "4"}]}
+{"id": 2, "messages": [{"role": "user", "content": "한국어로 인사해 주세요."}, {"role": "assistant", "content": "안녕하세요! 👋"}]}
+{"id": 3, "messages": [{"role": "user", "content": "Weather in Seoul?"}, {"role": "assistant", "content": "", "tool_calls": [{"name": "weather", "arguments": {"city": "Seoul"}}]}, {"role": "tool", "content": "21°C"}, {"role": "assistant", "content": "21°C입니다."}]}

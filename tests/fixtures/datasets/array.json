@@ -1,0 +1,17 @@
+[
+  {
+    "instruction": "Translate to Korean: good morning",
+    "output": "좋은 아침입니다",
+    "category": "translation"
+  },
+  {
+    "instruction": "Sum the list [1, 2, 3]",
+    "output": "6",
+    "category": "math"
+  },
+  {
+    "instruction": "Write a haiku about code",
+    "output": "Silent loops at night\nBugs hide in the semicolons\nTests bloom at sunrise",
+    "category": "poetry"
+  }
+]
